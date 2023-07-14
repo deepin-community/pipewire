@@ -1,27 +1,8 @@
-/* PipeWire
- * Copyright © 2016 Axis Communications <dev-gstreamer@axis.com>
- *	@author Linus Svensson <linus.svensson@axis.com>
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2016 Axis Communications <dev-gstreamer@axis.com> */
+/*                         @author Linus Svensson <linus.svensson@axis.com> */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -34,6 +15,7 @@
 
 #include <spa/utils/string.h>
 
+#include <pipewire/cleanup.h>
 #include "pipewire/impl.h"
 #include "pipewire/private.h"
 
@@ -44,6 +26,7 @@ PW_LOG_TOPIC_EXTERN(log_module);
 struct impl {
 	struct pw_impl_module this;
 	void *hnd;
+	uint32_t destroy_work_id;
 };
 
 #define pw_module_resource_info(r,...)	pw_resource_call(r,struct pw_module_events,info,0,__VA_ARGS__)
@@ -56,7 +39,6 @@ static char *find_module(const char *path, const char *name, int level)
 	char *filename;
 	struct dirent *entry;
 	struct stat s;
-	DIR *dir;
 	int res;
 
 	filename = spa_aprintf("%s/%s.so", path, name);
@@ -75,7 +57,7 @@ static char *find_module(const char *path, const char *name, int level)
 	if (level <= 0)
 		return NULL;
 
-	dir = opendir(path);
+	spa_autoptr(DIR) dir = opendir(path);
 	if (dir == NULL) {
 		res = -errno;
 		pw_log_warn("could not open %s: %m", path);
@@ -84,34 +66,29 @@ static char *find_module(const char *path, const char *name, int level)
 	}
 
 	while ((entry = readdir(dir))) {
-		char *newpath;
-
 		if (spa_streq(entry->d_name, ".") || spa_streq(entry->d_name, ".."))
 			continue;
 
-		newpath = spa_aprintf("%s/%s", path, entry->d_name);
+		spa_autofree char *newpath = spa_aprintf("%s/%s", path, entry->d_name);
 		if (newpath == NULL)
 			break;
 
-		if (stat(newpath, &s) == 0 && S_ISDIR(s.st_mode))
+		if (entry->d_type == DT_DIR ||
+		    (entry->d_type == DT_UNKNOWN && stat(newpath, &s) == 0 && S_ISDIR(s.st_mode))) {
 			filename = find_module(newpath, name, level - 1);
-
-		free(newpath);
-
-		if (filename != NULL)
-			break;
+			if (filename)
+				return filename;
+		}
 	}
 
-	closedir(dir);
-
-	return filename;
+	return NULL;
 }
 
 static int
-global_bind(void *_data, struct pw_impl_client *client, uint32_t permissions,
+global_bind(void *object, struct pw_impl_client *client, uint32_t permissions,
 		 uint32_t version, uint32_t id)
 {
-	struct pw_impl_module *this = _data;
+	struct pw_impl_module *this = object;
 	struct pw_global *global = this->global;
 	struct pw_resource *resource;
 
@@ -133,9 +110,9 @@ error_resource:
 	return -errno;
 }
 
-static void global_destroy(void *object)
+static void global_destroy(void *data)
 {
-	struct pw_impl_module *module = object;
+	struct pw_impl_module *module = data;
 	spa_hook_remove(&module->global_listener);
 	module->global = NULL;
 	pw_impl_module_destroy(module);
@@ -171,6 +148,13 @@ pw_context_load_module(struct pw_context *context,
 	const char *state = NULL, *p;
 	size_t len;
 	char path_part[PATH_MAX];
+	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
+		PW_KEY_MODULE_NAME,
+		NULL
+	};
+
+	pw_log_info("%p: name:%s args:%s", context, name, args);
 
 	module_dir = getenv("PIPEWIRE_MODULE_DIR");
 	if (module_dir == NULL) {
@@ -184,15 +168,19 @@ pw_context_load_module(struct pw_context *context,
 	while ((p = pw_split_walk(module_dir, ":", &len, &state))) {
 		if ((res = spa_scnprintf(path_part, sizeof(path_part), "%.*s", (int)len, p)) > 0) {
 			filename = find_module(path_part, name, 8);
-		if (filename != NULL) {
-			pw_log_debug("trying to load module: %s (%s) args(%s)", name, filename, args);
+			if (filename != NULL) {
+				pw_log_debug("trying to load module: %s (%s) args(%s)", name, filename, args);
 
-		hnd = dlopen(filename, RTLD_NOW | RTLD_LOCAL);
-		if (hnd != NULL)
-		break;
+				hnd = dlopen(filename, RTLD_NOW | RTLD_LOCAL);
+				if (hnd != NULL)
+					break;
+
+				pw_log_debug("open failed: %s", dlerror());
+				free(filename);
+				filename = NULL;
+			}
 		}
 	}
-}
 
 	if (filename == NULL)
 		goto error_not_found;
@@ -212,6 +200,7 @@ pw_context_load_module(struct pw_context *context,
 		goto error_no_mem;
 
 	impl->hnd = hnd;
+	impl->destroy_work_id = SPA_ID_INVALID;
 	hnd = NULL;
 
 	this = &impl->this;
@@ -228,23 +217,25 @@ pw_context_load_module(struct pw_context *context,
 	filename = NULL;
 	this->info.args = args ? strdup(args) : NULL;
 
+	spa_list_prepend(&context->module_list, &this->link);
+
 	this->global = pw_global_new(context,
 				     PW_TYPE_INTERFACE_Module,
 				     PW_VERSION_MODULE,
-				     pw_properties_new(
-					     PW_KEY_MODULE_NAME, name,
-					     NULL),
+				     NULL,
 				     global_bind,
 				     this);
 
 	if (this->global == NULL)
 		goto error_no_global;
 
-	spa_list_prepend(&context->module_list, &this->link);
-
 	this->info.id = this->global->id;
 	pw_properties_setf(this->properties, PW_KEY_OBJECT_ID, "%d", this->info.id);
+	pw_properties_setf(this->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
+			pw_global_get_serial(this->global));
 	this->info.props = &this->properties->dict;
+
+	pw_global_update_keys(this->global, &this->properties->dict, keys);
 
 	pw_impl_module_emit_initialized(this);
 
@@ -263,10 +254,10 @@ pw_context_load_module(struct pw_context *context,
 
 error_not_found:
 	res = -ENOENT;
-	pw_log_error("No module \"%s\" was found", name);
+	pw_log_info("No module \"%s\" was found", name);
 	goto error_cleanup;
 error_open_failed:
-	res = -ENOENT;
+	res = -EIO;
 	pw_log_error("Failed to open module: \"%s\" %s", filename, dlerror());
 	goto error_free_filename;
 error_no_pw_module:
@@ -307,11 +298,12 @@ void pw_impl_module_destroy(struct pw_impl_module *module)
 {
 	struct impl *impl = SPA_CONTAINER_OF(module, struct impl, this);
 
-	pw_log_debug("%p: destroy", module);
+	pw_log_debug("%p: destroy %s", module, module->info.name);
 	pw_impl_module_emit_destroy(module);
 
+	spa_list_remove(&module->link);
+
 	if (module->global) {
-		spa_list_remove(&module->link);
 		spa_hook_remove(&module->global_listener);
 		pw_global_destroy(module->global);
 	}
@@ -325,6 +317,10 @@ void pw_impl_module_destroy(struct pw_impl_module *module)
 	pw_properties_free(module->properties);
 
 	spa_hook_list_clean(&module->listener_list);
+
+	if (impl->destroy_work_id != SPA_ID_INVALID)
+		pw_work_queue_cancel(pw_context_get_work_queue(module->context),
+				     module, SPA_ID_INVALID);
 
 	if (!pw_in_valgrind() && dlclose(impl->hnd) != 0)
 		pw_log_warn("%p: dlclose failed: %s", module, dlerror());
@@ -387,4 +383,21 @@ void pw_impl_module_add_listener(struct pw_impl_module *module,
 			    void *data)
 {
 	spa_hook_list_append(&module->listener_list, listener, events, data);
+}
+
+static void do_destroy_module(void *obj, void *data, int res, uint32_t id)
+{
+	pw_impl_module_destroy(obj);
+}
+
+SPA_EXPORT
+void pw_impl_module_schedule_destroy(struct pw_impl_module *module)
+{
+	struct impl *impl = SPA_CONTAINER_OF(module, struct impl, this);
+
+	if (impl->destroy_work_id != SPA_ID_INVALID)
+		return;
+
+	impl->destroy_work_id = pw_work_queue_add(pw_context_get_work_queue(module->context),
+						  module, 0, do_destroy_module, NULL);
 }

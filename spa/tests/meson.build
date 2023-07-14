@@ -5,22 +5,23 @@ find = find_program('find', required: false)
 summary({'find (for header testing)': find.found()}, bool_yn: true, section: 'Optional programs')
 if find.found()
   spa_headers = run_command(find,
-                            meson.source_root() / 'spa' / 'include',
+                            meson.project_source_root() / 'spa' / 'include',
                             '-name', '*.h',
                             '-not', '-name', 'type-info.h',
                             '-type', 'f',
-                            '-printf', '%P\n')
+                            '-printf', '%P\n',
+                            check: false)
   foreach spa_header : spa_headers.stdout().split('\n')
     if spa_header.endswith('.h')  # skip empty lines
       ext = have_cpp ? 'cpp' : 'c'
-      c = configuration_data()
-      c.set('INCLUDE', spa_header)
       src = configure_file(input: 'spa-include-test-template.c',
-                          output: 'spa-include-test-@0@.@1@'.format(spa_header.underscorify(), ext),
-                          configuration: c)
+                           output: 'spa-include-test-@0@.@1@'.format(spa_header.underscorify(), ext),
+                           configuration: {
+                             'INCLUDE': spa_header,
+                           })
       executable('spa-include-test-@0@'.format(spa_header.underscorify()),
                  src,
-                 include_directories: [spa_inc],
+                 dependencies: [ spa_dep ],
                  install: false)
     endif
   endforeach
@@ -35,13 +36,12 @@ benchmark_apps = [
 foreach a : benchmark_apps
   benchmark('spa-' + a,
     executable('spa-' + a, a + '.c',
-      dependencies : [dl_lib, pthread_lib, mathlib ],
-      include_directories : [spa_inc ],
+      dependencies : [ spa_dep, dl_lib, pthread_lib, mathlib ],
       install : installed_tests_enabled,
       install_dir : installed_tests_execdir,
     ),
     env : [
-      'SPA_PLUGIN_DIR=@0@/spa/plugins/'.format(meson.build_root()),
+      'SPA_PLUGIN_DIR=@0@'.format(spa_dep.get_variable('plugindir')),
     ]
   )
 

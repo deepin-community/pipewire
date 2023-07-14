@@ -1,34 +1,16 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
 #include <getopt.h>
 #include <signal.h>
+#include <locale.h>
 
 #include <dbus/dbus.h>
 
+#include <spa/utils/result.h>
 #include <spa/support/dbus.h>
 
 #include "pipewire/pipewire.h"
@@ -50,24 +32,24 @@ struct impl {
 
 static void reserve_acquired(void *data, struct rd_device *d)
 {
-	fprintf(stdout, "reserve acquired\n");
+	printf("reserve acquired\n");
 }
 
 static void reserve_release(void *data, struct rd_device *d, int forced)
 {
 	struct impl *impl = data;
-	fprintf(stdout, "reserve release\n");
+	printf("reserve release\n");
 	rd_device_complete_release(impl->device, true);
 }
 
 static void reserve_busy(void *data, struct rd_device *d, const char *name, int32_t prio)
 {
-	fprintf(stdout, "reserve busy %s, prio %d\n", name, prio);
+	printf("reserve busy %s, prio %d\n", name, prio);
 }
 
 static void reserve_available(void *data, struct rd_device *d, const char *name)
 {
-	fprintf(stdout, "reserve available %s\n", name);
+	printf("reserve available %s\n", name);
 }
 
 static const struct rd_device_callbacks reserve_callbacks = {
@@ -86,15 +68,16 @@ static void do_quit(void *data, int signal_number)
 #define DEFAULT_APPNAME		"pw-reserve"
 #define DEFAULT_PRIORITY	0
 
-static void show_help(const char *name)
+static void show_help(const char *name, bool error)
 {
-        fprintf(stdout, "%s [options]\n"
+        fprintf(error ? stderr : stdout, "%s [options]\n"
              "  -h, --help                            Show this help\n"
              "      --version                         Show version\n"
              "  -n, --name                            Name to reserve (Audio0, Midi0, Video0, ..)\n"
              "  -a, --appname                         Application Name (default %s)\n"
              "  -p, --priority                        Priority (default %d)\n"
-             "  -m, --monitor                         Monitor only, don't try to acquire\n",
+             "  -m, --monitor                         Monitor only, don't try to acquire\n"
+             "  -r, --release                         Request release when busy\n",
 	     name, DEFAULT_APPNAME, DEFAULT_PRIORITY);
 }
 
@@ -106,6 +89,7 @@ int main(int argc, char *argv[])
 	const char *opt_name = NULL;
 	const char *opt_appname = DEFAULT_APPNAME;
 	bool opt_monitor = false;
+	bool opt_release = false;
 	int opt_priority= DEFAULT_PRIORITY;
 
 	int res = 0, c;
@@ -116,18 +100,22 @@ int main(int argc, char *argv[])
 		{ "app",	required_argument,	NULL, 'a' },
 		{ "priority",	required_argument,	NULL, 'p' },
 		{ "monitor",	no_argument,		NULL, 'm' },
+		{ "release",	no_argument,		NULL, 'r' },
 		{ NULL, 0, NULL, 0}
 	};
 
+	setlinebuf(stdout);
+
+	setlocale(LC_ALL, "");
 	pw_init(&argc, &argv);
 
-	while ((c = getopt_long(argc, argv, "hVn:a:p:m", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "hVn:a:p:mr", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h':
-			show_help(argv[0]);
+			show_help(argv[0], false);
 			return 0;
 		case 'V':
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -146,8 +134,11 @@ int main(int argc, char *argv[])
 		case 'm':
 			opt_monitor = true;
 			break;
+		case 'r':
+			opt_release = true;
+			break;
 		default:
-			fprintf(stderr, "invalid option '%c'\n", c);
+			show_help(argv[0], true);
 			return -1;
 		}
 	}
@@ -200,13 +191,31 @@ int main(int argc, char *argv[])
 			opt_priority,
 			&reserve_callbacks, &impl);
 
-	if (!opt_monitor)
-		rd_device_acquire(impl.device);
+	if (!opt_monitor) {
+		res = rd_device_acquire(impl.device);
+		if (res == -EBUSY) {
+			printf("device %s is busy\n", opt_name);
+			if (opt_release) {
+				printf("doing RequestRelease on %s\n", opt_name);
+				res = rd_device_request_release(impl.device);
+			} else {
+				printf("use -r to attempt to release\n");
+			}
+		} else if (res < 0) {
+			printf("Device %s can not be acquired: %s\n", opt_name,
+					spa_strerror(res));
+		}
+	}
 
-	pw_main_loop_run(impl.mainloop);
+	if (res >= 0)
+		pw_main_loop_run(impl.mainloop);
 
-	if (!opt_monitor)
-		rd_device_release(impl.device);
+	if (!opt_monitor) {
+		if (opt_release) {
+			printf("doing Release on %s\n", opt_name);
+			rd_device_release(impl.device);
+		}
+	}
 
 exit:
 	if (impl.conn)

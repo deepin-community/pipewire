@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_FILTER_H
 #define PIPEWIRE_FILTER_H
@@ -124,6 +104,18 @@ enum pw_filter_flags {
 	PW_FILTER_FLAG_CUSTOM_LATENCY	= (1 << 3),	/**< don't call the default latency algorithm
 							  *  but emit the param_changed event for the
 							  *  ports when Latency params are received. */
+	PW_FILTER_FLAG_TRIGGER		= (1 << 4),	/**< the filter will not be scheduled
+							  *  automatically but _trigger_process()
+							  *  needs to be called. This can be used
+							  *  when the filter depends on processing
+							  *  of other filters. */
+	PW_FILTER_FLAG_ASYNC		= (1 << 5),	/**< Buffers will not be dequeued/queued from
+							  *  the realtime process() function. This is
+							  *  assumed when RT_PROCESS is unset but can
+							  *  also be the case when the process() function
+							  *  does a trigger_process() that will then
+							  *  dequeue/queue a buffer from another process()
+							  *  function. since 0.3.73 */
 };
 
 enum pw_filter_port_flags {
@@ -217,17 +209,9 @@ pw_filter_update_params(struct pw_filter *filter,	/**< a \ref pw_filter */
 			uint32_t n_params		/**< number of elements in \a params */);
 
 
-#if 0
-/** A time structure  */
-struct pw_time {
-	int64_t now;			/**< the monotonic time */
-	struct spa_fraction rate;	/**< the rate of \a ticks and delay */
-	uint64_t ticks;			/**< the ticks at \a now. This is the current time that
-					  *  the remote end is reading/writing. */
-};
-#endif
-
-/** Query the time on the filter  */
+/** Query the time on the filter, deprecated, use the spa_io_position in the
+ * process() method for timing information. */
+SPA_DEPRECATED
 int pw_filter_get_time(struct pw_filter *filter, struct pw_time *time);
 
 /** Get a buffer that can be filled for output ports or consumed
@@ -246,6 +230,16 @@ int pw_filter_set_active(struct pw_filter *filter, bool active);
 /** Flush a filter. When \a drain is true, the drained callback will
  * be called when all data is played or recorded */
 int pw_filter_flush(struct pw_filter *filter, bool drain);
+
+/** Check if the filter is driving. The filter needs to have the
+ * PW_FILTER_FLAG_DRIVER set. When the filter is driving,
+ * pw_filter_trigger_process() needs to be called when data is
+ * available (output) or needed (input). Since 0.3.66 */
+bool pw_filter_is_driving(struct pw_filter *filter);
+
+/** Trigger a push/pull on the filter. One iteration of the graph will
+ * be scheduled and process() will be called. Since 0.3.66 */
+int pw_filter_trigger_process(struct pw_filter *filter);
 
 /**
  * \}

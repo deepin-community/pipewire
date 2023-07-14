@@ -1,32 +1,13 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 
 #include <spa/debug/types.h>
 #include <spa/utils/string.h>
 
+#include <pipewire/cleanup.h>
 #include "pipewire/impl.h"
 #include "pipewire/private.h"
 
@@ -268,10 +249,10 @@ struct resource_data {
 };
 
 
-static int metadata_property(void *object, uint32_t subject, const char *key,
+static int metadata_property(void *data, uint32_t subject, const char *key,
 		const char *type, const char *value)
 {
-	struct pw_impl_metadata *this = object;
+	struct pw_impl_metadata *this = data;
 	pw_impl_metadata_emit_property(this, subject, key, type, value);
 	return 0;
 }
@@ -391,13 +372,13 @@ void pw_impl_metadata_destroy(struct pw_impl_metadata *metadata)
 #define pw_metadata_resource_property(r,...)        \
         pw_metadata_resource(r,property,0,__VA_ARGS__)
 
-static int metadata_resource_property(void *object,
+static int metadata_resource_property(void *data,
 			uint32_t subject,
 			const char *key,
 			const char *type,
 			const char *value)
 {
-	struct resource_data *d = object;
+	struct resource_data *d = data;
 	struct pw_resource *resource = d->resource;
 	struct pw_impl_client *client = pw_resource_get_client(resource);
 
@@ -465,10 +446,10 @@ static const struct pw_resource_events resource_events = {
 };
 
 static int
-global_bind(void *_data, struct pw_impl_client *client, uint32_t permissions,
+global_bind(void *object, struct pw_impl_client *client, uint32_t permissions,
 		  uint32_t version, uint32_t id)
 {
-	struct pw_impl_metadata *this = _data;
+	struct pw_impl_metadata *this = object;
 	struct pw_global *global = this->global;
 	struct pw_resource *resource;
 	struct resource_data *data;
@@ -506,9 +487,9 @@ error_resource:
 	return -errno;
 }
 
-static void global_destroy(void *object)
+static void global_destroy(void *data)
 {
-	struct pw_impl_metadata *metadata = object;
+	struct pw_impl_metadata *metadata = data;
 	spa_hook_remove(&metadata->global_listener);
 	metadata->global = NULL;
 	pw_impl_metadata_destroy(metadata);
@@ -523,13 +504,14 @@ SPA_EXPORT
 int pw_impl_metadata_register(struct pw_impl_metadata *metadata,
 			 struct pw_properties *properties)
 {
+	struct pw_context *context = metadata->context;
 	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
 		PW_KEY_MODULE_ID,
+		PW_KEY_FACTORY_ID,
 		PW_KEY_METADATA_NAME,
 		NULL
 	};
-
-	struct pw_context *context = metadata->context;
 
 	if (metadata->registered)
 		goto error_existed;
@@ -545,6 +527,9 @@ int pw_impl_metadata_register(struct pw_impl_metadata *metadata,
 
 	spa_list_append(&context->metadata_list, &metadata->link);
 	metadata->registered = true;
+
+	pw_properties_setf(metadata->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
+			pw_global_get_serial(metadata->global));
 
 	pw_global_update_keys(metadata->global, &metadata->properties->dict, keys);
 
@@ -592,32 +577,15 @@ int pw_impl_metadata_set_propertyf(struct pw_impl_metadata *metadata,
 			uint32_t subject, const char *key, const char *type,
 			const char *fmt, ...)
 {
+	spa_autofree char *value = NULL;
 	va_list args;
-	int n = 0, res;
-	size_t size = 0;
-	char *p = NULL;
+	int res;
 
 	va_start(args, fmt);
-	n = vsnprintf(p, size, fmt, args);
+	res = vasprintf(&value, fmt, args);
 	va_end(args);
-	if (n < 0)
+	if (res < 0)
 		return -errno;
 
-	size = (size_t) n + 1;
-	p = malloc(size);
-	if (p == NULL)
-		return -errno;
-
-	va_start(args, fmt);
-	n = vsnprintf(p, size, fmt, args);
-	va_end(args);
-
-	if (n < 0) {
-		free(p);
-		return -errno;
-	}
-	res = pw_impl_metadata_set_property(metadata, subject, key, type, p);
-	free(p);
-
-	return res;
+	return pw_impl_metadata_set_property(metadata, subject, key, type, value);
 }

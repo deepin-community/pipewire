@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -105,21 +85,17 @@ static void run_test1(const char *name, const char *impl, bool in_packed, bool o
 static void run_testc(const char *name, const char *impl, bool in_packed, bool out_packed, convert_func_t func,
 		int channel_count)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(sample_sizes); i++) {
+	SPA_FOR_EACH_ELEMENT_VAR(sample_sizes, s) {
 		run_test1(name, impl, in_packed, out_packed, func, channel_count,
-				(sample_sizes[i] + (channel_count -1)) / channel_count);
+				(*s + (channel_count -1)) / channel_count);
 	}
 }
 
 static void run_test(const char *name, const char *impl, bool in_packed, bool out_packed, convert_func_t func)
 {
-	size_t i, j;
-
-	for (i = 0; i < SPA_N_ELEMENTS(sample_sizes); i++) {
-		for (j = 0; j < SPA_N_ELEMENTS(channel_counts); j++) {
-			run_test1(name, impl, in_packed, out_packed, func, channel_counts[j],
-				(sample_sizes[i] + (channel_counts[j] -1)) / channel_counts[j]);
+	SPA_FOR_EACH_ELEMENT_VAR(sample_sizes, s) {
+		SPA_FOR_EACH_ELEMENT_VAR(channel_counts, c) {
+			run_test1(name, impl, in_packed, out_packed, func, *c, (*s + (*c -1)) / *c);
 		}
 	}
 }
@@ -271,18 +247,18 @@ static void test_s24_32_f32(void)
 
 static void test_interleave(void)
 {
-	run_test("test_interleave_8", "c", false, true, conv_interleave_8_c);
-	run_test("test_interleave_16", "c", false, true, conv_interleave_16_c);
-	run_test("test_interleave_24", "c", false, true, conv_interleave_24_c);
-	run_test("test_interleave_32", "c", false, true, conv_interleave_32_c);
+	run_test("test_8d_to_8", "c", false, true, conv_8d_to_8_c);
+	run_test("test_16d_to_16", "c", false, true, conv_16d_to_16_c);
+	run_test("test_24d_to_24", "c", false, true, conv_24d_to_24_c);
+	run_test("test_32d_to_32", "c", false, true, conv_32d_to_32_c);
 }
 
 static void test_deinterleave(void)
 {
-	run_test("test_deinterleave_8", "c", true, false, conv_deinterleave_8_c);
-	run_test("test_deinterleave_16", "c", true, false, conv_deinterleave_16_c);
-	run_test("test_deinterleave_24", "c", true, false, conv_deinterleave_24_c);
-	run_test("test_deinterleave_32", "c", true, false, conv_deinterleave_32_c);
+	run_test("test_8_to_8d", "c", true, false, conv_8_to_8d_c);
+	run_test("test_16_to_16d", "c", true, false, conv_16_to_16d_c);
+	run_test("test_24_to_24d", "c", true, false, conv_24_to_24d_c);
+	run_test("test_32_to_32d", "c", true, false, conv_32_to_32d_c);
 }
 
 static int compare_func(const void *_a, const void *_b)

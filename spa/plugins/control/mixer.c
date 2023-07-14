@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <string.h>
@@ -37,12 +17,13 @@
 #include <spa/node/io.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/param.h>
+#include <spa/control/control.h>
 #include <spa/pod/filter.h>
 
 #define NAME "control-mixer"
 
 #define MAX_BUFFERS     64
-#define MAX_PORTS       128
+#define MAX_PORTS       512
 
 struct buffer {
 	uint32_t id;
@@ -86,8 +67,11 @@ struct impl {
 
 	uint32_t port_count;
 	uint32_t last_port;
-	struct port in_ports[MAX_PORTS];
+	struct port *in_ports[MAX_PORTS];
 	struct port out_ports[1];
+
+	struct spa_pod_control *mix_ctrl[MAX_PORTS];
+	struct spa_pod_sequence *mix_seq[MAX_PORTS];
 
 	int n_formats;
 
@@ -95,11 +79,12 @@ struct impl {
 	unsigned int started:1;
 };
 
-#define CHECK_FREE_IN_PORT(this,d,p) ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && !this->in_ports[(p)].valid)
-#define CHECK_IN_PORT(this,d,p)      ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && this->in_ports[(p)].valid)
+#define PORT_VALID(p)                ((p) != NULL && (p)->valid)
+#define CHECK_FREE_IN_PORT(this,d,p) ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && !PORT_VALID(this->in_ports[(p)]))
+#define CHECK_IN_PORT(this,d,p)      ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && PORT_VALID(this->in_ports[(p)]))
 #define CHECK_OUT_PORT(this,d,p)     ((d) == SPA_DIRECTION_OUTPUT && (p) == 0)
 #define CHECK_PORT(this,d,p)         (CHECK_OUT_PORT(this,d,p) || CHECK_IN_PORT (this,d,p))
-#define GET_IN_PORT(this,p)          (&this->in_ports[p])
+#define GET_IN_PORT(this,p)          (this->in_ports[p])
 #define GET_OUT_PORT(this,p)         (&this->out_ports[p])
 #define GET_PORT(this,d,p)           (d == SPA_DIRECTION_INPUT ? GET_IN_PORT(this,p) : GET_OUT_PORT(this,p))
 
@@ -180,7 +165,7 @@ static int impl_node_add_listener(void *object,
 	emit_node_info(this, true);
 	emit_port_info(this, GET_OUT_PORT(this, 0), true);
 	for (i = 0; i < this->last_port; i++) {
-		if (this->in_ports[i].valid)
+		if (PORT_VALID(this->in_ports[i]))
 			emit_port_info(this, GET_IN_PORT(this, i), true);
 	}
 
@@ -207,6 +192,13 @@ static int impl_node_add_port(void *object, enum spa_direction direction, uint32
 	spa_return_val_if_fail(CHECK_FREE_IN_PORT(this, direction, port_id), -EINVAL);
 
 	port = GET_IN_PORT (this, port_id);
+	if (port == NULL) {
+		port = calloc(1, sizeof(struct port));
+		if (port == NULL)
+			return -errno;
+		this->in_ports[port_id] = port;
+	}
+
 	port->direction = direction;
 	port->id = port_id;
 
@@ -343,8 +335,7 @@ next:
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(4096, 512, INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(1),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(1));
 		break;
 
 	case SPA_PARAM_IO:
@@ -498,9 +489,12 @@ impl_node_port_use_buffers(void *object,
 	spa_log_debug(this->log, NAME " %p: use buffers %d on port %d:%d",
 			this, n_buffers, direction, port_id);
 
-	spa_return_val_if_fail(port->have_format, -EIO);
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
@@ -564,6 +558,38 @@ static int impl_node_port_reuse_buffer(void *object, uint32_t port_id, uint32_t 
 	return queue_buffer(this, port, &port->buffers[buffer_id]);
 }
 
+static inline int event_sort(struct spa_pod_control *a, struct spa_pod_control *b)
+{
+	if (a->offset < b->offset)
+		return -1;
+	if (a->offset > b->offset)
+		return 1;
+	if (a->type != b->type)
+		return 0;
+	switch(a->type) {
+	case SPA_CONTROL_Midi:
+	{
+		/* 11 (controller) > 12 (program change) >
+		 * 8 (note off) > 9 (note on) > 10 (aftertouch) >
+		 * 13 (channel pressure) > 14 (pitch bend) */
+		static int priotab[] = { 5,4,3,7,6,2,1,0 };
+		uint8_t *da, *db;
+
+		if (SPA_POD_BODY_SIZE(&a->value) < 1 ||
+		    SPA_POD_BODY_SIZE(&b->value) < 1)
+			return 0;
+
+		da = SPA_POD_BODY(&a->value);
+		db = SPA_POD_BODY(&b->value);
+		if ((da[0] & 0xf) != (db[0] & 0xf))
+			return 0;
+		return priotab[(db[0]>>4) & 7] - priotab[(da[0]>>4) & 7];
+	}
+	default:
+		return 0;
+	}
+}
+
 static int impl_node_process(void *object)
 {
 	struct impl *this = object;
@@ -580,8 +606,8 @@ static int impl_node_process(void *object)
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
 	outport = GET_OUT_PORT(this, 0);
-	outio = outport->io;
-	spa_return_val_if_fail(outio != NULL, -EIO);
+	if ((outio = outport->io) == NULL)
+		return -EIO;
 
 	spa_log_trace_fp(this->log, NAME " %p: status %p %d %d",
 			this, outio, outio->status, outio->buffer_id);
@@ -597,13 +623,15 @@ static int impl_node_process(void *object)
 
 	/* get output buffer */
 	if ((outb = dequeue_buffer(this, outport)) == NULL) {
-                spa_log_trace(this->log, NAME " %p: out of buffers", this);
+		if (outport->n_buffers > 0)
+	                spa_log_warn(this->log, NAME " %p: out of buffers (%d)",
+					this, outport->n_buffers);
                 return -EPIPE;
         }
 
-	ctrl = alloca(MAX_PORTS * sizeof(struct spa_pod_control *));
-	seq = alloca(MAX_PORTS * sizeof(struct spa_pod_sequence *));
-        n_seq = 0;
+	ctrl = this->mix_ctrl;
+	seq = this->mix_seq;
+	n_seq = 0;
 
 	/* collect all sequence pod on input ports */
 	for (i = 0; i < this->last_port; i++) {
@@ -630,10 +658,16 @@ static int impl_node_process(void *object)
 		d = inport->buffers[inio->buffer_id].buffer->datas;
 
 		if ((pod = spa_pod_from_data(d->data, d->maxsize,
-				d->chunk->offset, d->chunk->size)) == NULL)
+				d->chunk->offset, d->chunk->size)) == NULL) {
+			spa_log_trace_fp(this->log, NAME " %p: skip input idx:%d max:%u "
+					"offset:%u size:%u", this, i,
+					d->maxsize, d->chunk->offset, d->chunk->size);
 			continue;
-		if (!spa_pod_is_sequence(pod))
+		}
+		if (!spa_pod_is_sequence(pod)) {
+			spa_log_trace_fp(this->log, NAME " %p: skip input idx:%d", this, i);
 			continue;
+		}
 
 		seq[n_seq] = pod;
 		ctrl[n_seq] = spa_pod_control_first(&seq[n_seq]->body);
@@ -657,7 +691,7 @@ static int impl_node_process(void *object)
 					SPA_POD_BODY_SIZE(seq[i]), ctrl[i]))
 				continue;
 
-			if (next == NULL || ctrl[i]->offset < next->offset) {
+			if (next == NULL || event_sort(ctrl[i], next) <= 0) {
 				next = ctrl[i];
 				next_index = i;
 			}
@@ -720,6 +754,15 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 
 static int impl_clear(struct spa_handle *handle)
 {
+	struct impl *this;
+	uint32_t i;
+
+	spa_return_val_if_fail(handle != NULL, -EINVAL);
+
+	this = (struct impl *) handle;
+
+	for (i = 0; i < MAX_PORTS; i++)
+		free(this->in_ports[i]);
 	return 0;
 }
 

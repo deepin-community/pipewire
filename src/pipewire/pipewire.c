@@ -1,33 +1,13 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
 #include <unistd.h>
 #include <limits.h>
 #include <stdio.h>
-#ifndef __FreeBSD__
+#if !defined(__FreeBSD__) && !defined(__MidnightBSD__)
 #include <sys/prctl.h>
 #endif
 #include <pwd.h>
@@ -45,8 +25,10 @@
 #include <spa/support/cpu.h>
 #include <spa/support/i18n.h>
 
+#include <pipewire/cleanup.h>
 #include "pipewire.h"
 #include "private.h"
+#include "i18n.h"
 
 #define MAX_SUPPORT	32
 
@@ -64,7 +46,6 @@ struct plugin {
 	char *filename;
 	void *hnd;
 	spa_handle_factory_enum_func_t enum_func;
-	struct spa_list handles;
 	int ref;
 };
 
@@ -78,10 +59,10 @@ struct handle {
 
 struct registry {
 	struct spa_list plugins;
+	struct spa_list handles; /* all handles across all plugins by age (youngest first) */
 };
 
 struct support {
-	char **categories;
 	const char *plugin_dir;
 	const char *support_lib;
 	struct registry registry;
@@ -89,10 +70,11 @@ struct support {
 	struct spa_interface i18n_iface;
 	struct spa_support support[MAX_SUPPORT];
 	uint32_t n_support;
-	unsigned int initialized:1;
+	uint32_t init_count;
 	unsigned int in_valgrind:1;
 	unsigned int no_color:1;
 	unsigned int no_config:1;
+	unsigned int do_dlclose:1;
 };
 
 static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -149,7 +131,6 @@ open_plugin(struct registry *registry,
 	plugin->filename = strdup(filename);
 	plugin->hnd = hnd;
 	plugin->enum_func = enum_func;
-	spa_list_init(&plugin->handles);
 
 	spa_list_append(&registry->plugins, &plugin->link);
 
@@ -168,7 +149,7 @@ unref_plugin(struct plugin *plugin)
 	if (--plugin->ref == 0) {
 		spa_list_remove(&plugin->link);
 		pw_log_debug("unloaded plugin:'%s'", plugin->filename);
-		if (!global_support.in_valgrind)
+		if (global_support.do_dlclose)
 			dlclose(plugin->hnd);
 		free(plugin->filename);
 		free(plugin);
@@ -290,7 +271,7 @@ static struct spa_handle *load_spa_handle(const char *lib,
 	handle->ref = 1;
 	handle->plugin = plugin;
 	handle->factory_name = strdup(factory_name);
-	spa_list_append(&plugin->handles, &handle->link);
+	spa_list_prepend(&sup->registry.handles, &handle->link);
 
 	return &handle->handle;
 
@@ -321,15 +302,13 @@ struct spa_handle *pw_load_spa_handle(const char *lib,
 static struct handle *find_handle(struct spa_handle *handle)
 {
 	struct registry *registry = &global_support.registry;
-	struct plugin *p;
 	struct handle *h;
 
-	spa_list_for_each(p, &registry->plugins, link) {
-		spa_list_for_each(h, &p->handles, link) {
-			if (&h->handle == handle)
-				return h;
-		}
+	spa_list_for_each(h, &registry->handles, link) {
+		if (&h->handle == handle)
+			return h;
 	}
+
 	return NULL;
 }
 
@@ -413,11 +392,6 @@ static const char *i18n_ntext(void *object, const char *msgid, const char *msgid
 
 static void init_i18n(struct support *support)
 {
-	/* Load locale from the environment. */
-	setlocale(LC_ALL, "");
-	/* Set LC_NUMERIC to C so that floating point strings are consistently
-	 * formatted and parsed across locales. */
-	setlocale(LC_NUMERIC, "C");
 	bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR);
 	bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
 	pw_set_domain(GETTEXT_PACKAGE);
@@ -495,78 +469,74 @@ static struct spa_log *load_journal_logger(struct support *support,
 }
 #endif
 
-static enum spa_log_level
-parse_log_level(const char *str)
+static bool
+parse_log_level(const char *str, enum spa_log_level *l)
 {
-	enum spa_log_level l = SPA_LOG_LEVEL_NONE;
-	switch(str[0]) {
-		case 'X': l = SPA_LOG_LEVEL_NONE; break;
-		case 'E': l = SPA_LOG_LEVEL_ERROR; break;
-		case 'W': l = SPA_LOG_LEVEL_WARN; break;
-		case 'I': l = SPA_LOG_LEVEL_INFO; break;
-		case 'D': l = SPA_LOG_LEVEL_DEBUG; break;
-		case 'T': l = SPA_LOG_LEVEL_TRACE; break;
+	uint32_t lvl;
+	if (strlen(str) == 1) {
+		switch(str[0]) {
+		case 'X': lvl = SPA_LOG_LEVEL_NONE; break;
+		case 'E': lvl = SPA_LOG_LEVEL_ERROR; break;
+		case 'W': lvl = SPA_LOG_LEVEL_WARN; break;
+		case 'I': lvl = SPA_LOG_LEVEL_INFO; break;
+		case 'D': lvl = SPA_LOG_LEVEL_DEBUG; break;
+		case 'T': lvl = SPA_LOG_LEVEL_TRACE; break;
 		default:
-			  l = atoi(str);
-			  break;
+			  goto check_int;
+		}
+	} else {
+check_int:
+		  if (!spa_atou32(str, &lvl, 0))
+			  return false;
+		  if (lvl > SPA_LOG_LEVEL_TRACE)
+			  return false;
 	}
-	return l;
+	*l = lvl;
+	return true;
 }
 
 static char *
 parse_pw_debug_env(void)
 {
 	const char *str;
-	char **tokens;
 	int n_tokens;
-	size_t slen;
 	char json[1024] = {0};
 	char *pos = json;
 	char *end = pos + sizeof(json) - 1;
+	enum spa_log_level lvl;
 
 	str = getenv("PIPEWIRE_DEBUG");
 
-	if (!str || (slen = strlen(str)) == 0)
+	if (!str || !*str)
 		return NULL;
 
-	/* String format is PIPEWIRE_DEBUG=<glob>:<level>[,<glob>:<level>,...],
+	/* String format is PIPEWIRE_DEBUG=[<glob>:]<level>,...,
 	 * converted into [{ conn.* = 0}, {glob = level}, {glob = level}, ....] ,
 	 * with the connection namespace disabled by default.
 	 */
 	pos += spa_scnprintf(pos, end - pos, "[ { conn.* = %d },", SPA_LOG_LEVEL_NONE);
 
-	/* We only have single-digit log levels, so any single-character
-	 * string is of the form PIPEWIRE_DEBUG=<N> */
-	if (slen == 1) {
-		pw_log_set_level(parse_log_level(str));
-		goto out;
-	}
-
-	tokens = pw_split_strv(str, ",", INT_MAX, &n_tokens);
+	spa_auto(pw_strv) tokens = pw_split_strv(str, ",", INT_MAX, &n_tokens);
 	if (n_tokens > 0) {
 		int i;
 		for (i = 0; i < n_tokens; i++) {
 			int n_tok;
-			char **tok;
-			char *pattern;
-			enum spa_log_level lvl;
+			char *tok[2];
 
-			tok = pw_split_strv(tokens[i], ":", 2, &n_tok);
-			if (n_tok == 2) {
-				pattern = tok[0];
-				lvl = parse_log_level(tok[1]);
-
+			n_tok = pw_split_ip(tokens[i], ":", SPA_N_ELEMENTS(tok), tok);
+			if (n_tok == 2 && parse_log_level(tok[1], &lvl)) {
+				char *pattern = tok[0];
 				pos += spa_scnprintf(pos, end - pos, "{ %s = %d },",
 						     pattern, lvl);
+			} else if (n_tok == 1 && parse_log_level(tok[0], &lvl)) {
+				pw_log_set_level(lvl);
 			} else {
-				pw_log_warn("Ignoring invalid format in PIPEWIRE_DEBUG: '%s'\n", tokens[i]);
+				pw_log_warn("Ignoring invalid format in PIPEWIRE_DEBUG: '%s'",
+						tokens[i]);
 			}
-
-			pw_free_strv(tok);
 		}
 	}
-	pw_free_strv(tokens);
-out:
+
 	pos += spa_scnprintf(pos, end - pos, "]");
 	return strdup(json);
 }
@@ -579,8 +549,7 @@ out:
  * Initialize the PipeWire system, parse and modify any parameters given
  * by \a argc and \a argv and set up debugging.
  *
- * The environment variable \a PIPEWIRE_DEBUG
- *
+ * This function can be called multiple times.
  */
 SPA_EXPORT
 void pw_init(int *argc, char **argv[])
@@ -594,11 +563,17 @@ void pw_init(int *argc, char **argv[])
 	char level[32];
 
 	pthread_mutex_lock(&init_lock);
-	if (support->initialized)
+	if (support->init_count > 0)
 		goto done;
+
+	pw_random_init();
 
 	pthread_mutex_lock(&support_lock);
 	support->in_valgrind = RUNNING_ON_VALGRIND;
+
+	support->do_dlclose = true;
+	if ((str = getenv("PIPEWIRE_DLCLOSE")) != NULL)
+		support->do_dlclose = pw_properties_parse_bool(str);
 
 	if (getenv("NO_COLOR") != NULL)
 		support->no_color = true;
@@ -617,6 +592,7 @@ void pw_init(int *argc, char **argv[])
 	support->support_lib = str;
 
 	spa_list_init(&support->registry.plugins);
+	spa_list_init(&support->registry.handles);
 
 	if (pw_log_is_default()) {
 		char *patterns = NULL;
@@ -666,33 +642,48 @@ void pw_init(int *argc, char **argv[])
 	add_i18n(support);
 
 	pw_log_info("version %s", pw_get_library_version());
-	support->initialized = true;
 	pthread_mutex_unlock(&support_lock);
 done:
+	support->init_count++;
 	pthread_mutex_unlock(&init_lock);
 }
 
+/** Deinitialize PipeWire
+ *
+ * Deinitialize the PipeWire system and free up all resources allocated
+ * by pw_init().
+ *
+ * Before 0.3.49 this function can only be called once after which the pipewire
+ * library can not be used again. This is usually called by test programs to
+ * check for memory leaks.
+ *
+ * Since 0.3.49 this function must be paired with an equal amount of pw_init()
+ * calls to deinitialize the PipeWire library. The PipeWire library can be
+ * used again after being deinitialized with a new pw_init() call.
+ */
 SPA_EXPORT
 void pw_deinit(void)
 {
 	struct support *support = &global_support;
 	struct registry *registry = &support->registry;
-	struct plugin *p;
+	struct handle *h;
 
 	pthread_mutex_lock(&init_lock);
+	if (support->init_count == 0)
+		goto done;
+	if (--support->init_count > 0)
+		goto done;
+
 	pthread_mutex_lock(&support_lock);
 	pw_log_set(NULL);
-	spa_list_consume(p, &registry->plugins, link) {
-		struct handle *h;
-		p->ref++;
-		spa_list_consume(h, &p->handles, link)
-			unref_handle(h);
-		unref_plugin(p);
-	}
-	pw_free_strv(support->categories);
+
+	spa_list_consume(h, &registry->handles, link)
+		unref_handle(h);
+
 	free(support->i18n_domain);
 	spa_zero(global_support);
 	pthread_mutex_unlock(&support_lock);
+done:
 	pthread_mutex_unlock(&init_lock);
 
 }
@@ -704,21 +695,13 @@ void pw_deinit(void)
  *
  * Debugging categories can be enabled by using the PIPEWIRE_DEBUG
  * environment variable
- *
  */
 SPA_EXPORT
 bool pw_debug_is_category_enabled(const char *name)
 {
-	int i;
-
-	if (global_support.categories == NULL)
-		return false;
-
-	for (i = 0; global_support.categories[i]; i++) {
-		if (spa_streq(global_support.categories[i], name))
-			return true;
-	}
-	return false;
+	struct spa_log_topic t = SPA_LOG_TOPIC(0, name);
+	PW_LOG_TOPIC_INIT(&t);
+	return t.has_custom_level;
 }
 
 /** Get the application name */
@@ -734,7 +717,7 @@ static void init_prgname(void)
 	static char name[PATH_MAX];
 
 	spa_memzero(name, sizeof(name));
-#if defined(__linux__) || defined(__FreeBSD_kernel__)
+#if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__MidnightBSD_kernel__)
 	{
 		if (readlink("/proc/self/exe", name, sizeof(name)-1) > 0) {
 			prgname = strrchr(name, '/') + 1;
@@ -742,7 +725,7 @@ static void init_prgname(void)
 		}
 	}
 #endif
-#if defined __FreeBSD__
+#if defined __FreeBSD__ || defined(__MidnightBSD__)
 	{
 		ssize_t len;
 
@@ -752,7 +735,7 @@ static void init_prgname(void)
 		}
 	}
 #endif
-#ifndef __FreeBSD__
+#if !defined(__FreeBSD__) && !defined(__MidnightBSD__)
 	{
 		if (prctl(PR_GET_NAME, (unsigned long) name, 0, 0, 0) == 0) {
 			prgname = name;
@@ -814,8 +797,9 @@ bool pw_check_option(const char *option, const char *value)
 		return global_support.no_color == spa_atob(value);
 	else if (spa_streq(option, "no-config"))
 		return global_support.no_config == spa_atob(value);
-	else
-		return false;
+	else if (spa_streq(option, "do-dlclose"))
+		return global_support.do_dlclose == spa_atob(value);
+	return false;
 }
 
 /** Get the client name
@@ -829,15 +813,11 @@ const char *pw_get_client_name(void)
 	const char *cc;
 	static char cname[256];
 
-	if ((cc = pw_get_application_name()))
+	if ((cc = pw_get_application_name()) || (cc = pw_get_prgname()))
 		return cc;
-	else if ((cc = pw_get_prgname()))
-		return cc;
-	else {
-		if (snprintf(cname, sizeof(cname), "pipewire-pid-%zd", (size_t) getpid()) < 0)
-			return NULL;
-		return cname;
-	}
+	else if (snprintf(cname, sizeof(cname), "pipewire-pid-%zd", (size_t) getpid()) < 0)
+		return NULL;
+	return cname;
 }
 
 /** Reverse the direction */

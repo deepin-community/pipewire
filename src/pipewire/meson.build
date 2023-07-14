@@ -91,9 +91,10 @@ configure_file(input : 'version.h.in',
 install_headers(pipewire_headers, subdir : pipewire_headers_dir)
 
 libpipewire_c_args = [
+  '-DOLD_MEDIA_SESSION_WORKAROUND=1'
 ]
 
-if build_machine.system() != 'freebsd'
+if host_machine.system() != 'freebsd' and host_machine.system() != 'midnightbsd'
   libpipewire_c_args += [
     '-D_POSIX_C_SOURCE'
   ]
@@ -103,9 +104,9 @@ libpipewire = shared_library(pipewire_name, pipewire_sources,
   version : libversion,
   soversion : soversion,
   c_args : libpipewire_c_args,
-  include_directories : [pipewire_inc, configinc, spa_inc, includes_inc],
+  include_directories : [pipewire_inc, configinc, includes_inc],
   install : true,
-  dependencies : [dl_lib, mathlib, pthread_lib, libintl_dep, atomic_dep, ],
+  dependencies : [spa_dep, dl_lib, mathlib, pthread_lib, libintl_dep, atomic_dep, ],
 )
 
 pipewire_dep = declare_dependency(link_with : libpipewire,

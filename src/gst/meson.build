@@ -8,7 +8,7 @@ pipewire_gst_sources = [
   'gstpipewiresrc.c',
 ]
 
-if not get_option('gstreamer-device-provider').disabled()
+if get_option('gstreamer-device-provider').allowed()
   pipewire_gst_sources += [ 'gstpipewiredeviceprovider.c' ]
 endif
 
@@ -24,8 +24,8 @@ pipewire_gst_headers = [
 
 pipewire_gst = shared_library('gstpipewire',
     pipewire_gst_sources,
-    include_directories : [configinc, spa_inc],
-    dependencies : [gst_dep, pipewire_dep],
+    include_directories : [ configinc ],
+    dependencies : [ spa_dep, gst_dep, pipewire_dep ],
     install : true,
     install_dir : '@0@/gstreamer-1.0'.format(get_option('libdir')),
 )

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 
@@ -31,6 +11,9 @@
 #include <pipewire/impl.h>
 
 #include <pipewire/extensions/protocol-native.h>
+
+#define MAX_DICT	1024
+#define MAX_PARAM_INFO	128
 
 static inline void push_item(struct spa_pod_builder *b, const struct spa_dict_item *item)
 {
@@ -55,16 +38,41 @@ static inline int parse_item(struct spa_pod_parser *prs, struct spa_dict_item *i
 	return 0;
 }
 
-static inline int parse_dict(struct spa_pod_parser *prs, struct spa_dict *dict)
-{
-	uint32_t i;
-	int res;
-	for (i = 0; i < dict->n_items; i++) {
-		if ((res = parse_item(prs, (struct spa_dict_item *) &dict->items[i])) < 0)
-			return res;
-	}
-	return 0;
-}
+#define parse_dict(prs,d)									\
+do {												\
+	uint32_t i;										\
+	if (spa_pod_parser_get(prs,								\
+			 SPA_POD_Int(&(d)->n_items), NULL) < 0)					\
+		return -EINVAL;									\
+	if ((d)->n_items > 0) {									\
+		if ((d)->n_items > MAX_DICT) 							\
+			return -ENOSPC;								\
+		(d)->items = alloca((d)->n_items * sizeof(struct spa_dict_item));		\
+		for (i = 0; i < (d)->n_items; i++) {						\
+			if (parse_item(prs, (struct spa_dict_item *) &(d)->items[i]) < 0)	\
+				return -EINVAL;							\
+		}										\
+	}											\
+} while(0)
+
+#define parse_param_info(prs,n_params,params)							\
+do {												\
+	uint32_t i;										\
+	if (spa_pod_parser_get(prs,								\
+			SPA_POD_Int(&(n_params)), NULL) < 0)					\
+		return -EINVAL;									\
+	if (n_params > 0) {									\
+		if (n_params > MAX_PARAM_INFO)							\
+			return -ENOSPC;								\
+		params = alloca(n_params * sizeof(struct spa_param_info));			\
+		for (i = 0; i < n_params; i++) {						\
+			if (spa_pod_parser_get(prs,						\
+					SPA_POD_Id(&(params[i]).id),				\
+					SPA_POD_Int(&(params[i]).flags), NULL) < 0)		\
+				return -EINVAL;							\
+		}										\
+	}											\
+} while(0)
 
 static int device_marshal_add_listener(void *object,
 			struct spa_hook *listener,
@@ -190,10 +198,10 @@ static int device_demarshal_set_param(void *object, const struct pw_protocol_nat
 	return 0;
 }
 
-static void device_marshal_info(void *object,
+static void device_marshal_info(void *data,
 		const struct spa_device_info *info)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f[2];
 	uint32_t i, n_items;
@@ -234,15 +242,14 @@ static void device_marshal_info(void *object,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static int device_demarshal_info(void *object,
+static int device_demarshal_info(void *data,
 		const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_pod *ipod;
 	struct spa_device_info info = SPA_DEVICE_INFO_INIT(), *infop;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
-	uint32_t i;
 
 	spa_pod_parser_init(&prs, msg->data, msg->size);
 
@@ -259,34 +266,18 @@ static int device_demarshal_info(void *object,
 		if (spa_pod_parser_push_struct(&p2, &f2) < 0 ||
 		    spa_pod_parser_get(&p2,
 				SPA_POD_Long(&info.change_mask),
-				SPA_POD_Long(&info.flags),
-				SPA_POD_Int(&props.n_items), NULL) < 0)
+				SPA_POD_Long(&info.flags), NULL) < 0)
 			return -EINVAL;
 
 		info.change_mask &= SPA_DEVICE_CHANGE_MASK_FLAGS |
 				SPA_DEVICE_CHANGE_MASK_PROPS |
 				SPA_DEVICE_CHANGE_MASK_PARAMS;
 
-		if (props.n_items > 0) {
+		parse_dict(&p2, &props);
+		if (props.n_items > 0)
 			info.props = &props;
 
-			props.items = alloca(props.n_items * sizeof(struct spa_dict_item));
-			if (parse_dict(&p2, &props) < 0)
-				return -EINVAL;
-		}
-		if (spa_pod_parser_get(&p2,
-				SPA_POD_Int(&info.n_params), NULL) < 0)
-			return -EINVAL;
-
-		if (info.n_params > 0) {
-			info.params = alloca(info.n_params * sizeof(struct spa_param_info));
-			for (i = 0; i < info.n_params; i++) {
-				if (spa_pod_parser_get(&p2,
-						SPA_POD_Id(&info.params[i].id),
-						SPA_POD_Int(&info.params[i].flags), NULL) < 0)
-					return -EINVAL;
-			}
-		}
+		parse_param_info(&p2, info.n_params, info.params);
 	}
 	else {
 		infop = NULL;
@@ -295,10 +286,10 @@ static int device_demarshal_info(void *object,
 	return 0;
 }
 
-static void device_marshal_result(void *object,
+static void device_marshal_result(void *data,
 		int seq, int res, uint32_t type, const void *result)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f[2];
 
@@ -331,10 +322,10 @@ static void device_marshal_result(void *object,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static int device_demarshal_result(void *object,
+static int device_demarshal_result(void *data,
 		const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f[1];
 	int seq, res;
@@ -373,9 +364,9 @@ static int device_demarshal_result(void *object,
 	return 0;
 }
 
-static void device_marshal_event(void *object, const struct spa_event *event)
+static void device_marshal_event(void *data, const struct spa_event *event)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy, SPA_DEVICE_EVENT_EVENT, NULL);
@@ -386,10 +377,10 @@ static void device_marshal_event(void *object, const struct spa_event *event)
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static int device_demarshal_event(void *object,
+static int device_demarshal_event(void *data,
 		const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_event *event;
 
@@ -402,10 +393,10 @@ static int device_demarshal_event(void *object,
 	return 0;
 }
 
-static void device_marshal_object_info(void *object, uint32_t id,
+static void device_marshal_object_info(void *data, uint32_t id,
                 const struct spa_device_object_info *info)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f[2];
 	uint32_t i, n_items;
@@ -441,10 +432,10 @@ static void device_marshal_object_info(void *object, uint32_t id,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static int device_demarshal_object_info(void *object,
+static int device_demarshal_object_info(void *data,
 		const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_device_object_info info = SPA_DEVICE_OBJECT_INFO_INIT(), *infop;
 	struct spa_pod *ipod;
@@ -467,20 +458,15 @@ static int device_demarshal_object_info(void *object,
 		    spa_pod_parser_get(&p2,
 				SPA_POD_String(&info.type),
 				SPA_POD_Long(&info.change_mask),
-				SPA_POD_Long(&info.flags),
-				SPA_POD_Int(&props.n_items), NULL) < 0)
+				SPA_POD_Long(&info.flags), NULL) < 0)
 			return -EINVAL;
 
 		info.change_mask &= SPA_DEVICE_OBJECT_CHANGE_MASK_FLAGS |
 				SPA_DEVICE_CHANGE_MASK_PROPS;
 
-		if (props.n_items > 0) {
+		parse_dict(&p2, &props);
+		if (props.n_items > 0)
 			info.props = &props;
-
-			props.items = alloca(props.n_items * sizeof(struct spa_dict_item));
-			if (parse_dict(&p2, &props) < 0)
-				return -EINVAL;
-		}
 	} else {
 		infop = NULL;
 	}

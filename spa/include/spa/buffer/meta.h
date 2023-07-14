@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_META_H
 #define SPA_META_H
@@ -39,16 +19,17 @@ extern "C" {
 
 enum spa_meta_type {
 	SPA_META_Invalid,
-	SPA_META_Header,	/**< struct spa_meta_header */
-	SPA_META_VideoCrop,	/**< struct spa_meta_region with cropping data */
-	SPA_META_VideoDamage,	/**< array of struct spa_meta_region with damage, where an invalid entry or end-of-array marks the end. */
-	SPA_META_Bitmap,	/**< struct spa_meta_bitmap */
-	SPA_META_Cursor,	/**< struct spa_meta_cursor */
-	SPA_META_Control,	/**< metadata contains a spa_meta_control
-				  *  associated with the data */
-	SPA_META_Busy,		/**< don't write to buffer when count > 0 */
+	SPA_META_Header,		/**< struct spa_meta_header */
+	SPA_META_VideoCrop,		/**< struct spa_meta_region with cropping data */
+	SPA_META_VideoDamage,		/**< array of struct spa_meta_region with damage, where an invalid entry or end-of-array marks the end. */
+	SPA_META_Bitmap,		/**< struct spa_meta_bitmap */
+	SPA_META_Cursor,		/**< struct spa_meta_cursor */
+	SPA_META_Control,		/**< metadata contains a spa_meta_control
+					  *  associated with the data */
+	SPA_META_Busy,			/**< don't write to buffer when count > 0 */
+	SPA_META_VideoTransform,	/**< struct spa_meta_transform */
 
-	_SPA_META_LAST,		/**< not part of ABI/API */
+	_SPA_META_LAST,			/**< not part of ABI/API */
 };
 
 /**
@@ -64,9 +45,15 @@ struct spa_meta {
 	void *data;		/**< pointer to metadata */
 };
 
-#define spa_meta_first(m)	((m)->data)
-#define spa_meta_end(m)		SPA_PTROFF((m)->data,(m)->size,void)
-#define spa_meta_check(p,m)	(SPA_PTROFF(p,sizeof(*p),void) <= spa_meta_end(m))
+static inline void *spa_meta_first(const struct spa_meta *m) {
+	return m->data;
+}
+#define spa_meta_first spa_meta_first
+static inline void *spa_meta_end(const struct spa_meta *m) {
+	return SPA_PTROFF(m->data,m->size,void);
+}
+#define spa_meta_end spa_meta_end
+#define spa_meta_check(p,m)	(SPA_PTROFF(p,sizeof(*(p)),void) <= spa_meta_end(m))
 
 /**
  * Describes essential buffer header metadata such as flags and
@@ -81,7 +68,7 @@ struct spa_meta_header {
 #define SPA_META_HEADER_FLAG_DELTA_UNIT	(1 << 5)	/**< cannot be decoded independently */
 	uint32_t flags;				/**< flags */
 	uint32_t offset;			/**< offset in current cycle */
-	int64_t pts;				/**< presentation timestamp */
+	int64_t pts;				/**< presentation timestamp in nanoseconds */
 	int64_t dts_offset;			/**< decoding timestamp as a difference with pts */
 	uint64_t seq;				/**< sequence number, increments with a
 						  *  media specific frequency */
@@ -92,11 +79,14 @@ struct spa_meta_region {
 	struct spa_region region;
 };
 
-#define spa_meta_region_is_valid(m)	((m)->region.size.width != 0 && (m)->region.size.height != 0)
+static inline bool spa_meta_region_is_valid(const struct spa_meta_region *m) {
+	return m->region.size.width != 0 && m->region.size.height != 0;
+}
+#define spa_meta_region_is_valid spa_meta_region_is_valid
 
 /** iterate all the items in a metadata */
 #define spa_meta_for_each(pos,meta)					\
-	for (pos = (__typeof(pos))spa_meta_first(meta);			\
+	for ((pos) = (__typeof(pos))spa_meta_first(meta);			\
 	    spa_meta_check(pos, meta);					\
             (pos)++)
 
@@ -150,6 +140,25 @@ struct spa_meta_control {
 struct spa_meta_busy {
 	uint32_t flags;
 	uint32_t count;			/**< number of users busy with the buffer */
+};
+
+enum spa_meta_videotransform_value {
+	SPA_META_TRANSFORMATION_None = 0,	/**< no transform */
+	SPA_META_TRANSFORMATION_90,		/**< 90 degree counter-clockwise */
+	SPA_META_TRANSFORMATION_180,		/**< 180 degree counter-clockwise */
+	SPA_META_TRANSFORMATION_270,		/**< 270 degree counter-clockwise */
+	SPA_META_TRANSFORMATION_Flipped,	/**< 180 degree flipped around the vertical axis. Equivalent
+						  * to a reflexion through the vertical line splitting the
+						  * bufffer in two equal sized parts */
+	SPA_META_TRANSFORMATION_Flipped90,	/**< flip then rotate around 90 degree counter-clockwise */
+	SPA_META_TRANSFORMATION_Flipped180,	/**< flip then rotate around 180 degree counter-clockwise */
+	SPA_META_TRANSFORMATION_Flipped270,	/**< flip then rotate around 270 degree counter-clockwise */
+};
+
+/** a transformation of the buffer */
+struct spa_meta_videotransform {
+	uint32_t transform;			/**< orientation transformation that was applied to the buffer,
+						  *  one of enum spa_meta_videotransform_value */
 };
 
 /**

@@ -1,6 +1,6 @@
 /** \page page_pipewire PipeWire Design
 
-## Internals
+# Internals
 
 - \subpage page_design
 - \subpage page_audio
@@ -10,14 +10,18 @@
 - \subpage page_objects_design
 - \subpage page_library
 - \subpage page_dma_buf
+- \subpage page_scheduling
+- \subpage page_native_protocol
 
-## Components
+
+# Components
 
 - \subpage page_daemon
 - \subpage page_tools
 - \subpage page_session_manager
 
-## Backends
+
+# Backends
 
 - \subpage page_pulseaudio
 

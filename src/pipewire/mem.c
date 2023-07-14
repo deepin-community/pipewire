@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -33,6 +13,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 
 #include <spa/utils/list.h>
 #include <spa/buffer/buffer.h>
@@ -44,7 +25,7 @@
 PW_LOG_TOPIC_EXTERN(log_mem);
 #define PW_LOG_TOPIC_DEFAULT log_mem
 
-#if !defined(__FreeBSD__) && !defined(HAVE_MEMFD_CREATE)
+#if !defined(__FreeBSD__) && !defined(__MidnightBSD__) && !defined(HAVE_MEMFD_CREATE)
 /*
  * No glibc wrappers exist for memfd_create(2), so provide our own.
  *
@@ -61,7 +42,7 @@ static inline int memfd_create(const char *name, unsigned int flags)
 #define HAVE_MEMFD_CREATE 1
 #endif
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
 #define MAP_LOCKED 0
 #endif
 
@@ -263,11 +244,11 @@ static struct mapping * memblock_find_mapping(struct memblock *b,
 	struct pw_mempool *pool = b->this.pool;
 
 	spa_list_for_each(m, &b->mappings, link) {
-		pw_log_debug("%p: check %p offset:(%d <= %d) end:(%d >= %d)",
+		pw_log_debug("%p: check %p offset:(%u <= %u) end:(%u >= %u)",
 				pool, m, m->offset, offset, m->offset + m->size,
 				offset + size);
 		if (m->offset <= offset && (m->offset + m->size) >= (offset + size)) {
-			pw_log_debug("%p: found %p id:%d fd:%d offs:%d size:%d ref:%d",
+			pw_log_debug("%p: found %p id:%u fd:%d offs:%u size:%u ref:%d",
 					pool, &b->this, b->this.id, b->this.fd,
 					offset, size, b->this.ref);
 			return m;
@@ -324,7 +305,7 @@ static struct mapping * memblock_map(struct memblock *b,
 	b->this.ref++;
 	spa_list_append(&b->mappings, &m->link);
 
-        pw_log_debug("%p: block:%p fd:%d map:%p ptr:%p (%d %d) block-ref:%d", p, &b->this,
+        pw_log_debug("%p: block:%p fd:%d map:%p ptr:%p (%u %u) block-ref:%d", p, &b->this,
 			b->this.fd, m, m->ptr, offset, size, b->this.ref);
 
 	return m;
@@ -335,7 +316,7 @@ static void mapping_free(struct mapping *m)
 	struct memblock *b = m->block;
 	struct mempool *p = SPA_CONTAINER_OF(b->this.pool, struct mempool, this);
 
-        pw_log_debug("%p: mapping:%p block:%p fd:%d ptr:%p size:%d block-ref:%d",
+        pw_log_debug("%p: mapping:%p block:%p fd:%d ptr:%p size:%u block-ref:%d",
 			p, m, b, b->this.fd, m->ptr, m->size, b->this.ref);
 
 	if (m->do_unmap)
@@ -348,7 +329,7 @@ static void mapping_unmap(struct mapping *m)
 {
 	struct memblock *b = m->block;
 	struct mempool *p = SPA_CONTAINER_OF(b->this.pool, struct mempool, this);
-        pw_log_debug("%p: mapping:%p block:%p fd:%d ptr:%p size:%d block-ref:%d",
+        pw_log_debug("%p: mapping:%p block:%p fd:%d ptr:%p size:%u block-ref:%d",
 			p, m, b, b->this.fd, m->ptr, m->size, b->this.ref);
 	mapping_free(m);
 	pw_memblock_unref(&b->this);
@@ -363,6 +344,23 @@ struct pw_memmap * pw_memblock_map(struct pw_memblock *block,
 	struct mapping *m;
 	struct memmap *mm;
 	struct pw_map_range range;
+	struct stat sb;
+
+	if (fstat(b->this.fd, &sb) != 0)
+		return NULL;
+
+	const bool valid = (int64_t) offset + size <= (int64_t) sb.st_size;
+	pw_log(valid ? SPA_LOG_LEVEL_DEBUG : SPA_LOG_LEVEL_ERROR,
+		"%p: block %p[%u] mapping %" PRIu32 "+%" PRIu32 " of file=%d/%" PRIu64 ":%" PRIu64 " with size=%" PRId64,
+		block->pool, block, block->id,
+		offset, size,
+		block->fd, (uint64_t) sb.st_dev, (uint64_t) sb.st_ino,
+		(int64_t) sb.st_size);
+
+	if (!valid) {
+		errno = -EINVAL;
+		return NULL;
+	}
 
 	pw_map_range_init(&range, offset, size, p->pagesize);
 
@@ -387,12 +385,12 @@ struct pw_memmap * pw_memblock_map(struct pw_memblock *block,
 	mm->this.size = size;
 	mm->this.ptr = SPA_PTROFF(m->ptr, range.start, void);
 
-        pw_log_debug("%p: map:%p block:%p fd:%d ptr:%p (%d %d) mapping:%p ref:%d", p,
+        pw_log_debug("%p: map:%p block:%p fd:%d ptr:%p (%u %u) mapping:%p ref:%d", p,
 			&mm->this, b, b->this.fd, mm->this.ptr, offset, size, m, m->ref);
 
 	if (tag) {
 		memcpy(mm->this.tag, tag, sizeof(mm->this.tag));
-		pw_log_debug("%p: tag:%d:%d:%d:%d:%d", p,
+		pw_log_debug("%p: tag:%u:%u:%u:%u:%u", p,
 			tag[0], tag[1], tag[2], tag[3], tag[4]);
 	}
 
@@ -485,13 +483,18 @@ struct pw_memblock * pw_mempool_alloc(struct pw_mempool *pool, enum pw_memblock_
 	spa_list_init(&b->memmaps);
 
 #ifdef HAVE_MEMFD_CREATE
-	b->this.fd = memfd_create("pipewire-memfd", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	char name[128];
+	snprintf(name, sizeof(name),
+		 "pipewire-memfd:flags=0x%08x,type=%" PRIu32 ",size=%zu",
+		 (unsigned int) flags, type, size);
+
+	b->this.fd = memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
 	if (b->this.fd == -1) {
 		res = -errno;
 		pw_log_error("%p: Failed to create memfd: %m", pool);
 		goto error_free;
 	}
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__MidnightBSD__)
 	b->this.fd = shm_open(SHM_ANON, O_CREAT | O_RDWR | O_CLOEXEC, 0);
 	if (b->this.fd == -1) {
 		res = -errno;
@@ -499,7 +502,11 @@ struct pw_memblock * pw_mempool_alloc(struct pw_mempool *pool, enum pw_memblock_
 		goto error_free;
 	}
 #else
-	char filename[] = "/dev/shm/pipewire-tmpfile.XXXXXX";
+	char filename[128];
+	snprintf(filename, sizeof(filename),
+		 "/dev/shm/pipewire-tmpfile:flags=0x%08x,type=%" PRIu32 ",size=%zu:XXXXXX",
+		 (unsigned int) flags, type, size);
+
 	b->this.fd = mkostemp(filename, O_CLOEXEC);
 	if (b->this.fd == -1) {
 		res = -errno;
@@ -508,6 +515,7 @@ struct pw_memblock * pw_mempool_alloc(struct pw_mempool *pool, enum pw_memblock_
 	}
 	unlink(filename);
 #endif
+	pw_log_debug("%p: new fd:%d", pool, b->this.fd);
 
 	if (ftruncate(b->this.fd, size) < 0) {
 		res = -errno;
@@ -535,7 +543,8 @@ struct pw_memblock * pw_mempool_alloc(struct pw_mempool *pool, enum pw_memblock_
 
 	b->this.id = pw_map_insert_new(&impl->map, b);
 	spa_list_append(&impl->blocks, &b->link);
-	pw_log_debug("%p: block:%p id:%d type:%u size:%zd", pool, &b->this, b->this.id, type, size);
+	pw_log_debug("%p: block:%p id:%d type:%u size:%zu", pool,
+			&b->this, b->this.id, type, size);
 
 	if (!SPA_FLAG_IS_SET(flags, PW_MEMBLOCK_FLAG_DONT_NOTIFY))
 		pw_mempool_emit_added(impl, &b->this);
@@ -543,6 +552,7 @@ struct pw_memblock * pw_mempool_alloc(struct pw_mempool *pool, enum pw_memblock_
 	return &b->this;
 
 error_close:
+	pw_log_debug("%p: close fd:%d", pool, b->this.fd);
 	close(b->this.fd);
 error_free:
 	free(b);
@@ -557,7 +567,7 @@ static struct memblock * mempool_find_fd(struct pw_mempool *pool, int fd)
 
 	spa_list_for_each(b, &impl->blocks, link) {
 		if (fd == b->this.fd) {
-			pw_log_debug("%p: found %p id:%d fd:%d ref:%d",
+			pw_log_debug("%p: found %p id:%u fd:%d ref:%d",
 					pool, &b->this, b->this.id, fd, b->this.ref);
 			return b;
 		}
@@ -676,7 +686,7 @@ int pw_mempool_remove_id(struct pw_mempool *pool, uint32_t id)
 	if (b == NULL)
 		return -ENOENT;
 
-	pw_log_debug("%p: block:%p id:%d fd:%d ref:%d",
+	pw_log_debug("%p: block:%p id:%u fd:%d ref:%d",
 			pool, b, id, b->this.fd, b->this.ref);
 
 	b->this.id = SPA_ID_INVALID;
@@ -739,7 +749,7 @@ struct pw_memblock * pw_mempool_find_ptr(struct pw_mempool *pool, const void *pt
 	spa_list_for_each(b, &impl->blocks, link) {
 		spa_list_for_each(m, &b->mappings, link) {
 			if (ptr >= m->ptr && ptr < SPA_PTROFF(m->ptr, m->size, void)) {
-				pw_log_debug("%p: block:%p id:%d for %p", pool,
+				pw_log_debug("%p: block:%p id:%u for %p", pool,
 						b, b->this.id, ptr);
 				return &b->this;
 			}
@@ -755,7 +765,7 @@ struct pw_memblock * pw_mempool_find_id(struct pw_mempool *pool, uint32_t id)
 	struct memblock *b;
 
 	b = pw_map_lookup(&impl->map, id);
-	pw_log_debug("%p: block:%p for %d", pool, b, id);
+	pw_log_debug("%p: block:%p for %u", pool, b, id);
 	if (b == NULL)
 		return NULL;
 
@@ -781,7 +791,7 @@ struct pw_memmap * pw_mempool_find_tag(struct pw_mempool *pool, uint32_t tag[5],
 	struct memblock *b;
 	struct memmap *mm;
 
-	pw_log_debug("%p: find tag %d:%d:%d:%d:%d size:%zd", pool,
+	pw_log_debug("%p: find tag %u:%u:%u:%u:%u size:%zu", pool,
 			tag[0], tag[1], tag[2], tag[3], tag[4], size);
 
 	spa_list_for_each(b, &impl->blocks, link) {

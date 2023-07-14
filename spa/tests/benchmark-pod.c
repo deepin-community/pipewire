@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -37,7 +17,7 @@
 
 #define MAX_COUNT 10000000
 
-static void test_builder()
+static void test_builder(void)
 {
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = { NULL, };
@@ -90,7 +70,7 @@ static void test_builder()
 			t2 - t1, count, count * (uint64_t)SPA_NSEC_PER_SEC / (t2 - t1));
 }
 
-static void test_builder2()
+static void test_builder2(void)
 {
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = { NULL, };
@@ -131,7 +111,7 @@ static void test_builder2()
 			t2 - t1, count, count * (uint64_t)SPA_NSEC_PER_SEC / (t2 - t1));
 }
 
-static void test_parse()
+static void test_parse(void)
 {
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = { NULL, };
@@ -216,7 +196,7 @@ static void test_parse()
 			t2 - t1, count, count * (uint64_t)SPA_NSEC_PER_SEC / (t2 - t1));
 }
 
-static void test_parser()
+static void test_parser(void)
 {
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = { NULL, };

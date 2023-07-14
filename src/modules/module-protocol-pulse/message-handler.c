@@ -1,4 +1,6 @@
-#define NAME "pulse-server"
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Pauli Virtanen */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdint.h>
 
@@ -44,7 +46,7 @@ static int bluez_card_object_message_handler(struct pw_manager *m, struct pw_man
 			return -EINVAL;
 
 		spa_json_init(&it, params, strlen(params));
-		if (spa_json_get_string(&it, codec, sizeof(codec)-1) <= 0)
+		if (spa_json_get_string(&it, codec, sizeof(codec)) <= 0)
 			return -EINVAL;
 
 		codec_id = atoi(codec);
@@ -67,7 +69,7 @@ static int bluez_card_object_message_handler(struct pw_manager *m, struct pw_man
 
 		r = open_memstream(response, &size);
 		if (r == NULL)
-			return -ENOMEM;
+			return -errno;
 
 		fputc('[', r);
 		for (i = 0; i < n_codecs; ++i) {
@@ -102,7 +104,7 @@ static int core_object_message_handler(struct pw_manager *m, struct pw_manager_o
 
 		r = open_memstream(response, &size);
 		if (r == NULL)
-			return -ENOMEM;
+			return -errno;
 
 		fputc('[', r);
 		spa_list_for_each(o, &m->object_list, link) {
@@ -124,7 +126,7 @@ void register_object_message_handlers(struct pw_manager_object *o)
 {
 	const char *str;
 
-	if (o->id == 0) {
+	if (o->id == PW_ID_CORE) {
 		free(o->message_object_path);
 		o->message_object_path = strdup("/core");
 		o->message_handler = core_object_message_handler;

@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2020 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <unistd.h>
 
@@ -101,14 +81,14 @@ endpoint_enum_params (void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_volume),
-				SPA_PROP_INFO_name, SPA_POD_String("volume"),
+				SPA_PROP_INFO_description, SPA_POD_String("volume"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 1.0));
 			break;
 		case 1:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_mute),
-				SPA_PROP_INFO_name, SPA_POD_String("mute"),
+				SPA_PROP_INFO_description, SPA_POD_String("mute"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(p->mute));
 			break;
 		default:
@@ -267,9 +247,9 @@ struct test_endpoint_data
 };
 
 static void
-endpoint_event_info(void *object, const struct pw_endpoint_info *info)
+endpoint_event_info(void *data, const struct pw_endpoint_info *info)
 {
-	struct test_endpoint_data *d = object;
+	struct test_endpoint_data *d = data;
 	const char *val;
 
 	spa_assert_se(info);
@@ -299,11 +279,11 @@ endpoint_event_info(void *object, const struct pw_endpoint_info *info)
 }
 
 static void
-endpoint_event_param(void *object, int seq,
+endpoint_event_param(void *data, int seq,
 		uint32_t id, uint32_t index, uint32_t next,
 		const struct spa_pod *param)
 {
-	struct test_endpoint_data *d = object;
+	struct test_endpoint_data *d = data;
 
 	if (id == SPA_PARAM_Props) {
 		struct props *p = &d->props;
@@ -326,9 +306,9 @@ static const struct pw_endpoint_events endpoint_events = {
 };
 
 static void
-endpoint_proxy_destroy(void *object)
+endpoint_proxy_destroy(void *data)
 {
-	struct test_endpoint_data *d = object;
+	struct test_endpoint_data *d = data;
 	d->bound_proxy = NULL;
 	pw_main_loop_quit(d->loop);
 }
@@ -339,11 +319,11 @@ static const struct pw_proxy_events proxy_events = {
 };
 
 static void
-test_endpoint_global(void *object, uint32_t id,
+test_endpoint_global(void *data, uint32_t id,
 		uint32_t permissions, const char *type, uint32_t version,
 		const struct spa_dict *props)
 {
-	struct test_endpoint_data *d = object;
+	struct test_endpoint_data *d = data;
 	const char *val;
 
 	if (!spa_streq(type, PW_TYPE_INTERFACE_Endpoint))
@@ -366,9 +346,9 @@ test_endpoint_global(void *object, uint32_t id,
 }
 
 static void
-test_endpoint_global_remove(void *object, uint32_t id)
+test_endpoint_global_remove(void *data, uint32_t id)
 {
-	struct test_endpoint_data *d = object;
+	struct test_endpoint_data *d = data;
 	if (d->bound_proxy && id == pw_proxy_get_bound_id(d->bound_proxy))
 		pw_proxy_destroy(d->bound_proxy);
 }

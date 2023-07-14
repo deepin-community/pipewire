@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2016 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2016 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef __PIPEWIRE_EXT_CLIENT_NODE0_H__
 #define __PIPEWIRE_EXT_CLIENT_NODE0_H__
@@ -140,9 +120,9 @@ struct pw_client_node0_message_port_reuse_buffer {
 
 #define PW_CLIENT_NODE0_MESSAGE_TYPE(message)	(((struct pw_client_node0_message*)(message))->body.type.value)
 
-#define PW_CLIENT_NODE0_MESSAGE_INIT(message) (struct pw_client_node0_message)			\
+#define PW_CLIENT_NODE0_MESSAGE_INIT(message) ((struct pw_client_node0_message)			\
 	{ { { sizeof(struct pw_client_node0_message_body), SPA_TYPE_Struct } },			\
-	  { SPA_POD_INIT_Int(message) } }
+	  { SPA_POD_INIT_Int(message) } })
 
 #define PW_CLIENT_NODE0_MESSAGE_INIT_FULL(type,size,message,...) (type)				\
 	{ { { size, SPA_TYPE_Struct } },							\
@@ -259,7 +239,7 @@ struct pw_client_node0_events {
 	 * \param memfd the fd of the memory
 	 * \param flags flags for the \a memfd
 	 */
-	void (*add_mem) (void *object,
+	void (*add_mem) (void *data,
 			 uint32_t mem_id,
 			 uint32_t type,
 			 int memfd,
@@ -275,7 +255,7 @@ struct pw_client_node0_events {
 	 * \param writefd fd for signal data can be written
 	 * \param transport the shared transport area
 	 */
-	void (*transport) (void *object,
+	void (*transport) (void *data,
 			   uint32_t node_id,
 			   int readfd,
 			   int writefd,
@@ -291,20 +271,20 @@ struct pw_client_node0_events {
 	 * \param flags parameter flags
 	 * \param param the param to set
 	 */
-	void (*set_param) (void *object, uint32_t seq,
+	void (*set_param) (void *data, uint32_t seq,
 			   uint32_t id, uint32_t flags,
 			   const struct spa_pod *param);
 	/**
 	 * Receive an event from the client node
 	 * \param event the received event */
-	void (*event) (void *object, const struct spa_event *event);
+	void (*event) (void *data, const struct spa_event *event);
 	/**
 	 * Notify of a new node command
 	 *
 	 * \param seq a sequence number
 	 * \param command the command
 	 */
-	void (*command) (void *object, uint32_t seq, const struct spa_command *command);
+	void (*command) (void *data, uint32_t seq, const struct spa_command *command);
 	/**
 	 * A new port was added to the node
 	 *
@@ -315,7 +295,7 @@ struct pw_client_node0_events {
 	 * \param direction the direction of the port
 	 * \param port_id the new port id
 	 */
-	void (*add_port) (void *object,
+	void (*add_port) (void *data,
 			  uint32_t seq,
 			  enum spa_direction direction,
 			  uint32_t port_id);
@@ -326,7 +306,7 @@ struct pw_client_node0_events {
 	 * \param direction a port direction
 	 * \param port_id the remove port id
 	 */
-	void (*remove_port) (void *object,
+	void (*remove_port) (void *data,
 			     uint32_t seq,
 			     enum spa_direction direction,
 			     uint32_t port_id);
@@ -340,7 +320,7 @@ struct pw_client_node0_events {
 	 * \param flags flags used when setting the param
 	 * \param param the new param
 	 */
-	void (*port_set_param) (void *object,
+	void (*port_set_param) (void *data,
 				uint32_t seq,
 				enum spa_direction direction,
 				uint32_t port_id,
@@ -355,7 +335,7 @@ struct pw_client_node0_events {
 	 * \param n_buffer the number of buffers
 	 * \param buffers and array of buffer descriptions
 	 */
-	void (*port_use_buffers) (void *object,
+	void (*port_use_buffers) (void *data,
 				  uint32_t seq,
 				  enum spa_direction direction,
 				  uint32_t port_id,
@@ -368,7 +348,7 @@ struct pw_client_node0_events {
 	 * \param port_id the port id
 	 * \param command the command
 	 */
-	void (*port_command) (void *object,
+	void (*port_command) (void *data,
 			      enum spa_direction direction,
 			      uint32_t port_id,
 			      const struct spa_command *command);
@@ -384,7 +364,7 @@ struct pw_client_node0_events {
 	 * \param offset offset of io area in memory
 	 * \param size size of the io area
 	 */
-	void (*port_set_io) (void *object,
+	void (*port_set_io) (void *data,
 			     uint32_t seq,
 			     enum spa_direction direction,
 			     uint32_t port_id,

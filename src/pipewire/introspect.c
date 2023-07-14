@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 
@@ -210,22 +190,31 @@ struct pw_node_info *pw_node_info_merge(struct pw_node_info *info,
 		info->props = pw_spa_dict_copy(update->props);
 	}
 	if (update->change_mask & PW_NODE_CHANGE_MASK_PARAMS) {
-		uint32_t i, user, n_params = update->n_params;
+		uint32_t i, n_params = update->n_params;
+		void *np;
 
-		info->params = realloc(info->params, n_params * sizeof(struct spa_param_info));
-		if (info->params == NULL)
-			n_params = 0;
+		np = pw_reallocarray(info->params, n_params, sizeof(struct spa_param_info));
+		if (np == NULL) {
+			free(info->params);
+			info->params = NULL;
+			info->n_params = n_params = 0;
+		}
+		info->params = np;
 
 		for (i = 0; i < SPA_MIN(info->n_params, n_params); i++) {
-			user = reset ? 0 : info->params[i].user;
-			if (info->params[i].flags != update->params[i].flags)
-				user++;
-			info->params[i] = update->params[i];
-			info->params[i].user = user;
+			info->params[i].id = update->params[i].id;
+			if (reset)
+				info->params[i].user = 0;
+			if (info->params[i].flags != update->params[i].flags) {
+				info->params[i].flags = update->params[i].flags;
+				info->params[i].user++;
+			}
 		}
 		info->n_params = n_params;
 		for (; i < info->n_params; i++) {
-			info->params[i] = update->params[i];
+			spa_zero(info->params[i]);
+			info->params[i].id = update->params[i].id;
+			info->params[i].flags = update->params[i].flags;
 			info->params[i].user = 1;
 		}
 	}
@@ -275,22 +264,31 @@ struct pw_port_info *pw_port_info_merge(struct pw_port_info *info,
 		info->props = pw_spa_dict_copy(update->props);
 	}
 	if (update->change_mask & PW_PORT_CHANGE_MASK_PARAMS) {
-		uint32_t i, user, n_params = update->n_params;
+		uint32_t i, n_params = update->n_params;
+		void *np;
 
-		info->params = realloc(info->params, n_params * sizeof(struct spa_param_info));
-		if (info->params == NULL)
-			n_params = 0;
+		np = pw_reallocarray(info->params, n_params, sizeof(struct spa_param_info));
+		if (np == NULL) {
+			free(info->params);
+			info->params = NULL;
+			info->n_params = n_params = 0;
+		}
+		info->params = np;
 
 		for (i = 0; i < SPA_MIN(info->n_params, n_params); i++) {
-			user = reset ? 0 : info->params[i].user;
-			if (info->params[i].flags != update->params[i].flags)
-				user++;
-			info->params[i] = update->params[i];
-			info->params[i].user = user;
+			info->params[i].id = update->params[i].id;
+			if (reset)
+				info->params[i].user = 0;
+			if (info->params[i].flags != update->params[i].flags) {
+				info->params[i].flags = update->params[i].flags;
+				info->params[i].user++;
+			}
 		}
 		info->n_params = n_params;
 		for (; i < info->n_params; i++) {
-			info->params[i] = update->params[i];
+			spa_zero(info->params[i]);
+			info->params[i].id = update->params[i].id;
+			info->params[i].flags = update->params[i].flags;
 			info->params[i].user = 1;
 		}
 	}
@@ -430,22 +428,31 @@ struct pw_device_info *pw_device_info_merge(struct pw_device_info *info,
 		info->props = pw_spa_dict_copy(update->props);
 	}
 	if (update->change_mask & PW_DEVICE_CHANGE_MASK_PARAMS) {
-		uint32_t i, user, n_params = update->n_params;
+		uint32_t i, n_params = update->n_params;
+		void *np;
 
-		info->params = realloc(info->params, n_params * sizeof(struct spa_param_info));
-		if (info->params == NULL)
-			n_params = 0;
+		np = pw_reallocarray(info->params, n_params, sizeof(struct spa_param_info));
+		if (np == NULL) {
+			free(info->params);
+			info->params = NULL;
+			info->n_params = n_params = 0;
+		}
+		info->params = np;
 
 		for (i = 0; i < SPA_MIN(info->n_params, n_params); i++) {
-			user = reset ? 0 : info->params[i].user;
-			if (info->params[i].flags != update->params[i].flags)
-				user++;
-			info->params[i] = update->params[i];
-			info->params[i].user = user;
+			info->params[i].id = update->params[i].id;
+			if (reset)
+				info->params[i].user = 0;
+			if (info->params[i].flags != update->params[i].flags) {
+				info->params[i].flags = update->params[i].flags;
+				info->params[i].user++;
+			}
 		}
 		info->n_params = n_params;
 		for (; i < info->n_params; i++) {
-			info->params[i] = update->params[i];
+			spa_zero(info->params[i]);
+			info->params[i].id = update->params[i].id;
+			info->params[i].flags = update->params[i].flags;
 			info->params[i].user = 1;
 		}
 	}

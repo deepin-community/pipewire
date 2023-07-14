@@ -2,6 +2,11 @@
 #
 # Copy and edit this file in @PIPEWIRE_CONFIG_DIR@ for system-wide changes
 # or in ~/.config/pipewire for local changes.
+#
+# It is also possible to place a file with an updated section in
+# @PIPEWIRE_CONFIG_DIR@/jack.conf.d/ for system-wide changes or in
+# ~/.config/pipewire/jack.conf.d/ for local changes.
+#
 
 context.properties = {
     ## Configure properties in the system.
@@ -9,6 +14,8 @@ context.properties = {
     #mem.allow-mlock = true
     #mem.mlock-all   = false
     log.level        = 0
+
+    #default.clock.quantum-limit = 8192
 }
 
 context.spa-libs = {
@@ -23,8 +30,9 @@ context.spa-libs = {
 
 context.modules = [
     #{ name = <module-name>
-    #    [ args  = { <key> = <value> ... } ]
-    #    [ flags = [ [ ifexists ] [ nofail ] ]
+    #    ( args  = { <key> = <value> ... } )
+    #    ( flags = [ ( ifexists ) ( nofail ) ] )
+    #    ( condition = [ { <key> = <value> ... } ... ] )
     #}
     #
     # Loads a module with the given parameters.
@@ -35,10 +43,9 @@ context.modules = [
     # Boost the data thread priority.
     { name = libpipewire-module-rt
         args = {
-            #nice.level   = -11
             #rt.prio      = 88
-            #rt.time.soft = 2000000
-            #rt.time.hard = 2000000
+            #rt.time.soft = -1
+            #rt.time.hard = -1
         }
         flags = [ ifexists nofail ]
     }
@@ -59,11 +66,16 @@ context.modules = [
 # global properties for all jack clients
 jack.properties = {
      #node.latency       = 1024/48000
-     #node.lock-quantum  = false
+     #node.rate          = 1/48000
+     #node.quantum       = 1024/48000
+     #node.lock-quantum  = true
+     #node.force-quantum = 0
      #jack.show-monitor  = true
-     #jack.merge-monitor = false
+     #jack.merge-monitor = true
+     #jack.show-midi     = true
      #jack.short-name    = false
      #jack.filter-name   = false
+     #jack.filter-char   = " "
      #
      # allow:           Don't restrict self connect requests
      # fail-external:   Fail self connect requests to external ports only
@@ -72,12 +84,16 @@ jack.properties = {
      # ignore-all:      Ignore all self connect requests
      #jack.self-connect-mode = allow
      #jack.locked-process    = true
+     #jack.default-as-system = false
+     #jack.fix-midi-events   = true
+     #jack.global-buffer-size = false
+     #jack.max-client-ports   = 768
+     #jack.fill-aliases       = false
 }
 
 # client specific properties
 jack.rules = [
-    {
-        matches = [
+    {   matches = [
             {
                 # all keys must match the value. ~ starts regex.
                 #client.name                = "Carla"
@@ -88,6 +104,29 @@ jack.rules = [
         actions = {
             update-props = {
                 #node.latency = 512/48000
+            }
+        }
+    }
+    {   matches = [ { application.process.binary = "jack_bufsize" } ]
+        actions = {
+            update-props = {
+                jack.global-buffer-size = true   # quantum set globally using metadata
+            }
+        }
+    }
+    {   matches = [ { application.process.binary = "qsynth" } ]
+        actions = {
+            update-props = {
+                node.always-process = false # makes qsynth idle
+                node.pause-on-idle = false  # makes audio fade out when idle
+                node.passive = out          # makes the sink and qsynth suspend
+            }
+        }
+    }
+    {   matches = [ { client.name = "Mixxx" } ]
+        actions = {
+            update-props = {
+                jack.merge-monitor = false
             }
         }
     }

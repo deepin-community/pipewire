@@ -1,26 +1,6 @@
-/* GStreamer
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* GStreamer */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -89,24 +69,34 @@ void gst_pipewire_pool_wrap_buffer (GstPipeWirePool *pool, struct pw_buffer *b)
 
     GST_LOG_OBJECT (pool, "wrap buffer %d %d", d->mapoffset, d->maxsize);
     if (d->type == SPA_DATA_MemFd) {
-      gmem = gst_fd_allocator_alloc (pool->fd_allocator, d->fd,
-                d->mapoffset + d->maxsize, GST_FD_MEMORY_FLAG_DONT_CLOSE);
+      GST_LOG_OBJECT (pool, "memory type MemFd");
+      gmem = gst_fd_allocator_alloc (pool->fd_allocator, dup(d->fd),
+                d->mapoffset + d->maxsize, GST_FD_MEMORY_FLAG_NONE);
       gst_memory_resize (gmem, d->mapoffset, d->maxsize);
-      data->offset = d->mapoffset;
     }
     else if(d->type == SPA_DATA_DmaBuf) {
-      gmem = gst_fd_allocator_alloc (pool->dmabuf_allocator, d->fd,
-                d->mapoffset + d->maxsize, GST_FD_MEMORY_FLAG_DONT_CLOSE);
+      GST_LOG_OBJECT (pool, "memory type DmaBuf");
+      gmem = gst_fd_allocator_alloc (pool->dmabuf_allocator, dup(d->fd),
+                d->mapoffset + d->maxsize, GST_FD_MEMORY_FLAG_NONE);
       gst_memory_resize (gmem, d->mapoffset, d->maxsize);
-      data->offset = d->mapoffset;
     }
     else if (d->type == SPA_DATA_MemPtr) {
-      gmem = gst_memory_new_wrapped (GST_MEMORY_FLAG_NO_SHARE, d->data, d->maxsize, 0,
+      GST_LOG_OBJECT (pool, "memory type MemPtr");
+      gmem = gst_memory_new_wrapped (0, d->data, d->maxsize, 0,
                                      d->maxsize, NULL, NULL);
-      data->offset = 0;
     }
     if (gmem)
-      gst_buffer_append_memory (buf, gmem);
+      gst_buffer_insert_memory (buf, i, gmem);
+  }
+
+  if (pool->add_metavideo) {
+    gst_buffer_add_video_meta_full (buf, GST_VIDEO_FRAME_FLAG_NONE,
+        GST_VIDEO_INFO_FORMAT (&pool->video_info),
+        GST_VIDEO_INFO_WIDTH (&pool->video_info),
+        GST_VIDEO_INFO_HEIGHT (&pool->video_info),
+        GST_VIDEO_INFO_N_PLANES (&pool->video_info),
+        pool->video_info.offset,
+        pool->video_info.stride);
   }
 
   data->pool = gst_object_ref (pool);
@@ -118,6 +108,8 @@ void gst_pipewire_pool_wrap_buffer (GstPipeWirePool *pool, struct pw_buffer *b)
   data->crop = spa_buffer_find_meta_data (b->buffer, SPA_META_VideoCrop, sizeof(*data->crop));
   if (data->crop)
 	  gst_buffer_add_video_crop_meta(buf);
+  data->videotransform =
+    spa_buffer_find_meta_data (b->buffer, SPA_META_VideoTransform, sizeof(*data->videotransform));
 
   gst_mini_object_set_qdata (GST_MINI_OBJECT_CAST (buf),
                              pool_data_quark,
@@ -206,6 +198,41 @@ no_more_buffers:
   }
 }
 
+static const gchar **
+get_options (GstBufferPool * pool)
+{
+  static const gchar *options[] = { GST_BUFFER_POOL_OPTION_VIDEO_META, NULL };
+  return options;
+}
+
+static gboolean
+set_config (GstBufferPool * pool, GstStructure * config)
+{
+  GstPipeWirePool *p = GST_PIPEWIRE_POOL (pool);
+  GstCaps *caps;
+  guint size, min_buffers, max_buffers;
+  gboolean has_video;
+
+  if (!gst_buffer_pool_config_get_params (config, &caps, &size, &min_buffers, &max_buffers)) {
+    GST_WARNING_OBJECT (pool, "invalid config");
+    return FALSE;
+  }
+
+  if (caps == NULL) {
+    GST_WARNING_OBJECT (pool, "no caps in config");
+    return FALSE;
+  }
+
+  has_video = gst_video_info_from_caps (&p->video_info, caps);
+
+  p->add_metavideo = has_video && gst_buffer_pool_config_has_option (config,
+      GST_BUFFER_POOL_OPTION_VIDEO_META);
+
+  gst_buffer_pool_config_set_params (config, caps, p->video_info.size, min_buffers, max_buffers);
+
+  return GST_BUFFER_POOL_CLASS (gst_pipewire_pool_parent_class)->set_config (pool, config);
+}
+
 static void
 flush_start (GstBufferPool * pool)
 {
@@ -250,6 +277,8 @@ gst_pipewire_pool_class_init (GstPipeWirePoolClass * klass)
 
   gobject_class->finalize = gst_pipewire_pool_finalize;
 
+  bufferpool_class->get_options = get_options;
+  bufferpool_class->set_config = set_config;
   bufferpool_class->start = do_start;
   bufferpool_class->flush_start = flush_start;
   bufferpool_class->acquire_buffer = acquire_buffer;

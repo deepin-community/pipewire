@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <string.h>
@@ -39,6 +19,9 @@
 
 #define NAME "volume"
 
+#define DEFAULT_RATE		48000
+#define DEFAULT_CHANNELS	2
+
 #define DEFAULT_VOLUME 1.0
 #define DEFAULT_MUTE false
 
@@ -53,7 +36,6 @@ static void reset_props(struct props *props)
 	props->mute = DEFAULT_MUTE;
 }
 
-#define MAX_SAMPLES     8192
 #define MAX_BUFFERS     16
 
 struct buffer {
@@ -90,6 +72,7 @@ struct impl {
 	struct spa_node node;
 
 	struct spa_log *log;
+	uint32_t quantum_limit;
 
 	uint64_t info_all;
 	struct spa_node_info info;
@@ -145,14 +128,14 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_volume),
-				SPA_PROP_INFO_name, SPA_POD_String("The volume"),
+				SPA_PROP_INFO_description, SPA_POD_String("The volume"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 10.0));
 			break;
 		case 1:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_mute),
-				SPA_PROP_INFO_name, SPA_POD_String("Mute"),
+				SPA_PROP_INFO_description, SPA_POD_String("Mute"),
 				SPA_PROP_INFO_type, SPA_POD_Bool(p->mute));
 			break;
 		default:
@@ -318,12 +301,13 @@ static int port_enum_formats(void *object,
 			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 			SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_audio),
 			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-			SPA_FORMAT_AUDIO_format,   SPA_POD_CHOICE_ENUM_Id(3,
+			SPA_FORMAT_AUDIO_format,   SPA_POD_CHOICE_ENUM_Id(2,
 							SPA_AUDIO_FORMAT_S16,
-							SPA_AUDIO_FORMAT_S16,
-							SPA_AUDIO_FORMAT_S32),
-			SPA_FORMAT_AUDIO_rate,     SPA_POD_CHOICE_RANGE_Int(44100, 1, INT32_MAX),
-			SPA_FORMAT_AUDIO_channels, SPA_POD_CHOICE_RANGE_Int(2, 1, INT32_MAX));
+							SPA_AUDIO_FORMAT_S16),
+			SPA_FORMAT_AUDIO_rate,     SPA_POD_CHOICE_RANGE_Int(
+							DEFAULT_RATE, 1, INT32_MAX),
+			SPA_FORMAT_AUDIO_channels, SPA_POD_CHOICE_RANGE_Int(
+							DEFAULT_CHANNELS, 1, INT32_MAX));
 		break;
 	default:
 		return 0;
@@ -386,11 +370,10 @@ impl_node_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-							MAX_SAMPLES * this->bpf,
+							this->quantum_limit * this->bpf,
 							16 * this->bpf,
 							INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(0),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->bpf));
 		break;
 	case SPA_PARAM_Meta:
 		switch (result.index) {
@@ -468,6 +451,11 @@ static int port_set_format(void *object,
 		if (spa_format_audio_raw_parse(format, &info.info.raw) < 0)
 			return -EINVAL;
 
+		if (info.info.raw.format != SPA_AUDIO_FORMAT_S16 ||
+		    info.info.raw.channels == 0 ||
+		    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
+			return -EINVAL;
+
 		this->bpf = 2 * info.info.raw.channels;
 		this->current_format = info;
 		port->have_format = true;
@@ -520,10 +508,12 @@ impl_node_port_use_buffers(void *object,
 
 	port = GET_PORT(this, direction, port_id);
 
-	if (!port->have_format)
-		return -EIO;
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
@@ -535,7 +525,7 @@ impl_node_port_use_buffers(void *object,
 		b->flags = direction == SPA_DIRECTION_INPUT ? BUFFER_FLAG_OUT : 0;
 		b->h = spa_buffer_find_meta_data(buffers[i], SPA_META_Header, sizeof(*b->h));
 
-		if (d[0].data == NULL) {
+		if (d[0].data != NULL) {
 			b->ptr = d[0].data;
 			b->size = d[0].maxsize;
 		} else {
@@ -680,8 +670,8 @@ static int impl_node_process(void *object)
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
 	out_port = GET_OUT_PORT(this, 0);
-	output = out_port->io;
-	spa_return_val_if_fail(output != NULL, -EIO);
+	if ((output = out_port->io) == NULL)
+		return -EIO;
 
 	if (output->status == SPA_STATUS_HAVE_DATA)
 		return SPA_STATUS_HAVE_DATA;
@@ -693,8 +683,8 @@ static int impl_node_process(void *object)
 	}
 
 	in_port = GET_IN_PORT(this, 0);
-	input = in_port->io;
-	spa_return_val_if_fail(input != NULL, -EIO);
+	if ((input = in_port->io) == NULL)
+		return -EIO;
 
 	if (input->status != SPA_STATUS_HAVE_DATA)
 		return SPA_STATUS_NEED_DATA;
@@ -778,6 +768,7 @@ impl_init(const struct spa_handle_factory *factory,
 {
 	struct impl *this;
 	struct port *port;
+	uint32_t i;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
@@ -788,6 +779,13 @@ impl_init(const struct spa_handle_factory *factory,
 	this = (struct impl *) handle;
 
 	this->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
+
+	for (i = 0; info && i < info->n_items; i++) {
+		const char *k = info->items[i].key;
+		const char *s = info->items[i].value;
+		if (spa_streq(k, "clock.quantum-limit"))
+			spa_atou32(s, &this->quantum_limit, 0);
+	}
 
 	spa_hook_list_init(&this->hooks);
 

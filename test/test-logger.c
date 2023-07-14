@@ -1,29 +1,10 @@
-/* PipeWire
- *
- * Copyright © 2021 Red Hat, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Red Hat, Inc. */
+/* SPDX-License-Identifier: MIT */
 
 #include "pwtest.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -62,7 +43,7 @@ PWTEST(logger_truncate_long_lines)
 	/* Print a line expected to be truncated */
 	spa_log_error(iface, "MARK: %1100s", "foo");
 
-	fp = fopen(fname, "r");
+	fp = fopen(fname, "re");
 	while (fgets(buffer, sizeof(buffer), fp) != NULL) {
 		if (strstr(buffer, "MARK:")) {
 			const char *suffix = ".. (truncated)\n";
@@ -109,7 +90,7 @@ PWTEST(logger_no_ansi)
 	 * tty so expect none despite colors being enabled */
 	spa_log_error(iface, "MARK\n");
 
-	fp = fopen(fname, "r");
+	fp = fopen(fname, "re");
 	while (fgets(buffer, sizeof(buffer), fp) != NULL) {
 		if (strstr(buffer, "MARK")) {
 			mark_line_found = true;
@@ -156,7 +137,7 @@ test_log_levels(enum spa_log_level level)
 	if (level < SPA_LOG_LEVEL_TRACE)
 		pw_log(level + 1, "ABOVE");
 
-	fp = fopen(fname, "r");
+	fp = fopen(fname, "re");
 	while (fgets(buffer, sizeof(buffer), fp) != NULL) {
 		if (strstr(buffer, "CURRENT"))
 			current_level_found = true;
@@ -349,8 +330,10 @@ PWTEST(logger_debug_env_invalid)
 		"invalid value",
 		"*:5,some invalid value",
 		"*:W,foo.bar:3,invalid:",
-		"*:W,1,foo.bar:D",
-		"*:W,D,foo.bar:3",
+		"*:W,2,foo.bar:Q",
+		"*:W,7,foo.bar:D",
+		"*:W,Q,foo.bar:5",
+		"*:W,D,foo.bar:8",
 	};
 
 	pwtest_int_lt(which, SPA_N_ELEMENTS(envvars));
@@ -426,7 +409,7 @@ PWTEST(logger_topics)
 
 	spa_logt_info(iface, &topic, "MARK\n");
 
-	fp = fopen(fname, "r");
+	fp = fopen(fname, "re");
 	while (fgets(buffer, sizeof(buffer), fp) != NULL) {
 		if (strstr(buffer, "MARK")) {
 			mark_line_found = true;
@@ -464,6 +447,9 @@ find_in_journal(sd_journal *journal, const char *needle, char *out, size_t out_s
 				const char *d;
 				size_t l;
 				int r = sd_journal_get_data(journal, "MESSAGE", (const void **)&d, &l);
+				if (r == -ENOENT || r == -E2BIG || r == -EBADMSG)
+					continue;
+
 				pwtest_neg_errno_ok(r);
 				spa_scnprintf(buffer, sizeof(buffer), "%.*s", (int) l, d);
 				if (strstr(buffer, needle)) {
@@ -518,7 +504,7 @@ PWTEST(logger_journal)
 	}
 
 	sd_journal_seek_tail(journal);
-	sd_journal_next(journal);
+	sd_journal_previous(journal);
 
 	spa_scnprintf(token, sizeof(token), "MARK %s:%d", __func__, __LINE__);
 	spa_logt_info(iface, &topic, "%s", token);
@@ -586,7 +572,7 @@ PWTEST(logger_journal_chain)
 	}
 
 	sd_journal_seek_tail(journal);
-	sd_journal_next(journal);
+	sd_journal_previous(journal);
 
 	spa_scnprintf(token, sizeof(token), "MARK %s:%d", __func__, __LINE__);
 
@@ -598,7 +584,7 @@ PWTEST(logger_journal_chain)
 	/* Now check that the line is in the chained file logger too */
 	spa_memzero(buffer, sizeof(buffer));
 	mark_line_found = false;
-	fp = fopen(fname, "r");
+	fp = fopen(fname, "re");
 	while (fgets(buffer, sizeof(buffer), fp) != NULL) {
 		if (strstr(buffer, token)) {
 			mark_line_found = true;
@@ -640,7 +626,7 @@ PWTEST_SUITE(logger)
 		   PWTEST_ARG_RANGE, SPA_LOG_LEVEL_NONE, SPA_LOG_LEVEL_TRACE + 1,
 		   PWTEST_NOARG);
 	pwtest_add(logger_debug_env_invalid,
-		   PWTEST_ARG_RANGE, 0, 5, /* see the test */
+		   PWTEST_ARG_RANGE, 0, 7, /* see the test */
 		   PWTEST_NOARG);
 	pwtest_add(logger_topics, PWTEST_NOARG);
 	pwtest_add(logger_journal, PWTEST_NOARG);

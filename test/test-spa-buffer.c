@@ -1,26 +1,7 @@
-/* Simple Plugin API
- * Copyright © 2018 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include "pwtest.h"
 
@@ -47,7 +28,8 @@ PWTEST(buffer_abi_types)
 	pwtest_int_eq(SPA_META_Cursor, 5);
 	pwtest_int_eq(SPA_META_Control, 6);
 	pwtest_int_eq(SPA_META_Busy, 7);
-	pwtest_int_eq(_SPA_META_LAST, 8);
+	pwtest_int_eq(SPA_META_VideoTransform, 8);
+	pwtest_int_eq(_SPA_META_LAST, 9);
 
 	return PWTEST_PASS;
 }
@@ -64,6 +46,7 @@ PWTEST(buffer_abi_sizes)
 	pwtest_int_eq(sizeof(struct spa_meta_region), 16U);
 	pwtest_int_eq(sizeof(struct spa_meta_bitmap), 20U);
 	pwtest_int_eq(sizeof(struct spa_meta_cursor), 28U);
+	pwtest_int_eq(sizeof(struct spa_meta_videotransform), 4U);
 
 	return PWTEST_PASS;
 #else
@@ -75,6 +58,7 @@ PWTEST(buffer_abi_sizes)
 	fprintf(stderr, "%zd\n", sizeof(struct spa_meta_region));
 	fprintf(stderr, "%zd\n", sizeof(struct spa_meta_bitmap));
 	fprintf(stderr, "%zd\n", sizeof(struct spa_meta_cursor));
+	fprintf(stderr, "%zd\n", sizeof(struct spa_meta_videotransform));
 	return PWTEST_SKIP;
 #endif
 }
@@ -144,4 +128,3 @@ PWTEST_SUITE(spa_buffer)
 
 	return PWTEST_PASS;
 }
-

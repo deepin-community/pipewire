@@ -1,3 +1,2736 @@
+# PipeWire 0.3.74 (2023-07-12)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a critical bug where audio to bluetooth devices would cut out
+    randomly. (#3316)
+  - Improve RAOP compatibility.
+  - Avoid crashes after an update.
+  - Small fixes and improvements.
+
+
+## PipeWire
+  - Mix info on port is now created explicitly.
+  - Remove the node as a driver peer when stopping. This caused some problem
+    with playback on and other remote bluetooth devices. (#3316)
+  - Work on avoiding crashes when loading new modules that use internal API
+    with old libpipewire. This is typical after an update where the old library is
+    still loaded by an application but when a new stream is created, updated
+    modules are loaded. (#3243)
+
+## Modules
+  - The RTP source module now has an option to ignore the SSRC, which is
+    useful to continue to receive the stream when the sender is restarted.
+  - The native protocol will refuse to load twice now instead of silently
+    ignoring the error.
+  - module-raop is compatible with more devices. (#3247)
+
+## SPA
+  - plugins will now warn when running out of buffers. This is always a bad
+    thing.
+  - Merge scope based cleanup macros.
+  - Add ratelimit function.
+
+Older versions:
+
+
+# PipeWire 0.3.73 (2023-07-06)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fixes an ALSA resume after suspend error.
+  - Handle and disable seemingly wrong hires timestamps from ALSA.
+  - Filter-chain now has loadable plugin modules. The LV2 and sofa plugins are
+    moved to a separate .so file to make things more modular.
+  - Rate changes in the graph should now be handled more gracefully by loopback
+    and filter-chain.
+  - A regression in the rtp-sap module was fixed where it would in some cases
+    fail to start.
+  - A potential crash in the peaks resampler was fixed.
+  - Many cleanups and other small bug fixes.
+
+
+## PipeWire
+  - Fix a potential segfault when no fallback driver was set in the config.
+  - Improve OPUS detection.
+  - Add ASYNC flag to pw-filter and pw-stream when queue/dequeue is not called
+    from the process function. This ensure we allocate an extra buffer.
+  - Discard pending process callbacks when disconnecting. (#3314)
+  - Cleanups and improvements to the debug environment variable parsing.
+  - The graph rate was tweaked to better handle very low rates such as those
+    requested by pavucontrol when it does the signal monitoring.
+
+## Modules
+  - An example filter module was added.
+  - Filter-chain and loopback now disable the resamplers if no rate is specified
+    and will always follow the graph rate.
+  - Improve setup of filter-chain. The graph is now created when starting
+    because this ensure the target graph rate is known.
+  - Filter-chain can now link notify ports to control ports in the graph.
+  - Filter-chain now has loadable plugin modules. The LV2 and sofa plugins are
+    moved to a separate .so file.
+  - A regression in the rtp-sap module was fixed where it would in some cases
+    fail to start.
+  - Module-rt now has options to disable rlimits, portal and rtkit.
+  - module-raop-discover now has an options to set the latency. (#3247)
+
+## Tools
+  - pw-cat now supports overriding all stream properties.
+
+## SPA
+  - Disable rate negotiation when the resampler is disabled. We will always
+    follow the graph rate. 
+  - Set device.icon property for UCM ports as well.
+  - Improve ALSA recover when using hires timestamps. This fixes some problems
+    after resume from suspend. (#3315)
+  - ALSA will now warn and disable hires timestamp when they seem wrong.
+    They can also be disabled manually with a property.
+  - V4l2 will now gracefully handle ENOTTY when enumerating frame sizes and
+    frame rates. (#3325)
+  - A potential crash in the peaks resampler was fixed. (#3320)
+
+## pulse-server
+  - A client crash in pavucontrol is avoided by always setting a card name.
+  - The graph rate is now taken correctly when using the FIX flags. (#3317)
+  - An option was added to ignore the FIX flags of a stream. Also the
+    documentation for those options was updated. (#3317)
+  - module-raop-discover now support latency_msec. (#3247)
+
+## Bluetooth
+  - Remove an assert and issue a warning/recover instead when a buffer is too
+    small.
+
+## GStreamer
+  - The device provider does locking when destroying the registry.
+
+# PipeWire 0.3.72 (2023-06-26)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a critical bug that would refuse to update the samplerate or
+    buffersize in JACK clients. (#3226)
+  - A new module-netjack2-driver and module-netjack2-manager were added
+    that are compatible with NETJACK2. This allows PipeWire to become
+    a NETJACK2 manager or a driver between JACK2 or PipeWire servers.
+  - Support was added for firewire devices with FFADO. This is untested
+    for now and MIDI is not implemented yet.
+  - The node scheduling was optimized some more. External drivers are now
+    as efficient as in-server ones. This should improve performance of
+    various drivers such as bluetooth and JACK based drivers.
+  - Many, many bug fixes and a ton of improvements.
+
+
+## PipeWire
+  - pw-filter can now be used to write sinks and sources.
+  - The node activation for drivers was changed. The driver now does not
+    need to go to the server to start the processing cycle. This makes
+    out-of-server drivers as efficient as in-server drivers.
+  - Don't try to use drivers with 0 priority as fallback drivers. This
+    avoids making the screencast driver a driver for audio. (#3219)
+  - Improve xrun count reporting in pw-top and the profiler. Now each
+    node has their own xrun counter updated when it fails to complete
+    processing during the cycle.
+  - pw-filter now also has support for TRIGGER.
+  - A potential fd leak was found when fds were send to a zombie client.
+    (#1840)
+  - Fix a bug where monitor or capture streams were logged twice in the
+    profiler. (#3278)
+  - Remove stream hooks safely. (#3251)
+  - A bug in serialization of container properties was fixed. This could
+    result in truncated property values. (#3290)
+  - The PIPEWIRE_AUTOCONNECT environment variable now always overrides the
+    autoconnect settings of streams. (#3299)
+  - Node, port and link destroy now avoids some useless work.
+  - Port will now try to renegotiate a new format when idle. (#3266)
+
+## Modules
+  - The module-sap now is more compatible with AES67.
+  - A new FFADO driver module was added. This is completely untested because
+    of lack of hardware. Please test and report issues.
+  - A new NETJACK2 driver and a NETJACK2 manager module were added. These
+    should be drop in replacements for the JACK2 parts.
+  - The RAOP discover module now tries harder to only list devices once.
+  - The zeroconf discover module now tries harder to only list devices once.
+  - The RAOP sink module now handles latency better and is compatible with
+    some more devices. (#3247, #3282)
+  - The loopback and filter-chain modules now always dequeue the last input
+    buffer to avoid stuttering in some cases. (#3276)
+  - The SPA node factory module can now also export nodes. This is used to
+    export the PTP clock from the AES67 config file.
+  - A bug in module-jack-tunnel was fixed that would cause stuttering and
+    corrupted output in some cases. (#3255)
+  - The resampler is now disabled in module-loopback and filter-chain when
+    the samplerate is set to follow the graph rate. (#2969)
+  - The way the mixer peer is sent to clients was improved. It is now also
+    possible to let a remote node know about mixer port removes, which
+    can avoid memory leaks and some code simplifications.
+
+## SPA
+  - Monitor ports now report latency correctly.
+  - The ALSA plugin now uses htimestamp to get a more accurate ringbuffer
+    position to estimate the clock skew.
+  - The channelmixer now has min/max-volume settings to limit or fix the
+    volume.
+  - The ALSA plugin can now control the playback and capture rate of USB
+    gadgets. This can avoid resampling and instead use the USB feedback
+    to control the rate.
+  - The ALSA output to multiple devices has been improved, some lockups
+    are avoided when the device ringbuffer is full.
+  - The compress-offload sink has improved negotiation.
+
+## pulse-server
+  - Only try to use GSettings when the schema exists.
+  - @DEFAULT_SOURCE@, @DEFAULT_SINK@ and @DEFAULT_MONITOR@ are now correctly
+    handled as targets in playback and capture streams. (#3284)
+  - 2 new quirks are added to disable volume updates on sinks/sources.
+    (#1517)
+  - The virtual-sink and virtual-source modules were added. These are really
+    example modules but actually also work and are useful on PulseAudio so
+    implement them as well.
+  - Fix initial stream volumes. (#3306)
+
+## Bluetooth
+  - Only register A2DP or BAP when we have codecs.
+  - Include codec into the media.name
+
+## JACK
+  - Fix a critical bug that would refuse to update the samplerate or
+    buffersize. (#3226)
+  - Improve updates of samplerate/buffersize, delay the updates until the
+    client is activated. (#3297)
+  - Use the new mix-info updates to simplify the mixer setup and peer
+    detection.
+
+## GStreamer
+  - Fill default strides instead of 0 on pipewire video buffers. (#3236)
+
+# PipeWire 0.3.71 (2023-05-17)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - A new zero-latency jackdbus bridge was added. This works similar to what
+    PulseAudio has to offer and creates a sink/source when jackdbus is
+    started. It is however much more efficient and runs the complete PipeWire
+    graph as a synchronous JACK client with no added latency.
+  - Many performance improvements. Activation of remote nodes is more
+    efficient, fewer eventfds are required on the clients, less callback
+    overhead in performence critical paths and an optimized poll function
+    was added. This was mainly driven by the jackdbus module to get the lowest
+    possible overhead when running the graph.
+  - The JACK notify callback implementation was reworked to emulate better what
+    JACK does, improving compatibility with ardour7 and the JACK stress test.
+  - More work on BAP devices. Device latency is now passed on to
+    applications also for multi-device headsets, and channel allocation
+    is handled better.
+  - Many more improvements and bugfixes.
+
+
+## PipeWire
+  - Remove the hardcoded limit on io_areas. This is used to link nodes together
+    and exchange buffers, it was limited to 2048 but now dynamically scales
+    based on requirements.
+  - Rate and quantum changes are now applied correctly in more cases. (#3159)
+  - Updates to client-node to more efficiently process the driver.
+  - The profiler information was improved to be more accurate. It should
+    now work better for remote drivers.
+  - Some potential memory map errors were fixed in the protocol because in some
+    case with large messages, some fds were closed too soon.
+  - pw-filter now implements the pw_filter_set_active() method.
+  - A potential out-of-buffers case was fixed in capture pw-streams where buffers
+    were not moved to the recycle queue when the node suspended.
+  - Nodes are now always woken up with the eventfd. Previously there were
+    some optimiztions in the server to directly call into the node process
+    function but that optimization is not necessary. Without this optimization
+    it is now possible to run nodes in different threads.
+  - pw-stream trigger is now implemented correctly in all cases.
+  - Remote nodes now use one eventfd less because they get triggered with the
+    node eventfd directly.
+  - Monitor ports are now ignored in latency updates.
+  - A potential race when reporting an error to a client was fixed. (#3192)
+  - Fix a bug where always_process nodes would sometimes IDLE. (#3189)
+  - Optimize peer activation. Nodes are now activated more efficiently and
+    independent of the number of links. It also reduces the number of eventfds
+    and memory in remote clients.
+  - A bug in property serialization was fixed. Values with spaces would only
+    serialize the first part of the value.
+
+## Modules
+  - Correctly handle the echo-canceler plugin init method fallback. The
+    samplerate was not correctly configured. This is only a regression for people
+    that have external echo-canceler plugins.
+  - RAOP sink now only sets the volume on the remote end when the stream is
+    recording. (#3175)
+  - RAOP discover now tries to deduplicate entries from the same host.
+  - A new zero-latency jackdbus bridge was added. This works similar to what
+    pulseaudio has to offer and creates a sink/source when jackdbus is
+    started. It is however much more efficient and runs the complete PipeWire
+    graph as a synchronous JACK client.
+  - The access module uses a more secure way to check the application
+    executable.
+  - module-combine-stream now has configurable delay and latency for each
+    stream. This can be used to align sinks/sources with different latencies.
+  - A potential crash in module-pulse-tunnel was fixed when shutting down.
+    (#3199)
+  - Module-rt will now clamp the nice value to the min allowed value to avoid
+    errors from rtkit. (#3186)
+  - Fix a bug with the session counters in module-rtp-sap. Also use the right
+    format for L24. Improve the AES67 example config.
+  - Improve some warning and info messages in module-rt. (#3194)
+  - module-rtp-session should now do something when started without arguments.
+  - A potential crash in module-rtp-session was fixed. (#3217)
+  - module-filter-chain has better error reporting when a convolver fails to
+    load. (#3223)
+
+## SPA
+  - Move some things around to avoid compiler warnings. (#3171)
+  - Increase mixer ports. Reorganize some things and bump mixer input ports
+    from 128 to 512.
+  - Fix a potential crash when a node is scheduled before it completes
+    the setup.
+  - The JACK sink and source SPA plugins have seen some improvements.
+  - Allow the peaks resampler still if we disabled resampling.
+  - Perform more cleanup in audioadapter when in error.
+  - An optimized non-cancellable loop implementation was added.
+  - Callbacks were optimized with a _fast() varsion that doesn't check the
+    version and method. When this check is performed earlier, it can
+    be skipped in performance critical places.
+  - Some of the callbacks and system methods are now using the fast function
+    calls in critical paths.
+  - A potential division by zero was fixed in the ALSA plugins.
+  - Improve rate and quantum when starting audioconvert.
+  - Make it possible to override node.driver in the SPA null-audio-driver.
+    (#3220)
+
+## pulse-server
+  - The audio info parameter parsing was refactored and improved.
+  - Fix some races with clients exiting when playing samples.
+  - An option was added to change or disable the dbus name registration.
+    (#2987)
+
+## Bluetooth
+  - Implement battery reporting using AT+XEVENT.
+  - Disable hardware volume for 3M WorkTunes.
+  - Implement BAP audio locations (channel positions) by using the new
+    bluez properties.
+
+## JACK
+  - Fix some errors reported by JACK test.cpp. (#2638)
+  - Add jack.show-midi option to show/hide midi ports.
+  - Add jack.max-client-ports option. JACK also has a port limit and so
+    PipeWire needs it as well to make the tests happy.
+  - Call the shutdown callback only when the server stopped, not when there
+    is a random error. (#3070)
+  - Avoid registering the same port name twice.
+  - Call port registration callbacks in activate/deactivate.
+  - Improve jack_port_connected().
+  - Improve some error reporting.
+  - The JACK headers were updated to a newer version.
+  - JACK callbacks are now managed with an event queue to simulate
+    more what JACK does. This avoids emiting callbacks when a method is blocking
+    for a reply and causing deadlocks. (#3183)
+  - Assign unique names to JACK clients. (#2833)
+  - Fix a potential crash when the thread_utils was used after free.
+  - Aliases are now not filled in by default to improve JACK compatibility.
+    (#3154)
+
+# ALSA
+  - The ALSA plugin will now wait for negotiation to complete or an error
+    before _prepare() completes. This makes more applications deal correctly
+    with the potential errors.
+
+# Docs
+  - A new document about how scheduling is implemented was added.
+  - Update the pw-cli man page. (#2988)
+  - Document the SPA Pod serialization.
+  - Document the PipeWire native protocol.
+
+# PipeWire 0.3.70 (2023-04-20)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a regression in the scheduler that could keep some nodes IDLE.
+  - Fix a regression in the biquad filters in filter-chain.
+  - Fix a regression and potential crash in the ALSA mixer probing.
+  - Fix a regression in pipewiresrc with timestamps that could cause cheese
+    to record video with wrong timestamps.
+  - Beamforming support was enabled in the echo-canceler.
+  - pulse-tunnel and raop-sink will now proxy local volume changes to the
+    remote end.
+  - More bugfixes and improvements.
+
+
+## PipeWire
+  - Fix a bug in the graph scheduler where some nodes might stay IDLE in
+    some cases (like when connecting the source of the echo-canceler to the
+    sink).
+  - pw-metadata can now be created from the factory with initial values for
+    the metadata. (#3076)
+  - Conditions were added to the pipewire config file to make it possible to
+    configure the access module and the exec sections.
+  - Support was added in pw-stream to intercept and override properties for
+    the adapter. This can be used to implement custom volume control, for
+    example.
+
+## Tools
+  - pw-metadata can now list all available metadata objects with the -l
+    option.
+  - A new pw-config tool was added to debug configuration file loading and
+    parsing.
+
+## Modules
+  - The webrtc echo canceler now supports beamforming. You can provide the
+    coordinates of the microphones and let webrtc perform beamforming on
+    the captured samples to improve quality and remove noise.
+  - Fix a regression in the filter-chain with biquad filters. (#3161) and
+    improve error reporting.
+  - The pulse-tunnel will now proxy the volume changes to the remote end.
+  - The RAOP sink will now send volume parameters to control the volume
+    remotely. (#2061)
+
+## SPA
+  - One ALSA commit was not correctly reverted and might cause crashes.
+  - The ALSA sink and source now calculate the ALSA ringbuffer memory
+    location more correctly wich might improve compatibility with some
+    hardware.
+  - v4l2 now sets the values of the controls in the Props param.
+
+## Pulse-server
+  - The echo-canceler aec_args are now parsed like they would be under
+    pulseaudio.
+
+## Bluetooth
+  - More work on synchronizing BAP devices.
+
+## GStreamer
+  - The GStreamer source can now renegotiate the format when it changes.
+  - The GStreamer source now uses the BaseSrc clocking code to implement
+    the clock and timing code.
+
+# PipeWire 0.3.69 (2023-04-13)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Reverted the UCM changes, they seem to cause regressions causing audio
+    to be muted in some cases.
+  - Fix a regression in the scheduler where a driver node might not be marked
+    runnable in some cases, like when echo-cancel is used. (#3145)
+  - Handle links from the driver to itself. This makes the midi bridge work
+    again. (#3153)
+  - ALSA rate matching for sources was fixed. It would previously wait too
+    long for rate matching and then cause drift. This should reduce
+    crackling and stuttering whan capturing in low latency.
+  - Fix the GStreamer clock to make cheese video recording work again. (#3149)
+  - More fixes and improvements.
+
+## PipeWire
+  - Fix a regression in the scheduler where a driver node might not be marked
+    runnable in some cases, like when echo-cancel is used. (#3145)
+  - Handle links from the driver to itself. This makes the midi bridge work
+    again. (#3153)
+  - Some man pages were improved.
+  - Fix a potential crash when thread-loop is destroyed before the loop.
+    (#3150)
+
+## Modules
+  - A new raw biquad filter was added to filter-chain. You can manually set the
+    6 parameters and you can use this to create custom filters per sample rate.
+    (#3139)
+  - The echo-canceler now supports different channels for the capture and playback
+    streams.
+
+## SPA
+  - A SB Audigy specific profile set was added to make better use of the
+    controls. (#2934)
+  - More ALSA IRQ based scheduling improvements.
+  - ALSA rate matching for sources was fixed. It would previously wait too
+    long for rate matching and then cause drift. This should reduce
+    crackling and stuttering whan capturing in low latency.
+  - The echo-cancel plugin API has a new method to make it possible to have
+    different channels for capture, source and playback.
+  - Reverted the UCM changes, they seem to cause regressions causing audio
+    to be muted in some cases.
+
+## Bluetooth
+  - Many more BAP fixes and improvements. Devices are now created as a set
+    and can be combined into one device by the session manager.
+
+## GStreamer
+  - Fix the GStreamer clock to make cheese video recording work again. (#3149)
+
+# PipeWire 0.3.68 (2023-04-06)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+This release contains a huge number of changes, some of which might cause
+regressions. Please report anything that seems to fail after the upgrade.
+UCM devices in particular might have changed names, profiles and ports that
+might require changes in custom scripts.
+
+## Highlights
+  - Symbolic links to the pipewire binary are now used instead of recompiling
+    the same binary multiple times.
+  - Changes to the graph scheduler related to quantum/rate updates and
+    calculation of the node states. Things should start and switch between
+    quantums and rates more smoothly now and especially virtual devices should
+    now only run when required.
+  - A new RTP session module was added. This uses the Apple MIDI protocol
+    to configure low-latency bidirectional MIDI (and with a PipeWire specific
+    extension, also audio) between machines. OPUS encoding was added to the
+    RTP formats. The SAP module was separated from the rtp-sink/source module
+    to make it more usable.
+  - A new runtime debug property was added to all streams and nodes to trigger
+    a save of the raw samples to a wav file. Support for this has also been
+    added to the echo-canceler to debug potential issues.
+  - Module pulse-tunnel has improved rate matching and synchronization
+    support. It should also not drift anymore for capture devices.
+  - The link-factory now ignores by default the link.passive property. This means
+    that tools like pw-link or jack clients and wireplumber can't make passive
+    links anymore. The reason is that there is now much more advanced logic in
+    PipeWire itself to handle passive links based on node and port properties.
+  - The RAOP sink was ported to new OpenSSL functions. Digest passwords are
+    handled correctly now and support for more devices was added.
+  - The ACP code was updated with new PulseAudio UCM code: "Create multiple
+    profiles per verb for conflicting devices". This might change the names
+    of devices, profiles and ports so scripts might need to be updated.
+  - Upmixing is disabled again by default. We now ship config files that
+    distros can install to enable upmixing again. The reason being that PipeWire
+    should not apply fancy DSP processing to audio by default.
+  - Many cleanups and bugfixes, including some crashes and memory corruption
+    bugs.
+
+## PipeWire
+  - Various FreeBSD compilation fixes.
+  - Don't crash when calling _connect twice in stream/filter. (#3091)
+  - Links are now installed instead of compiling the pipewire binary
+    multiple times.
+  - There is now a new core event bound_props that augments the bound_id event
+    with the global properties. This can be used to get the global.serial among
+    other global properties. It also makes it possible in the future to let the
+    server allocate unique names or uuids.
+  - Fix a bug where the server could go into an infinite reconfigure loop when
+    the samplerate of a driver would change.
+  - When a samplerate was forced, restore the previous best samplerate when the
+    samplerate is no longer forced. (#2133)
+  - Rework how the states of the nodes in the graph are calculated. A more
+    refined algorithm is now used that only runs nodes that need to run.
+  - Rework how the quantum change is applied to the graph. Drivers are now
+    responsible for using the new updated rate/quantum before starting a new
+    cycle. This avoids starting a cycle with an old quantum first.
+  - pw-stream and pw-filter will now ensure that the Trigger event is called
+    from the main thread.
+  - node.force-rate=0 will now force the node.rate on the graph, forcefully
+    switching the hardware into the new rate if possible. (#3026)
+  - Additional checks were added to the thread-loop to check locking order.
+  - Additional checks were added to pw-stream and pw-filter to check if methods
+    are called from the right thread context.
+
+## modules
+  - A new RTP session module was added. This uses the Apple MIDI protocol
+    to configure bidirectional MIDI (or audio) between machines.
+  - SAP support was removed from module-rtp-source and module-rtp-sink and
+    moved to a separate module. This makes it possible to use the RTP modules
+    without SAP support as well.
+  - The echo-cancel module now has support to save the signals to a wav
+    file for debugging purposes.
+  - The RTP modules now have support for the OPUS codec.
+  - The RAOP module was ported to new openssl encryption functions and handles
+    digest passwords correctly now.
+  - module-raop-discover now has match rules to be able to select the streams
+    and set properties.
+  - Module pulse-tunnel has improved rate matching and synchronization
+    support. (#3093)
+  - Fix potential memory corruption and infinite loops because
+    module-pulse-tunnel was unloaded from the wrong thread. 
+  - The link-factory now ignores by default the link.passive property. This means
+    that tools like pw-link or jack clients and wireplumber can't make passive
+    links anymore. The reason is that there is now much more advanced logic in
+    PipeWire itself to handle passive links based on node and port properties.
+  - module-echo-cancel will now clear its buffers after a suspend to avoid
+    playing stray samples.
+  - module-raop-sink will now handle 0 timing_port replies. (#3133)
+
+## SPA
+  - The adapter module now has support for saving the raw audio to a wav
+    file for debugging purposes.
+  - The ACP code was updated with new PulseAudio UCM code: "Create multiple
+    profiles per verb for conflicting devices". This might change the names
+    of devices, profiles and ports so scripts might need to be updated.
+  - Upmixing was disabled again by default. We now ship config files that
+    distros can install to enable upmixing again. (#3081)
+  - audioadapter and audioconvert have seen improvements in the experimental
+    non-DSP/passthrough mode.
+  - Fix a potential race where the dummy drivers could fail to stop a timer
+    and cause endless warnings in the logs.
+  - The ALSA plugin has experimental support for IRQ based scheduling. This
+    should decrease latency for some (mostly USB) drivers. This should bring
+    latency within JACK latency. More work on this will be done before the
+    1.0 release later this year.
+  - Audioconvert now has support for volume ramping. (#3046)
+  - A new loop method was added the check if a thread is currently running the
+    loop.
+  - channelmix.disable and resample.disable now generate an error when true
+    and channelmixing or resampling is required in the converter.
+
+## Bluetooth
+  - Fix a crash in some cases when a device was disconnected.
+  - Support async transport state changes. This avoids some lockups when the
+    bluetooth backend is having issues. (#3023)
+  - Align BAP sinks. This improves synchronization between earpieces.
+
+## ALSA
+  - Improve properties in pw-top and pavucontrol.
+
+## pulse-server
+  - Improve error handling from pulse-tunnel.
+  - Generate silence correctly for unsigned formats as well.
+  - Review buffer params. The streams should now just work with 1 or 2
+    buffers.
+  - module-rtp-send and module-rtp-recv now have support for the OPUS codec.
+
+# JACK
+  - Make sure we don't call any callbacks anymore when deactivating. (#2781)
+
+## GStreamer
+  - Sort the device by priority in deviceprovider. (#3072)
+
+# PipeWire 0.3.67 (2023-03-09)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - The loopback module and other couples streams will now not randomly
+    fail in some cases. (#3028)
+  - The RTP module now has support for sending and receiving MIDI as
+    well.
+  - The compress offload sink has seen many improvements. It now uses
+    ioctls directly to bypass limitations of tinycompress (to be able
+    to detect the available codecs, for example).
+  - Pulse server compatibility was improved for some apps by improving
+    the format parsing and FIX_ stream flag handling.
+  - The min quantum in the pulse server was changed from 256/48000 to
+    128/48000 to fix some issues with games that expect 5ms or less of
+    latency.
+  - The Bluetooth plugin has seen many improvements in packet scheduling
+    to attempt to reduce stuttering on some devices.
+  - The ALSA plugin now handles some impossible cases better. This fixes
+    recording in QEMU again. (#2971)
+
+## PipeWire
+  - SPDX tags were added to the code for copyright information.
+  - The random number functions were made more usable.
+  - The port property code was moved from the adapter to the port
+    implementation itself to make it more useful and unified for the
+    cases where no adapter is used (midi and video).
+  - Fix a potential overflow in mixer areas.
+  - Improve runnable state calculations of nodes. This is part of
+    ongoing work to avoid running nodes that should not need to run.
+  - The stream will now always call the process function when using
+    trigger, even if there are no buffers. This avoids stalls of the
+    processing graph in some cases. (#3028)
+  - Links are now marked as passive by PipeWire itself so that
+    the right thing happens in all cases.
+  - Implement the in/out/true values for the node.passive property.
+    Place a passive state on ports to make passive links on a port
+    by port basis.
+
+## Tools
+  - pw-cat has seen improvements in the encoded file playback case.
+
+## Modules
+  - The rtp module has support for MIDI now.
+  - DSCP is now configurable in the RTP module.
+  - The loopback module doesn't randomly fail to work anymore. (#3028)
+
+## SPA
+  - The null-audio sink can now be given a format and it will return this
+    instead of the default float ones. This makes it possible to make a
+    null-sink that has a given format.
+  - The compress offload sink has seen many improvements. It now no longer
+    uses tinycompress to be able to detect the available codecs.
+  - The ALSA plugin now handles some impossible cases better. (#2971)
+  - Fix compilation on older compilers. (#3050)
+
+## Pulse-server
+  - The FIX_ flags are now implemented more correctly by fixating the
+    stream to the format of the sink/source they ask to be connected to.
+    There is now also an option to override the fixation based on rules.
+  - Format parsing was improved and should now support all format strings
+    supported by pulseaudio including upper and lower case variants
+    and shortcuts.
+  - Channelmap parsing was improved and should now reject invalid
+    channelmaps as well as support the shortcuts supported by pulseaudio.
+  - Escape codes in module arguments now work as it does in pulseaudio. (#3071)
+  - The min quantum was changed from 256/48000 to 128/48000 to fix some
+    issues with games that expect 5ms or less of latency.
+
+## JACK
+  - jack.passive-links can now be used to have a JACK client make passive
+    links and the node.passive property is no longer used for this because
+    it has a different function.
+  - The qsynth rule was updated to the new node.passive features. It is now
+    only passive on the output side.
+
+## Bluetooth
+  - BAP delay and transport latency are handled now.
+  - A2DP and SCO can now use bigger buffers to improve quality when the
+    reception is jittery.
+  - The AT+BCC command is now implemented.
+  - Packet encoding now happens ahead of time when possible to avoid delays
+    before sending it.
+  - Source should now always produce complete (padded) buffers to avoid sync
+    problems.
+  - Don't set unnecessary socket options.
+
+## GStreamer
+  - The pipewiresrc now has an autoconnect argument.
+  - The metadata plane count is now handled correctly in more cases.
+  - Stream errors are now handled correctly to stop the GStreamer elements.
+
+# PipeWire 0.3.66 (2023-02-16)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a regression in the pulseaudio module-combine-stream because the new
+    module-combine-stream was not installed.
+  - PipeWire can now generate a limits.d config file with our recommended
+    settings for priorities and memlock.
+  - Modules, exec and objects can now be loaded depending on conditions. One
+    example is the X11-bell module that can now be disabled with a custom
+    property override.
+  - Filter-chain has a new mysofa based spacializer plugin.
+  - Suport was added for different clocks that allow the RTP modules to work
+    with a PTP clock, for example.
+  - Many bugfixes and improvements.
+
+
+## PipeWire
+  - Avoid rate switches when the graph is idle.
+  - The rate selection algorithm was improved. This ensures minimal performance
+    and quality loss when resampling.
+  - The default min.quantum was set to 32 again after it got erronously changed
+    to (the too low) 16 in version 0.3.45.
+  - Fix compilation issues with rust bindings because of macros in defines.
+    Work around it for now. (#2952)
+  - Invalid file mappings are now refused (#2617 #2914 #3007)
+  - Modules, exec and objects can now be loaded depending on conditions. One
+    example is the X11-bell module that can now be disabled with a custom
+    property override.
+  - Filter now also supports _trigger_process() to drive the graph.
+  - TID is now added to the journald log.
+  - PipeWire generates and installs */etc/security/limits.d/25-pw-rlimits.conf*
+    that by default contains project's recommended settings. Creation of the
+    pipewire group is left to the distro or user ( `groupadd -r pipewire` ).
+    See the rlimits-* Meson options for controlling this behavior.
+  - Additionally there is now by default disabled Meson option that will
+    install */etc/security/limits.d/20-pw-defaults.conf* with the current Linux
+    default memlock value. Distros with only kernels >=5.16 or always using
+    systemd v251 or newer do not need this. But all other builds should set the
+    `-Dpam-defaults-install=true` Meson option to ensure that the memlock value
+    is always large enough. Thanks to Rickie Schroeder for pointing out that
+    the default Linux memlock value has been somewhat recently increased.
+
+## modules
+  - Install module-combine-stream.
+  - RTP source now has support for custom channel names.
+  - RTP source will now stop when inactive.
+  - Filter-chain has a new mysofa based spacializer plugin.
+  - The RTP modules can now use direct clock timestamps to send and receive
+    packets. This makes it possible to synchronize sender and receiver with
+    a PTP clock, for example.
+  - Filter-chain now has an invert plugin to invert the polarity of a
+    signal. (#3008)
+
+## SPA
+  - There is now an option to set the channels used for probing Pro Audio
+    devices. This could unlock more samplerates for some devices when they are
+    probed with fewer channels. (#2990)
+  - Support was added for other clocks than the MONOTONIC clock in the
+    driver nodes. This can be used to synchronize the graph to a PTP clock,
+    for example.
+  - The ALSA source has some more headroom when rate matching to avoid
+    stuttering when following another driver.
+  - libcamera controls are now mapped to standard PipeWire property values.
+  - The channelmixer has seen some improvements. MONO and undefined channel
+    layouts are now upmixed and downmixed more correctly. (#3010)
+
+## Bluetooth
+  - Many BAP support fixes.
+
+## GStreamer
+  - The gstreamer elements now support buffer video metadata so that strides
+    are correctly handled.
+  - pipewiresrc will now error out correctly in more cases. (#2935)
+
+## JACK
+  - The frame to/from time functions are improved to also work with negative
+    time and frame offsets.
+
+# PipeWire 0.3.65 (2023-01-26)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Add back the deprecated symbols but make sure a deprecated warning is
+    emitted for them. This fixes compilation issues in bindings.
+  - Fix an error in the AVX code that could cause crackling in filter-chain
+    when using the mixer.
+  - The convolver in filter-chain can now select an IR from a list of IRs
+    that best matches the current samplerate. Also resampling of the IR
+    has been improved.
+  - A new native module-combine-stream was added. You can use this to create
+    a 5.1 device from 3 stereo soundcards, for example, or direct the output
+    to multiple sinks at once.
+  - Support for Bluetooth MIDI was added. This requires a wireplumber
+    addition as well.
+  - An ALSA plugin rule was added to tweak the buffer settings in Davinci
+    Resolve so that it now runs with acceptable latency. (#1697)
+  - Support for compress offload was added using tinycompress. This allows
+    compressed formats to be decoded in hardware using ALSA on some devices.
+  - Many more buffixes and improvements.
+
+
+## PipeWire
+  - Add back the deprecated symbols but make sure a deprecated warning is
+    emitted for them. (#2952)
+  - Fix a regression when running older servers and newer clients (such as
+    flatpaks on older server) where the server would run clients too soon,
+    causing crashes. (#2964)
+  - Ensure that environment variables override any config values.
+
+## Tools
+  - pw-cli has received some improvements in the output.
+  - pw-cat can now use ffmpeg to demux streams for compress offload.
+
+## modules
+  - The convolver IR volume is now preserved after resampling.
+  - Adapter ports can now have a custom prefix.
+  - module-rt now clamps the realtime priority to the user allowed one if
+    it is within an acceptable range. Before it would fall back to RTKit
+    immediately.
+  - The module-echo-cancel can now have per stream channel layouts which
+    makes it possible to link to specific audio ports on a device. (#2939)
+  - Fix an error in the AVX code that could cause crackling in filter-chain
+    when using the mixer. (#2965)
+  - The convolver in filter-chain can now select an IR from a list of IRs
+    that best matches the current sample-rate.
+  - module-pipe-* now better matches the pulseaudio properties. (#2973)
+  - A new combine-stream module was added to combine multiple sinks into
+    one sink. It is also possible to merge multiple sources into one.
+  - module-rtp-source now has match rules to select what SAP sessions
+    to stream from. There were also improvements to the buffering and
+    latency handling.
+  - module-rtp-sink now handles multicast loopback correctly.
+  - module-rtp-sink implements min-ptime and max-ptime to control the
+    send packet latency.
+
+## SPA
+  - A new modifier flag was added to the video format parser helper to
+    allow 0 (linear) as a valid modifier. (#2943)
+  - Params includes were reorganized to make it more scalable. Many compressed
+    audio formats were added.
+  - The alsa pcm plugin now handles invalid values from the driver
+    gracefully. (#2953)
+  - Fix some potential stuttering cause by wrong scaling and overflow
+    of the output buffers in audioconvert. (#2680)
+  - Debug output is now also sent to the log instead of stdout. (#2923)
+  - A debug context was added to debug macros to implement custom debug
+    handling. This is used to redirect the debug of pods to the debug log
+    instead of using some custom duplicated code.
+  - Fix some warnings for potentially undefined shifts in format
+    conversion.
+  - Support for compress offload was added using tinycompress. This is mostly
+    used on some embedded hardware where decoding of audio formats can be
+    done in hardware.
+
+## Bluetooth
+  - Some fixes for LE audio were added.
+  - Support for Bluetooth MIDI was added. This requires a wireplumber
+    addition as well.
+  - Reply OK to empty commands.
+  - Improve compatibility with some devices that send stray \n such as
+    the Sennheiser HD 350BT. (#2991)
+
+## pulse-server
+  - Devices with unsupported formats (by the pulseaudio API) are now also
+    listed in the pulseaudio API (with invalid formats).
+  - The native module-combine-stream is used for module-combine-sink.
+
+## JACK
+  - Make jack.merge-monitor default to true to better match the jack1/2
+    behaviour. Add an exception for mixxx, which is more usable with
+    unmerged monitors. (#1760)
+
+## ALSA
+  - The property handling in the ALSA plugin was improved. alsa.properties
+    and alsa.rules can now be added to the config file.
+  - A rule was added to tweak the buffer settings in Davinci Resolve so that
+    it can run with acceptable latency. (#1697)
+  - ALSA volume will now also use cubic volumes, like pulseaudio.
+  - The ALSA ctl plugin now also uses the client-rt.conf file.
+  - A new alsa.volume-method was added to configure cubic or linear volume.
+    This can be set per application using the rules.
+
+## GStreamer
+  - pipewiresrc will now advertize DMABUF support if the pipeline suports
+    this.
+  - pipewiresrc will now always be a live source unless told otherwise.
+
+# PipeWire 0.3.64 (2023-01-12)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Clear old buffer memory on ports to fix some SIGBUS errors.
+  - It is now possible to assign custom port names to the ports from an
+    adapter. This feature is helpful to those who use a multichannel
+    interface with long-term connections. This way they can label each
+    port with its designation, such as an instrument name or anything else
+    to be displayed in a patchbay or DAW.
+  - Fix some issues with node suspend and quantum and rate calculations.
+  - Fix some regressions in pulse-tunnel and RTP-source adaptive resampling
+    that could cause synchronization problems.
+  - UCM devices now also have a Pro Audio profile.
+  - NODE_TARGET (with the object.id) is now deprecated, use TARGET_OBJECT
+    (with the object.serial, which is not reused and can avoid races).
+
+
+## PipeWire
+  - Clear all peer input port buffers when suspending. This fixes some
+    SIGBUS errors when some plugins were using old memory. (#2914)
+  - Fix a case where nodes that were not supposed to be suspended, were
+    kept suspended on a rate change. (#2929)
+  - Fix an error in the quantum and rate calculations that could cause
+    nodes to run with wrong quantum and rates when multiple rates were
+    allowed. (#2925)
+
+## Tools
+  - pw-dump will now sort dictionaries to make it easier to compare
+    different outputs.
+  - Improve output of pw-reserve.
+  - pw-loopback uses TARGET_OBJECT so you will need to use the serial
+    id (or better the name) as the target instead of the object id.
+
+## modules
+  - The filter-chain modules has seen some cleanups, refactoring and
+    optimizations in the various DSP functions.
+  - The ROC module now supports setting a custom samplerate.
+  - ROC 0.2.X is now required.
+  - The pulse tunnel and RTP source were not updating the rate field
+    correctly which could cause synchronization problems. (#2891)
+  - The filter-chain now supports an arbitrary number of control
+    properties. (#2933)
+  - It is now possible to assign custom port names to the ports from an
+    adapter with the PW_KEY_NODE_CHANNELNAMES.
+  - Support was added for capture and playback props in echo-cancel.
+    (#2939)
+
+## SPA
+  - The ACP code now has an option to set the probe samplerate. (#1599)
+  - UCM devices now also have a Pro Audio profile.
+  - Filtering of Step ranges is now implemented.
+
+## Pulse-Server
+  - The channel-map is now set correctly on the echo-cancel module.
+  - source_master and sink_master are now correctly handled in module
+    echo-cancel.
+  - Fix a regression in DRAIN where resuming after a DRAIN would fail.
+    This caused problems for espeak. (#2928)
+  - TARGET_OBJECT is now used to make it possible to use the indexes
+    as a target.
+  - ladspa-source and remap-source can now also link to monitors.
+
+## ALSA
+  - The ALSA plugin now handles the target.object correctly when set to
+    -1. (#2893)
+
+## V4L2
+  - The v4l2 replacement library now also follows symlinks.
+  - Support for getting and setting controls was added.
+  - Support for G_PARM was added.
+  - The environment variable PIPEWIRE_V4L2_TARGET can be used to force
+    an application onto a specific camera.
+
+## Bluetooth
+  - Fix compilation without ldac_abr.
+  - Fix a missing brace in CIND reply. This could cause some devices to
+    fail.
+  - Fix configuration of the initial latency.
+
+## GStreamer
+  - The device provider now supports setting an fd so that it can connect
+    to PipeWire sessions from the portal.
+  - DMABuf support was re-enabled in gstpipewiresrc.
+
+# PipeWire 0.3.63 (2022-12-15)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a critical bug that causes audio distortion in some cases when using
+    AVX2.
+  - Fix a crash in mpv caused by deinit of PipeWire.
+  - Resample the convolver IR to match the graph samplerate for better
+    results.
+  - Many more small bugfixes and improvements.
+
+
+## PipeWire
+  - Fix a segfault in the PipeWire deinit code triggered by mpv in some
+    cases. (#2881)
+  - Fix docs about SPA_PLUGIN_DIR.
+  - Always dlclose by default (even under valgrind). Add an option with
+    PIPEWIRE_DLCLOSE to select alternative behaviour.
+  - Improve PIPEWIRE_DEBUG category handling.
+
+## modules
+  - Resample the IR for the convolver when the IR samplerate and graph rate
+    don't match.
+
+## SPA
+  - Handle spurious reads from timerfd gracefully.
+  - Fix potential stack-use-after-scope when starting Audacity.
+  - Fix distorted audio when using AVX2. (#2885)
+  - Remove fallback to default channel map in channelmix.
+  - Improve sorting of MIDI events, use the same order as Ardour. (#1816)
+  - Enable LFE downmixing by default. (#2425)
+  - Make IEC958/AC3 and IEC958/DTS work better by enforcing a fixed minimal
+    buffering for the encoder to avoid stuttering. (#2650)
+
+## Pulse-Server
+  - Add a new pulse.cmd config section to execute pulse commands, currently
+    only for loading modules. This removes the dependency on pactl.
+  - Improve debug of messages.
+
+# PipeWire 0.3.62 (2022-12-09)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - A regression in screensharing was fixed. It was caused by a race when
+    activating links and driver nodes.
+  - Video transform metadata was added so that cameras and screen sharing
+    can report the video orientation and transformations.
+  - Support for the PulseAudio module-gsettings was added to make paprefs
+    work.
+  - Support for bluetooth offloading was added. This allows for the bluetooth
+    reception, decoding and playback to happen completely in hardware.
+    This also requires some support in WirePlumber.
+  - Many bugfixes and improvements.
+
+
+## PipeWire
+  - More work on stopping nodes in a more controlled way.
+  - Fix a race in starting nodes and drivers. In some cases the driver
+    node would already be started while the link to the peer node was not
+    ready yet. This caused regressions in screen sharing. The driver is
+    now only started after all the followers and links completed.
+  - Fix a case where a slow capture stream would not recycle buffers
+    anymore and stall. (#2874)
+  - Fix a subtle bug in pw_loop_invoke that could cause callbacks to be
+    delayed and cause crashes in some cases.
+  - Fix a case where IPC was done from the data-thread and could cause
+    crashes.
+
+## Tools
+  - Silence some expected errors in the pw-top output.
+
+## modules
+  - The filter-chain has seen some optimizations in the copy plugin and
+    the convolver.
+  - The zeroconf plugin will now only unpublish services from the server
+    that was removed.
+  - Fix a potential crash when stopping pw-loopback.
+  - Some harmless errors were turned into info messages.
+  - Fix some cases where pw_stream methods were called from the data-thread
+    that could cause segfaults. (#2633)
+
+## SPA
+  - There is now a video transform metadata that indicates how a video
+    frame was transformed (rotated/flipped). libcamera and the GStreamer
+    elements now have support for this metadata.
+  - The SPA volume plugin is now disabled from the default build.
+  - Handle missing control info in libcamera.
+  - Handle errors from loop better, don't call the callbacks on errors.
+  - Somewhat improve performance in some audioconvert AVX2 code for format
+    conversion.
+  - Fix PortConfig and EnumPortConfig params in audioconvert and
+    audioadapter to reflect what is actually going on instead of using
+    hardcoded values.
+  - Pass ignore-dB property correctly in all cases.
+  - Probing is now done in 48KHz again. (#2857)
+
+## Pulse-server
+  - IPv4 addresses are now added first to the list and exposed first with
+    zeroconf discover.
+  - module-gsettings was added to make paprefs work.
+  - The pulse.idle.timeout option was disabled by default and only enabled
+    for selected apps (speech-dispatcher) because it caused some problems
+    for other apps. (#2880)
+
+## JACK
+  - Only process valid ports. Could fix some crashes. (#2863)
+
+## Bluetooth
+  - Support was added for offloading bluetooth handling. Some hardware can
+    receive, decode and play the bluetooth audio directly in hardware.
+
+# PipeWire 0.3.61 (2022-11-24)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a bug in audioadapter that could cause crashes when switching
+    bluetooth profiles.
+  - Fix sound in QEMU, deadbeef and openal again.
+  - libcamera plugin fixes, dynamic add and remove should now work with
+    the next wireplumber version.
+  - Fix a regression in pw-midiplay where the first buffer would not
+    play and some events would be missing.
+  - The network module now doesn't export other network sources
+    anymore.
+  - pulse-server now detects clients that keep underrunning for a long time
+    and will pause them to save power.
+  - Many more bugfixes and improvements.
+
+
+## PipeWire
+  - Optimize away some useless graph recalculations.
+  - Increase alternative sample rates from 16 to 32.
+  - FreeBSD and musl build fixes.
+  - Silence some module loading errors when the error can be ignored.
+  - Fix initial buffer requested size for pw-stream when operating in
+    async mode. This also indirectly fixes the first buffer in
+    pw-midiplay. (#2843)
+
+## Modules
+  - Set the network property on pulse-tunnel streams so that they are
+    not exported anymore. (#2384)
+  - Filter-chain has optimized mix functions now.
+
+## SPA
+  - Handle some errors in libcamera better.
+  - Fix libcamera remove events. Fix the id allocation for devices.
+  - Fix a bug in audioadapter where it would not renegotiate after
+    a port reconfiguration, leading to crashes, especially when
+    automatically switching profiles in bluetooth. (#2764)
+  - Do ALSA probing in 44100Hz again. Some devices seem to fail
+    otherwise for some unknown reason. (#2718)
+  - Force playback start when the ALSA buffer is full. This fixes sound
+    in QEMU. (#2830)
+  - Support Digital 5.1 AC3 for Asus Xonar SE.
+  - Improve format renegotiation in audioadapter. This makes the ALSA
+    plugin work again for deadbeef. (#2832)
+  - Fix latency reporting on adapter DSP ports.
+
+## pulse-server
+  - Fix a bug where openal based applications would hang. (#2821)
+  - Improve zeroconf publish. Only publish on the address of the first
+    running server. This avoids duplicate entries for IPv4 and IPv6.
+    Add support for republish entries when new servers are started.
+  - Add a pulse.idle.timeout option (default to 5 seconds) to pause
+    streams that have been underrunning for this amount of time. Badly
+    behaving clients will then not keep the graph and device busy so
+    that devices can be suspended to save battery. This should give
+    better default behaviour with speech-dispatcher. (#2839)
+
+## JACK
+  - Add an option to configure the filter character.
+  - Fix connect_callbacks. It was only called once for output ports.
+    (#2841)
+  - Add option to set node.passive on jack clients. Make some quirks
+    for qsynth to make it suspend and fade out better.
+
+# PipeWire 0.3.60 (2022-11-10)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - The filter-chain now handles errors better and has fixes for many
+    crasher bugs.
+  - A new RTP module was added with a sender and receiver. It uses SAP
+    to announce and consume RTP streams and is compatible with the
+    PulseAudio RTP modules.
+  - Many small bluetooth improvements and fixes.
+  - The alsa plugin will now only start playback when there is data. This
+    results in better sync and lower latency between capture and playback.
+  - The v4l2 and libcamera plugins have seen a lot of improvements. They
+    support control properties now. Also pw-v4l2 has seen many improvements
+    and mostly passes the v4l2-compliance test now.
+  - Many more bugfixes and improvements.
+
+
+## PipeWire
+  - Code cleanups, compiler warning fixes.
+  - Add some extra checks to avoid scheduling an inactive node.
+  - Rework the sequence of events to start and stop nodes.
+  - Improve param enumeration.
+  - An option was added to give priority to the Buffer params of the
+    consumer. This makes it possible to use the default values of the
+    consumer (instead of the producer) when capturing from a source.
+  - The graph rate selection was improved to pick a rate closest to the
+    requested one (instead of picking the default).
+
+## Modules
+  - Fix some crashes in filter-chain. (#2737)
+  - X11 Bell module will now be loaded by default when available.
+  - A new RTP module was added with a sender and receiver. It uses SAP
+    to announce and consume RTP streams and is compatible with the
+    PulseAudio RTP modules.
+  - Improve RAOP compatibility.
+  - The echo-cancel module now uses the resampler prefill option to align
+    input and output samples without buffering. Better latency control
+    when starting and stopping has been implemented.
+  - The pulse tunnel will now write aligned samples to pulseaudio even
+    when the ringbuffer wraps around. This fixes playback issues with
+    multichannel sinks.
+  - Add a delay option to module-loopback using a ringbuffer.
+  - Implement echo-cancel params.
+  - The filter-chain module has better error reporting.
+  - The LADSPA search path was extended with some more common paths.
+  - The echo-canceler input can now also be a monitor of a sink. This
+    improves compatibility with some proton games that expect a real
+    sink instead of a virtual one.
+
+## Tools
+  - Better error reporting in pw-link.
+  - pw-top now also shows IEC958 passthrough formats and JPEG/H264 video
+    formats.
+  - pw-top refreshes the screen faster.
+  - pw-top now prints the state of the node and shows less info for
+    inactive nodes.
+  - pw-dump now uses the new seq field in the spa_param_info to discard
+    old param updates and avoid duplicate params in the output.
+
+## Bluetooth
+  - Add ModemManager support in the native backend.
+  - Clean up GetManagedObjects handling.
+  - Handle QoS from the endpoints in the codec.
+  - Increase the socket buffer to have more control over the rate and QoS.
+  - Simplify the packet flushing code.
+  - Stop processing nodes before destroying them.
+  - Fix timers when a source switches drivers.
+  - Codecs can now share endpoints. This reduces the amount of endpoints and
+    avoids problems with devices that can't handle a large amount of
+    codec endpoints.
+  - Report batery status to UPower for HFP AG.
+  - Fix bitpool increase.
+
+## SPA
+  - The audioresampler now avoids clicks and pops between activating and
+    deactivating the adaptive resampler when used by the stream API.
+  - Use default locale to parse float parameters.
+  - The upmix functions now have SSE optimizations.
+  - Avoid recalculating the complete channelmix setup when only the
+    volume changes.
+  - The alsa plugin will now only start playback when there is data. This
+    results in better sync and lower latency between capture and playback.
+  - The ALSA MIDI sequencer will now pull data from the graph even when it
+    did not output anything. Fixes some graph stalls with the sequencer in
+    some cases. (#2775)
+  - v4l2 and libcamera sources now recycle buffers when nothing is consuming
+    them. This avoids stalling the graph.
+  - libcamera now suggests a more appropriate frame size than the smallest
+    poster frame.
+  - Improve state changes in audioconvert. (#2764)
+  - A new seq field was added to spa_param_info to keep track of pending
+    param updates.
+  - Support speaker output only on RealTek ALC4080. (#2744)
+  - The v4l2 source now supports setting controls.
+  - The libcamera plugin now supports enumerating and setting controls.
+  - A new unit test for 6.1 channel mapping was added. (#2809) More debug
+    info was added to audioconvert for the channel matrix.
+  - Audioconvert will now also upmix a rear-center channel when needed.
+
+## pulse-server
+  - Add support for the RTP send and recv modules with the new native
+    RTP module.
+  - Add option to set latency for pulse-tunnel streams and
+    module-zeroconf-discover.
+  - The socket will now be given the same permissions as what pulseaudio
+    did (0777).
+  - Implement module-loopback latency_msec correctly with the new delay
+    parameter.
+  - sysfs.path is now filled with the same data as pulseaudio.
+  - The manager now uses the new seq field in the spa_param_info.
+  - Fix a bug where in some cases the read pointer would get out of sync
+    and cause too large requests. (#2799)
+
+## ALSA
+  - The alsa plugin now reuses the stream in prepare which results in
+    better performance.
+  - Some deadlocks have been fixed in the ALSA plugin.
+  - The ALSA plugin reports more accurate timing information in some cases.
+
+## V4l2
+  - The v4l2 compatibility layer has received a lot of updates.
+  - Improved node names and format enumeration.
+  - Support for multiple /dev/videoX devices, each mapped to a unique
+    PipeWire node.
+  - Passes the v4l2-compliance test now with both the v4l2 and libcamera
+    backend in PipeWire.
+  - Improved mmap support for inline buffer memory. This makes it possible to
+    consume PipeWire streams.
+  - Negotiation works more reliably now.
+
+## JACK
+  - Implement jack_acquire_real_time_scheduling() and
+    jack_drop_real_time_scheduling() by keeping the thread utils in a global
+    state.
+  - Fix jack_client_thread_id() to return NULL when the client is not active,
+    just like jack1 and jack2.
+  - An option was added to let the jack_set_buffer_size() function update the
+    global metadata. A quirk was added so that jack_bufsize uses this new feature
+    to make the buffer size settings persistent and global, just like jack.
+  - jack_port_register() and jack_port_unregister() can be called on an
+    active client so make this thread safe. (#2652)
+
+# PipeWire 0.3.59 (2022-09-30)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix possible wrong samplerate in loopback streams after suspend and
+    rate switch.
+  - module-filter-chain can now adapt to the graph samplerate.
+  - Fix some potential stuttering and crackling in pulse-server.
+  - Add Bluetooth LE support. This requires experimental kernel and bluez
+    support.
+  - The ALSA plugin has more options to control the buffer size. This can
+    be used to work around high latency in davinci resolve.
+  - Many bugfixes and improvements.
+
+
+## PipeWire
+  - Add audio capture example with volume meter.
+  - Fix a case where a rate switch would not suspend all the nodes of the
+    driver first. This could cause wrong samplerates in streams.
+  - Fix a case where a node would be Paused while still added to the
+    graph, causing potential crashes. (#2701)
+
+## Modules
+  - module-filter-chain and module-loopback now use the resample.prefill
+    option to avoid buffering extra samples and causing unwanted latency
+    when resampling is activated.
+  - module-filter-chain can now adapt to the graph samplerate.
+  - Improve module-raop to support the ALAC codec as raw PCM.
+  - Improve RTSP parsing to improve compatibility.
+
+## Tools
+  - Fix 100% CPU in pw-cli monitor mode. (#2709)
+  - spa-acp-tool can now be exited with ctrl-D.
+
+## SPA
+  - Various libcamera fixes and improvements.
+  - Set stride on audioconvert output buffers.
+  - Make sure we always place the last requested size from the resampler
+    on the buffers in pw-stream.
+  - Add resample.prefill option in the resampler to fill the history with
+    0 so that we don't have smaller buffers at the start.
+  - Make sure that when an overflow corrupts a POD, that it will always
+    stay corrupted.
+  - Rate limit some ALSA warnings and reduce some unwanted warnings.
+  - Don't recalculate the audioconverter state for each pause/play. (#2701)
+  - Fix some POD parsing inconsistencies and potential overflows.
+  - Add support for Asus Xonar SE.
+  - Fix Flush command handling. It should not stop playback. (#2726)
+  - Refactor the peaks function and add some unit tests and optimizations.
+  - The channelmix has an optimized nXm converter and new unit tests.
+  - Normalization in the channelmixer was fixed.
+
+## pulse-server
+  - The requested latency of record streams was reduced to fix some
+    stuttering in Teamspeak. (#2702)
+  - Tweak the max amount of bytes sent to a client. (#2711) (#2715)
+  - Improve maxlength calculations, this fixes some crackling noise with
+    high samplerate and channel counts in some players (audacious).
+
+## Bluetooth
+  - Merge Bluetooth LE support.
+  - Make sure we are backward compatible with WirePlumber.
+  - Fix some HFP and HSP AT command parsing. (#2463)
+  - Use HFP by default over HSP.
+
+## ALSA
+  - Increase max number of periods.
+  - The parameters handling was improved. There is now an option to set the
+    buffer-bytes of the ALSA plugin.
+  - PIPEWIRE_ALSA can now be used as an environment variable to restrict the
+    plugin formats and buffer size.
+
+# PipeWire 0.3.58 (2022-09-15)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a regression that could cause audio crackling.
+  - Fix a regression in RTKit because rlimit was not set correctly.
+  - JAVA sound applications will now alsa work with the pulseaudio-alsa plugin.
+  - pw-top will now show the negotiated formats of devices and streams.
+  - Fix some potential crashes when starting streams.
+  - The ALSA plugin has had improved timing reporting and poll descriptor
+    handling that should improve compatibility.
+  - Many more improvements and bugfixes.
+
+
+## PipeWire
+  - Avoid scheduling nodes before they are added to the graph. This could
+    avoid some crashes when scheduling nodes that were not completely
+    started yet. (#2677)
+
+## Tools
+  - pw-top now also shows the negotiated formats of streams and devices.
+    (#2566)
+  - pw-top prints microseconds as "us" now to avoid unicode problems.
+
+## Modules
+  - Fix compilation with newer lv2.
+  - Fix setting realtime priority with RTKit, it was not setting rlimit
+    correctly and RTKit would refuse to change the priority.
+  - Fix some playback problems with RAOP sink. (#2673)
+  - Filter chain will now warn when a non-existing control property is
+    used in the config file. (#2685)
+  - Filter chain can now handle control port names with ":" in the name.
+    (#2685)
+  - The echo-cancel module and interface now has activate/deactivate
+    functions to make it possible for plugins to reset their state.
+
+## SPA
+  - Make sure audioconvert uses the given channelmap and channels for the
+    volumes, even when not negotiated yet. This makes it possible to change
+    the volume before the node has been negotiated.
+  - Refactor the peaks resampler. Fix an error in the SSE code.
+  - Fix DSD min/max rates, avoid exposing impossible rates.
+  - Set monitor port buffer size correctly. This could cause some crackling
+    and hickups. (#2677)
+  - Make ALSA sequencer port names unique.
+
+## Pulse-server
+  - Rework the capture buffer attributes to better match pulseaudio. This
+    fixes a regression where opening pavucontrol could cause crackling.
+    (#2671)
+  - Implement TRIGGER and PREBUF methods.
+  - Handle clients that send more than the requested amount of data.
+    PipeWire will now also keep this as extra buffered data like PulseAudio.
+    This fixes JAVA sound applications when they are running on top of the
+    PulseAudio ALSA plugin. (#2626,#2674)
+  - Update the requested amount of bytes more like PulseAudio. Fixes
+    stuttering after resume with the GStreamer pulseaudio sink. (#2680)
+
+## ALSA Plugin
+  - More debug info was added. The time reporting was improved.
+  - The poll descriptor handling was improved, avoiding some spurious
+    wakeups. (#1697)
+
+
+# PipeWire 0.3.57 (2022-09-02)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Support masking of conf.d/ files. (#2629)
+  - Use org.freedesktop.portal.Realtime when available. This does the
+    correct PID/TID mappings to make realtime also work from flatpaks.
+  - Fix rate adjustement logic in pulse-tunnel. This would cause
+    increasing delays and hickups when using tunnels. (#2548)
+  - Add OPUS as a new vendor codec. Add OPUS-A2DP spec. PipeWire can now
+    send and reveive OPUS data over bluetooth.
+  - An AAC decoder was added so that PipeWire can now also function as
+    an A2DP AAC receiver.
+  - Fix some issues where the wrong samplerate was used. (#2614)
+  - Fix rate match for sources. This fixes an error where follower sources
+    would generate many resync warnings.
+  - Many more bugfixes and improvements.
+
+
+## PipeWire
+  - Support masking of conf.d/ files. (#2629)
+  - Add some more debug info to memfd.
+  - Improve data-loop invoke method. Also flush pending items. (#2631)
+  - Add a filter-chain systemd service file than can be used to start
+    custom filters placed in ~/.conf/pipewire/filter-chain.d/ (#2553)
+  - Improve triggered timestamps for remote nodes.
+  - Fix some potential cross compilation problems due to wrong
+    host_machine.
+  - Check return values of pw_getrandom().
+
+## Tools
+  - Updates to pw-cli manpages. (#2552)
+  - Remove the pw-cli dump command. It is mostly implemented as part of
+    wpctl status, pw-dump, pw-link, pw-top and others.
+  - Clean up resource in pw-cat correctly on errors. (#2651)
+
+## Modules
+  - Fix compilation of AVB on big-endian. Enable AVB only on Linux.
+  - Use org.freedesktop.portal.Realtime when available. This does the
+    correct PID/TID mappings to make realtime also work from flatpaks.
+  - Fix compilation of ROC module when headers are missing. (#2513)
+  - Improve some error cleanup paths in protocol-native. Improve connect
+    and disconnect.
+  - Fix a potential crash in FFT unload in filter-chain.
+  - Implement PIPEWIRE_NOTIFICATION_FD for notification when the socket
+    is ready.
+  - Try to use rtkit if set_nice() fails.
+  - Fix rate adjustement logic in pulse-tunnel. This would cause
+    increasing delays and hickups when using tunnels. (#2548)
+  - Handle disconnect in pulse-tunnel.
+
+## Bluetooth
+  - Add OPUS as a new vendor codec. Add OPUS-A2DP spec. PipeWire can now
+    send and reveive OPUS data over bluetooth.
+  - An AAC decoder was added so that PipeWire can now also function as
+    an A2DP AAC receiver.
+
+## SPA
+  - Tweak the resampler window function some more. (#2574)
+  - Improve format convert performance in some fallback cases.
+  - Fix rounding in format conversion on ARM NEON.
+  - Fix libcamera build error. (#2575)
+  - Fix some issues where the wrong samplerate was used. (#2614)
+  - Don't wait for more samples that can fit in the ringbuffer in ALSA.
+  - Improve buffer size handling in audioconvert, scale the buffers based
+    on the rate conversion and make things work with really large rate
+    conversions as well.
+  - Add more and better debug for ALSA devices.
+  - Improve channel mix: Filter FC and LFE when copying from a different
+    layout. Implement STEREO from FC. Avoid generating REAR from FC in PSD
+    mode.
+  - Fix rate match for sources. This fixes an error where follower sources
+    would generate many resync warnings.
+  - Improve ALSA format negotiation. If the ALSA node is not running and
+    there was a previously configured format, close and reopen the device
+    to enumerate and accept all possible formats again. (#2625).
+
+## ALSA
+  - The alsa plugin will now also save the volumes set with the control
+    API. This saves the volumes set with alsa-mixer, for example.
+
+## Pulse-server
+  - Flatpak apps with devices=all (Zoom) will now be granted Manager
+    permissions.
+  - Small tweaks to the amount of data sent to clients to work around an
+    issue in freerdp.
+
+## JACK
+  - Clean up the transport correctly when closing a client. (#2569)
+  - Match context properties in addition to node properties for the jack
+    client rules. (#2580)
+  - Make sure to return an error when disconnected from the server. (#2606)
+  - Fix thread cast problem in jack_client_thread_id().
+  - Increase jack_client_name_size() length and make sure we have space for
+    the \0 byte.
+  - JACK clients from the same application will be added to the same group
+    so that they share the quantum and rate.
+
+# PipeWire 0.3.56 (2022-07-19)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - A critical bug that could crash JACK apps was fixed.
+  - Some more regressions in audiomixer were fixed. This should fix crackling
+    and stuttering in some cases as well as some channel mapping regressions.
+  - A bug in the alsa plugin was fixed that could cause stuttering in VMs.
+  - Bluetooth sources should have improved latency and rate control.
+  - Many more bugfixes and improvements.
+
+
+## Modules
+  - An experimental AVB module was added. It can expose PipeWire as an AVB
+    entity and initiate (broken) streaming between entities.
+  - module-loopback now handles the cases where the input and output channels
+    are different without crashing or producing silence.
+  - The filter-chain module now correctly calculates the output size without
+    crashing in some cases. It also skips invalid ports instead of crashing.
+  - Handle and report pthread errors better.
+
+## SPA
+  - The resampler qualities were tweaked a little.
+  - A bug that would sometimes cut off the last part of a buffer was fixed in
+    the alsa plugin. This could cause broken audio in VMs. (#2536)
+  - Access to the alsa mixer and devices is now checked more thoroughly.
+    (#2534)
+  - The spa-resample tool can now also handle large downsampling rates without
+    crashing.
+  - Audioconverter now uses rounding for float to int conversions, which
+    reduces distortions. Compilation of the c functions was separated and uses
+    its own optimization flags now. Unit tests were added. (#2543)
+  - Noise shaping was improved in audioconvert. A new Wannamaker 3 tap shaper
+    was added.
+  - Audioconvert now uses a pattern for generating keep alive noise. This
+    should have much less energy and be even more inaudible. (#2540)
+  - A channel mapping bug was fixed in audioconvert. Unit tests were added.
+  - The dsp audio mixer would sometimes not mix enough and cause dropouts.
+    (#2525)
+
+## JACK
+  - A critical bug in the mixer was fixed. It would cause most JACK apps to
+    segfault at startup.
+
+## Bluetooth
+  - A new rate control algorithm was implemented for the sources.
+  - The media role on HSP/HFP streams is now fixed.
+
+## Pulse Server
+  - Add the resampler delay to delay reporting as well.
+
+
+# PipeWire 0.3.55 (2022-07-12)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix some more critical bugs in the new audioconvert and the queueing
+    in pw-stream that causes stuttering and hickups.
+  - HFP hardware volumes are now saved and restored.
+  - Format conversions and mixing was improved.
+  - Small bug fixes and improvements.
+
+## PipeWire
+  - The queueing in pw-stream was improved with support for buffer prefetch
+    in async mode.
+  - Add a pw-filter unit test.
+
+## tools
+  - pw-midiplay should now work again after improvements in pw-stream.
+
+## modules
+  - The RAOP module was improved to support auth_setup.
+  - The RAOP module should now handle timing packets better.
+  - Add some more filter-chain examples.
+  - The filter-chain now has a separate config file with the boilerplate
+    settings. The examples are now just config snippets that can be dropped
+    in .conf.d/ directories, such as the filter-chain.conf.d/ one.
+  - Start suggesting to use target.object instead of node.target in docs
+    and examples.
+
+## SPA
+  - Use the cosh window again for the resampler. It should now
+    give better resampler quality. (#2483)
+  - Rework the mixer functions. They were rewritten for higher precision and
+    better performance. Add unit tests and benchmarks.
+  - Improve format conversion for 32bits for avoid errors in clang because
+    of undefined behaviour at extreme ranges.
+  - Fix a bug in audioconvert where it would not consume the right
+    amount of samples when the resampler was disabled. This could cause
+    skipping and hickups. (#2519)
+  - Fix bug in audioconvert where it would try to convert the input samples
+    multiple times, causing strange artifacts when upmixing.
+  - Be more strict about valid JSON floats.
+  - device.vendor.id and device.product.id should now always show up in
+    0xXXXX format and should not be converted to floats in pw-dump anymore.
+  - Add triangular dither, add unit tests for noise generation, add some
+    more optimizations.
+
+## Bluetooth
+  - HFP and A2DP now expose different routes and thus can have different
+    volumes.
+  - HW Volumes for HFP are now synced better. Volume changes from HW buttons
+    are now also saved.
+
+# PipeWire 0.3.54 (2022-07-07)
+
+This is a quick bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Some critical bugs in the new audioconvert were fixed. The old
+    adapter had internal buffering that was abused in some places.
+  - The bluetooth sources were rewritten using a ringbuffer to make them
+    more reliable to jitter and remove old audioconvert behaviour.
+  - Many improvements to the audio converter.
+  - Native DSD128 and up is now supported by pw-dsdplay.
+
+
+## tools
+  - Support DSD128 to DSD512 as well by scaling the amount of samples
+    to read per time slice.
+
+## SPA
+  - Format conversion is now generated with macros to remove duplication
+    of code.
+  - 24bits conversions were rewritten to use the generic conversion
+    functions.
+  - Temporary buffers in audioconvert are now made large enough in all
+    cases.
+  - Fix draining in audioconvert. This fixes speaker-test.
+  - Fix the channel remapping. (#2502, #2490)
+  - Audio conversion constants were tweaked to handle the maximum ranges
+    and provide lossless conversion between 24bits and floats.
+  - Vector code and C code are aligned and the unit tests are activated
+    again. A new lossless conversion test was added.
+  - Fix an underrun case where the adapter would not ask for more data.
+  - Fix PROP_INFO for audioconvert. (#2488)
+  - Use the blackman window again for the resampler, the cosh window has
+    some bugs that can cause distortion in some cases. (#2483)
+  - Add more unit tests for audioconvert. Add end-to-end conversion tests.
+  - Don't leak memory in format converter.
+
+## pulse-server
+  - Card properties are now also added to sinks and sources, just like
+    in pulseaudio.
+  - Increase the maxlength size to at least 4 times the fragsize to avoid
+    xruns.
+  - Fix a race when setting default devices.
+
+## Bluetooth
+  - The source was rewritten to use a ringbuffer. This avoids regressions
+    caused by audioconvert. 
+
+# PipeWire 0.3.53 (2022-06-30)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - The 44.1KHz samplerate was removed again from the defaults, it caused
+    all kinds of problems with various hardware.
+  - The ALSA plugin should now be able to deal with unsupported samplerates
+    and fall back to the nearest supported one.
+  - The rlimits performance tuning wiki page was updated. Please check
+    you limits.conf file, the version on the wiki used to give all
+    processes a -19 nice level instead of just the pipewire daemon.
+  - The audioconvert plugin was rewritten to be more maintainable and
+    faster. It also gained support for control ports and dithering with
+    optional noise shaping.
+  - An impossible buffering situation is avoided in pulse-server that would
+    cause some applications (sunshine, ...) to stutter.
+
+
+## PipeWire
+  - 44.1KHz was removed from the allowed rates again. It caused all kinds
+    of regressions due to driver bugs and timing issues on HDMI.
+
+## modules
+  - filter-chain now does some more error checking and reporting to
+    avoid some crashes.
+  - filter-chain now supports more channel layouts for input and output
+    that does not need to match the plugin layout.
+  - Format parsing is now more consistent in the modules.
+
+## Tools
+  - pw-cli can now also work without readline support.
+  - pw-cat can now also read multichannel ulaw/alaw/u8/s8.
+
+## SPA
+  - The audioconvert plugin was rewritten. This should make it more
+    maintainable. It also fixed some issues such as CPU spikes in some
+    cases and crashes in others. The old plugins were removed, for a
+    code reduction of some 6000 lines.
+  - The audioconvert plugin now supports control ports, which can be
+    enabled on nodes in the session manager. This makes it possible to
+    control audioconvert properties using timed events or midi.
+  - NoteOn 0-velocity MIDI events are no longer filtered out. This is
+    a valid event, nodes that can't deal with it should fix it up
+    themselves. The JACK layer still filters out these events by default
+    but this can now be configured with a per-client property.
+  - The running status on midi events is now disabled to match what
+    JACK does.
+  - The ALSA plugin will now deal with driver bugs when a driver announces
+    support for a samplerate but then refuses to use it later.
+  - The ALSA plugin has been optimized a little for sample IO.
+  - V4L2 now doesn't error when there are no controls.
+  - Error handling was improved in the audio converter.
+  - The audioconvert plugin now supports rectangular dithering and
+    noise shaping.
+  - The audioconvert plugin can now insert additional inaudible noise
+    that can be used to keep some amplifiers alive. (#705)
+  - The audioconvert format conversion was changed so that it now produces
+    the full 32 bits range in the C fallback conversion code as well.
+  - The resampler window function was changed to a cosh() window
+    function. (#2483)
+  - Vendor and device id are now in hex.
+
+## pulse-server
+  - Tweak the record buffer attributes some more and make sure we don't
+    end up in impossible buffering situations. Fixes an issue with
+    distorted sound in sunshine. (#2447)
+  - Fix a potential crash when updating the client property list.
+  - Some properties on cards were aligned with pulseaudio.
+
+## Wiki
+  - Change "priority" to "nice" in the example limits.conf file. It was
+    giving a -19 nice level to all processes, not just the pipewire
+    daemon.
+
+# PipeWire 0.3.52 (2022-06-09)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Add 44.1KHz to allowed samplerates. The server can now switch by
+    default between 48KHz and 44.1KHz.
+  - Streams now allocate less resources.
+  - Fix some bugs that could make the server crash.
+  - Bluetooth now supports the LC3plus vendor codec.
+  - Many bugfixes and improvements.
+
+
+## PipeWire
+  - Add 44.1KHz to allowed samplerates.
+  - Avoid setting the locale.
+  - Avoid use-after-free when destroying a node from spa-node-factory.
+  - Avoid using reallocarray when not available.
+  - Set port alias is not otherwise set.
+
+## Modules
+  - Improve filter-chain parsing and error reporting. Handle empty
+    nodes. (#1950)
+  - Handle destroy of globals and factory in most modules. (#565)
+  - Add refcounts to client and resources to handle destroy of the
+    protocol. (#565)
+  - Handle global node.name in filter-chain and loopback again, use
+    it to construct unique stream names.
+  - Avoid a wrapped pw-node in the adapter. This reduces resources
+    allocated for streams.
+  - Fix a crash when module-x11-bell was unloaded. (#2392)
+  - Add a new module-pipe-tunnel that can write/read data from a
+    UNIX pipe.
+
+## Tools
+  - Fix DSD playback again in pw-cat.
+  - Add -n option to pw-loopback to set node names.
+  - Add -P option to pw-cat to pass properties to the stream.
+  - Support stdin/stdout in pw-cat. (#2387)
+  - pw-dump now also dumps object removal when monitoring. (#2426)
+
+## SPA
+  - Avoid duplicate param results in pw-dump for ports.
+  - Avoid endless loops in audioconvert for badly behaving client.
+    (#2359)
+  - Scale max-error in alsa based on quantum and avoid logging a warning
+    when starting.
+  - Improve debug of failed format conversion. (#2383)
+  - Handle offset in the audio dsp mixer inputs and clamp to the max
+    buffer size.
+  - Add option to disable locale support for JSON number conversion.
+  - Add support for Astro A20 Gen2.
+  - Fix some of the test sources, the flags were not set correctly.
+  - Add camera location as property in libcamera and let the session manager
+    Generate a localized description.
+  - Fix some crashes due to wrong vargar types in v4l2 controls. (#2400)
+  - Improve ALSA resync behaviour. (#2257)
+  - Add support for Komplete Audio 6 MK2.
+  - Improve loop cancel while iterating.
+  - Try not to mix surround channels and AUX channels. Make card with many
+    ports look better when not using the Pro Audio profile.
+  - Vulkan filters were added.
+
+## Bluetooth
+  - Add LC3plus vendor codec.
+  - Handle unsupported indicators better.
+  - Ensure multiple devices on an adapter use different codecs because one
+    endpoint can only be used by one device at a time.
+  - Fix bitpool control as a follower.
+  - Handle bluetooth errors better.
+  - Speed up bluetooth connection by only waiting for the profiles
+    supported by the adapter.
+  - The dummy AVRCP player is disabled by default because it seems to break
+    more devices than it fixes.
+
+## pulse-server
+  - Add initial stream latency property so that devices can be started
+    with a resonably accurate latency.
+  - Fix ringbuffer underrun case. (#2366)
+  - module-native-protocol-tcp now has a auth-anonymous option to give
+    full access to the clients.
+  - Report a node as being moved when it is still moving. This improves
+    compatibility with pasystray.
+  - Avoid overallocating message memory.
+  - Don't export NETWORK nodes in zeroconf. (#2384)
+  - Fix stride for TrueHD and DTSHD passthrough. (#2284)
+  - Make sure we don't send too small audio fragments. Fixes capture
+    from multiple tabs in Chrome. (#2418)
+  - Rework module handling some more.
+  - Use the new native module-pipe-tunnel for pipe-sink and pipe-source.
+  - Implement the STREAM_MOVED message when a stream got moved. (#2407)
+  - Fix a potential segfault when stopping the server and a TCP module
+    as still loaded.
+
+## ALSA
+  - Add support for updating sw_params at runtime, mostly the min-avail
+    param.
+  - Capture and playback nodes are now assumed to use a different clock and
+    will activate the adaptive resampler when linked. This assumption is
+    removed in Pro Audio mode. This provide a better experience out of the
+    box with most devices.
+
+## JACK
+  - Fix setting properties with PIPEWIRE_PROPS again.
+  - Don't use 64 bits atomic operations for sync_timeout. (#1867)
+  - Cleanup in error cases was improved, avoiding some crashes. (#2394)
+
+## GStreamer
+  - Fix pipewiresink in mode=provide. (#1980)
+  - Share memory into a new buffer in pipewiresrc to avoid buffer corruption.
+  - Fixes to the source and fd use.
+  - It is now possible to set client properties as well. (#1573)
+
+# PipeWire 0.3.51 (2022-04-28)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Improved graph reconfiguration.
+  - Extra configuration options for streams and filters with config
+    rules and environment variable.
+  - Improve module-pulse-tunnel latency, stability and error recovery.
+  - pw-top, pw-cli and pw-link improvements.
+  - Fix a channelmixer upmixing clipping issue.
+  - The ROC module has seen many improvements.
+  - Many more bugfixes and improvements.
+
+
+## PipeWire
+  - The graph reconfiguration code was reworked:
+    * Moved nodes will update the new driver quantum correctly. (#2293)
+    * Inactive nodes are ignored more.
+    * Nodes that require a driver are now not scheduled anymore when
+      they are passive (unused). (#2309)
+    * Improved performance, the graph is reconfigured with a minimal
+      amount of changes.
+  - Method and event argument names were improved.
+  - A linker garbage collection problem was fixed. (#2292)
+  - Properties on threads are now implemented. Use common code to
+    set thread name and add an option to set stack-size.
+  - Streams and filters always want a driver now. This makes it possible
+    to just link a playback stream to a capture stream without a driver
+    and have it work. (#1761).
+  - Streams and filters can now also have rules in the config file.
+  - Streams, filters, JACK, ALSA and v4l2 now support PIPEWIRE_PROPS
+    environment variable to override node properties.
+  - Add config section extensions. This provides a way for modules to
+    have specific config to override the default config.
+  - Handle realloc errors better.
+  - Improve stream and filter property updates.
+
+## Modules
+  - The pulse-tunnel modules has improved latency management and should
+    now work a lot better. (#2230)
+  - Module-loopback, module-echo-cancel, module-filter-chain unload the
+    module when a stream is destroyed. (#1754)
+  - Biquads in filter-chain now can have more gain (5->20 dB).
+  - Documentation updates. Most Wiki content was moved to the source code
+    inline comments.
+  - Filter-chain now has a builtin delay line filter. (#2320)
+  - Filter-chain can now parse the config key correctly in all cases.
+  - The ROC sink and source saw many improvements. roc-source is now a stream
+    by default that connects to the default sink. Both modules will try to set
+    a graph rate. Both modules have an option to select the FEC mode.
+    The ROC source has lower latency now. (#2331)
+  - Handle realloc errors better.
+
+## tools
+  - pw-cat does not have --list-targets anymore, use one of the more
+    advanced and less buggy tools such as wpctl or pw-cli to list
+    sinks and sources.
+  - pw-top has seen many improvements.
+    * It now has some timeouts to reset the node values to their default
+      state when unused.
+    * The man page was improved.
+    * Invalid timings and errors are displayed in a better way.
+  - pw-cli and pw-link can now create links between all ports of given nodes.
+  - pw-cat can now save to other file formats than wav, based on the extension
+    of the filename.
+
+## SPA
+  - The resampler now uses a different internal method for draining. It can
+    now also handle 0 size buffers as input without draining.
+  - The channelmixer now uses the front channel averages for FC and LFE.
+    This avoids clipping and results in much better upmixing.
+  - ALSA should now work again on 32 bits. (#2271)
+  - The JSON parser now converts escaped unicode correctly to UTF8.
+
+## bluetooth
+  - Codec switch improvements when the device is disconnected. (#2334)
+
+## pulse-server
+  - There is a new module-roc-sink-input module, the the PulseAudio equivalent.
+  - The ROC source and sink-input module now have a much lower latency.
+  - The ROC module now has an option to select FEC mode.
+  - Playback and record rate adjustements should work now. (#1159)
+
+## JACK
+  - Remove some useless pthread attributes. This makes JACK work in QEMU with
+    sandboxing enabled. (#2297)
+  - The buffer_size callback is now only called when something has changed
+    since the last process() callback or get_buffer_size() method. This
+    fixes a GStreamer issue and is more in line with what JACK does. (#2324)
+  - Fix a potential deadlock when the process thread is doing IPC and the
+    IPC thread is blocking on the data thread.
+  - Allocation errors in metadata are handled better.
+
+# PipeWire 0.3.50 (2022-04-13)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - pw-stream can now report more timing information and can suggest
+    the optimal number of samples to queue for playback.
+  - pw-dot now works again..
+  - module-pulse-tunnel latency was improved.
+  - WINE applications using the JACK backend should no longer crash.
+  - The channelmixer defaults are improved and the muffled sound when
+    playing back 5.1 and 7.1 material has been fixed.
+  - Many fixes and improvements.
+
+
+## PipeWire
+  - pw-stream now places a suggested amount of samples in the pw-buffer
+    for playback. This allows you to remove some places where
+    spa_io_rate_match was needed to get this information.
+  - pw-stream has new API to request a timing update. New fields are
+    added in the timing info, such as number of buffered samples in
+    the resampler and the number of queued and dequeued buffers.
+  - pw-stream has support for double controls now. More controls are
+    exposed such as the Rate control to do adaptive resampling.
+  - The thread-utils object was moved to the context to avoid some
+    concurrent use cases that caused crashes. (#2252)
+  - Deactivating an exported node/stream will now remove the node from
+    the data-thread immediately so that the process function will not
+    be called anymore and resources can be safely freed. This could
+    fix some of the last remaining crashes when streams are stopped.
+  - PipeWire will now fail to load a module that tries to register
+    the same export type twice instead of silently doing the wrong
+    thing. (#2281)
+
+## Modules
+  - Many modules now use the NODE_WANT_DRIVER instead of the
+    pipewire.dummy NODE_GROUP property. This makes it possible to use
+    them with any other driver and can avoid resampling in some
+    cases.
+  - module-pulse-tunnel now uses an adaptive resampler to keep the
+    latency under control. Latency should be much better than before
+    and stay constant even when there are network delays.
+  - There is now an option for packages to disable building the RTKit
+    module, which is still built by default for backwards compatibility
+    reasons.
+  - A leak was fixed in filter-chain. (#2220)
+  - Module node names are now made more unique with the pid.
+
+## tools
+  - pw-cat verbose output has been improved.
+  - pw-link now has a man page. (#2263)
+  - pw-reserve now has an -r option to make it issue a RequestRelease
+    command on the owner of the device. This makes it possible to ask
+    WirePlumber to close and release a device.
+  - Fix pw-dot again. It didn't work anymore because of stray done
+    events that were emitted to notify the client of object serials.
+    (#2253)
+
+## SPA
+  - The channelmixer now has PSD upmixing enabled again. We used the
+    simple upmixing in the previous release but that just sounds too
+    aweful to be a good default. (#861) and (#2219)
+  - The channelmixer will not upmix FC and LFE anymore when upmixing is
+    explicitly disabled. (#2266)
+  - The channelmixer will only lowpass filter FC and LFE channels when
+    they were upmixed. (#2280)
+  - The defaults of the channelmixer were tweaked a little. There is now
+    a little bit more bass in the LFE channel and more high fequencies
+    in the FC channel when upmixing. Also the channel widening has been
+    disabled by default.
+  - Locale independent float parsing now uses a more portable solution
+    with uselocale.
+  - ALSA will now only allocate a buffer size big enough to hold 4
+    times the quantum limit instead of as large as possible.
+
+## pulse-server
+  - Internal cleanups in handling of modules.
+  - A quirk to force s16 sample formats for teams-insider has been added.
+
+## JACK
+  - The data-loop is now started in activate and stopped in deactivate.
+    This makes the data-loop respect any custom thread functions you
+    configure. This also makes WINE apps using the JACK backend work.
+    (#1495).
+  - Port sorting was improved/fixed. (#2260)
+
+# PipeWire 0.3.49 (2022-03-29)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Sample rate switching should work again.
+  - pw-dot can now use the output of pw-dump to render a graph.
+  - Bluetooth A2DP streaming was improved that would reduce stuttering on
+    some devices.
+  - A JACK bug was fixed that would sometimes make it impossible to add more
+    tracks in Ardour. (#1714)
+  - Many bugfixes and improvements.
+
+## PipeWire
+  - Fix a potential crash when NULL params were configured.
+  - Add some simple functional tests to avoid some recent regressions. Improve
+    the test framework for this as well.
+  - Improvements to the poll loop to avoid some use-after-free scenarios.
+  - Fix samplerate switching again.
+  - setlocale is not called anymore from the pipewire library. This should be
+    called by the application. (#2223)
+  - pw_init() and pw_deinit() can now be nested and called multiple times.
+  - pw_stream will now report the resampler delay in the pw_time.queued field.
+
+## modules
+  - module-filter-chain now supports arbitrary many properties and will use
+    property hints to assign them the right type.
+  - The ROC modules now accept a sink/source_properties parameter.
+  - The module-rt can now also be built without RT-Kit support.
+  - module-echo-cancel can now use a fraction to specify the delay for more
+    precise control.
+
+## SPA
+  - The channelmixer will now do upmixing by default and will not use
+    normalization. It will also use a simple upmixing algorithm that duplicates
+    channels by default. A more interesting upmix method is also available (PSD)
+    but needs to be enabled manually. (#861)
+  - Add SSE optimized (de)interleave functions for 32 bits samples with and
+    without byteswap.
+  - JSON parsing of empty strings will now give an invalid number instead of
+    0.
+  - JSON numbers are now parsed and serialized in a locale independent way so
+    that , and . are not mixed up.
+  - The resampler will now report the resample delay and queued samples as the
+    extra delay.
+
+## tools
+  - pw-cat will read more dsf files correctly and will not crash at the end.
+  - pw-top now has a man page.
+  - pw-dot can now use the output of pw-dump to render a graph.
+
+## bluetooth
+  - Improve interactions with oFono.
+  - Fix recovery with slow connections.
+  - Improve frame size of AptX-ll.
+  - A2DP can now use any quantum and will flush packets in smaller chunks
+    when needed to adapt. This improves stuttering in some cases.
+
+## pulse-server
+  - The server configuration can now be placed in pulse.properties section,
+    which also makes it possible to have custom overrides.
+  - Implement FIX_ flags for capture as well.
+  - Small fixes and improvements in module loading.
+
+## JACK
+  - Clear the last error before executing a new action or else we could end up
+    with error from a previous action. This causes some problems in Ardour where
+    adding a track would fail after some time. (#1714)
+
+
+# PipeWire 0.3.48 (2022-03-03)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix IEC958 passthrough again.
+  - Fix pulse-server crashes when playing a sample.
+  - Support for more a more advanced upmixing algorithm.
+  - filter-chain now supports arbitrary many ports.
+  - Fix multichannel support in WINE. (with new WirePlumber).
+  - Many bugfixes and improvements.
+
+
+## PipeWire
+  - The work queue is now created in the context so we can fail early and
+    avoid further error checking in various places.
+  - Fix a potential use after free with threaded loops.
+  - The protocol now has a message footer. This is used to pass around
+    global state such as the last registered object serial number. This can
+    be used to detect when a client tries to bind to old (but reused)
+    object ids. This avoids some races in the session manager but also
+    when binding objects.
+  - The zero-denormals CPU flag is now not touched anymore unless explicitly
+    selected by the user. Denormals are avoided in filter-chain now in
+    software. If the zero-denormals are now only configured in the data
+    thread. This should fix issues with luajit. (#2160)
+  - Configuration parsing will not actually fail on errors.
+  - pw-top now correctly clips unicode characters.
+  - Many places now use a dynamic POD builder to support arbitrary large
+    property sets.
+  - pw-stream now support PropInfo parameters so that they can announce
+    custom properties.
+  - Serial number are now also set on metadata and session-manager objects.
+
+## SPA
+  - audioadapter is now smarter when trying to fixate the format. It will
+    use the PortConfig format to fill in any wildcards. This results in
+    the least amount of conversions when the stream can handle it. It also
+    is part of a fix (also requires a session manager fix) for WINE
+    multichannel support. (#876).
+  - Fix 5.1 to 2 channels mixing. It was using the volume of the stereo
+    pair on all channels.
+  - Fix some weird volume issues when a source is capturing and
+    channelmixing.
+  - Add stereo to 7.1 upmixing.
+  - The channelmix parameters can be changed at runtime now.
+  - Many improvements to the upmixing algorithms. Rear channels are now
+    constructed from the ambient sound and can have delay and phase shift
+    applied to them to improve spacialization. The stereo channels can
+    be filtered so that the dialog is more concentrated in the center
+    channel. (#861)
+
+## modules
+  - Module X11 bell received cleanups and improvements.
+  - The module now has a private method to schedule unload later. This
+    simplifies cleanup in many modules.
+  - module-filter-chain now handles arbitrary many ports and control
+    ports. (#2179)
+  - Fix a bug in RAOP where it was reading from the wrong port. (#2183)
+
+## pulse-server
+  - Nodes with the DONT_MOVE property should fail with -EINVAL when
+    they are moved.
+  - Fix a segfault when playing a sample. (#2151)
+  - The _FIX flags in pulse-server also now ignore the configured
+    sample format, just like pulseaudio does. (#876)
+  - Fix IEC958 passthrough again. It got accidentally broken since
+    0.3.45 with a fix for another issue. (#1442)
+  - Fix module-null-sink device.description. (#2166)
+
+## Bluetooth
+  - Don't try to connect HSP/HFP when no backend is available.
+
+
+# PipeWire 0.3.47 (2022-02-18)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+This is a quick emergency release to fix some severe
+problems with the previous release.
+
+## Highlights
+  - Fixes a bug in pulse-server that caused cached notifications
+    to play multiple times. (#2142)
+  - Removed check and warnings to catch leaked listeners on the
+    proxy. This might access invalid memory and cause infinite
+    loops in older wireplumber.
+
+# PipeWire 0.3.46 (2022-02-17)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Fix a critical bug in pipewire-pulse buffer size handling that made some
+    apps (MuseScore, ... ) stutter.
+  - Fix a critical bug where devices would not show when the kernel was
+    compiled without VERBOSE_PROCSFS.
+  - JACK clients will now use lock-quantum by default. This makes sure that
+    all dynamic quantum changes are disabled while a JACK app is running.
+    The only way to force a quantum chance is through a JACK app or with
+    the metadata.
+  - Almost all limits on number of ports, clients and nodes are removed.
+  - A Dummy fallback sink is now automatically created when there are no
+    other sinks. This avoids stalling browsers.
+  - Sound sharing with Zoom should work better. A new WirePlumber release
+    might be required.
+  - Many more fixes and improvements.
+
+
+## PipeWire
+  - Update docs with new config overrides.
+  - The rule matching logic was moved to config and code is now shared with
+    pulse-server and JACK.
+  - Add new Romanian translation.
+  - When a quantum is forced with metadata, any node that asked to lock-quantum
+    is ignored so that the quantum change can happen.
+  - Fix a bug where a mixer was removed twice, leading to potential memory
+    corruption.
+  - The port limits on nodes and filters are now removed. Some code was
+    simplified.
+  - Fix a potential leak because listeners where removed while they could be
+    emitted.
+  - Improve context.exec and avoid zombie processes.
+
+## Modules
+  - The RAOP module now has a default latency of 2 seconds, like PulseAudio.
+  - The echo-cancel module now uses the plugin loader to load the backends.
+    This makes it possible to add custom, out of tree, echo cancel plugins.
+
+## Tools
+  - Improve help of pw-link.
+  - Output to stdout and error to stderr. Use setlinebuf for stdout to improve
+    piping between apps. (#2110)
+
+## SPA
+  - Improve removing sources when dispatching. Also improve performance now
+    that a destroy loop can be removed. (#2114)
+  - Fix an fd leak in the logger when logging to a file.
+  - Improve loop enter/leave checks and support recursive loops.
+
+## pulse-server
+  - Clamp various buffer attributes to the max length. Fixes some issues
+    with various applications. (#2100)
+  - Module properties are now remapped correctly from their pulseaudio variant
+    to the PipeWire ones.
+  - Fix module index in introspect. Use the right index when loaded from our
+    internal modules. (#2101)
+  - Improve argument parsing and node.description. (#2086)
+  - The sink-index should now be filled in correctly when playing a sample.
+    (#2129)
+  - module-always-sink is now implemented and loaded by default. (#1838)
+  - Add support for loading some modules only once.
+  - Module load and unload now does extra sync to make it appear synchronous,
+    like in PulseAudio. This improves sounds sharing in Zoom.
+
+## ALSA
+  - Fix critial bug where alsa devices would not show when the kernel was
+    compiled without VERBOSE_PROCFS.
+  - Some corner cases were fixed in the ALSA timing code. When the capture node
+    is follower, it will now not try to read too much data and xrun but it will
+    instead produce a cycle of silence.
+  - Various fixes and improvements to make ALSA devices resync to the driver
+    more quickly and accurately.
+
+## JACK
+  - Add an option to name the defauld device as `system` to improve
+    compatibility with some applications,
+  - Use lock-quantum by default. This makes sure that all dynamic quantum
+    changes are disabled while a JACK app is running. The only way to force
+    a quantum chance is through a JACK app or with the metadata.
+  - It is now possible to do IPC calls from the data thread. Note that this
+    is a very bad idea but required for compatibility with JACK2.
+
+## GStreamer
+  - GStreamer sink will now set a default channelmap to make it possible to 
+    remap to the channel layout of the device.
+
+# PipeWire 0.3.45 (2022-02-03)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Zoom, telegram and other apps should be able to play sound again.
+  - Implement a better way to force and lock JACK buffersize.
+  - Default sink and source names and properties are improved.
+  - The config loader can now load and merge fragments in conf.d directories
+    for easier user configuration of config files.
+  - Many small bug fixes and improvements.
+
+## PipeWire
+  - pw-cli can now also send Commands to nodes. This can be used to Suspend
+    a device, for example.
+  - The eventfd was removed from loops and invoke is now used to stop the loop,
+    this saves an fd.
+  - New Alpine CI target to test musl builds, various build fixes.
+  - Add force-quantum and force-rate properties.
+  - The config loader can now load and merge fragments in conf.d directories.
+    (#207)
+  - resource error methods can be called without a resource and then just
+    log an error message.
+  - link-factory can now also work from the config. (#2095)
+
+## modules
+  - module-simple-protocol has better argument parsing and can handle
+    channelmap now. (#2068) It's also possible to configure latency and
+    rate.
+  - The native protocol now does extra checks for invalid data. (#2070)
+
+## ALSA
+  - TI2902 chips as found in various Behringer cards should have inputs
+    again.
+  - Better handling of busy devices in udev, retry when the inotify close
+    event is emited.
+
+## SPA
+  - plugins now handle alignment properly and only expect the max alignment
+    required for the CPU. (#2074)
+
+## Bluetooth
+  - SBC-XQ is now enabled for the JBL Endurance RUN BT headset.
+  - Support for non-hexadecimal XAPL version strings to improve compatibility.
+  - Use HCI commands again to probe the adapter msbc capability. This improves
+    compatibility with some adapters. (#2030)
+  - Set the right startup volume.
+  - Better A2DP source idle handling.
+  - Fix a timer bug in SCO sink that could cause busy looping.
+
+## pulse-server
+  - A playback issue when the tlength > maxlength was fixed. (#2069) This
+    affected Zoom and other applications.
+  - The STREAM_BUFFER_ATTR command is now implemented.
+  - Module names are improved. (#2076)
+  - Many small fixes and improvements.
+  - Fix a pavucontrol crash with invalid channels. (#1442)
+
+## JACK
+  - Use the new force-quantum and force-rate properties in the JACK API to
+    switch quantum and ensure it can't change for the lifetime of the JACK
+    app. (#2079)
+
+# PipeWire 0.3.44 (2022-01-27)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - It is now possible to run a minimal PipeWire server without a session
+    manager, enough to run JACK clients.
+  - The maximum buffer size is now configurable and can be larger than
+    the previously hardcoded limit of 8192 samples. When using high sample
+    rates, the larger buffer size can avoid xruns.
+  - The default maximum latency was reduced from 170ms to 42ms. This should
+    improve overall latency for application that ask for a large latency,
+    such as notifications.
+  - Better JACK compatibility. Patchbays should now get less confused about
+    ports appearing and disappearing.
+  - Fix some bluetooth crashes.
+  - Fix some races in ALSA device detection.
+  - Many bug fixes and improvements all over the place.
+
+## PipeWire
+  - Bump the meson requirement to 0.59.0.
+  - pw-top now reports correct times for filter-chain and loopback.
+  - max-quantum is now also scaled with the rate. A new quantum-limit
+    property was added as a hard limit for the quantum. This makes it
+    possible to configure for larger than 8192 buffer sizes. Note
+    than many JACK applications have a hardcoded 8192 limit. (#1931)
+  - The max-quantum was reduced to 2048, This gives a 42ms default
+    latency. (#1908)
+  - pw-filter can now return a NULL buffer from _get_dsp_buffer().
+  - Add a PIPEWIRE_RATE and PIPEWIRE_QUANTUM env variable to set the
+    graph rate and the graph quantum and rate respectively.
+  - Fix a potential file descriptor leak in the connection.
+  - A new minimal.conf file was added to demonstrate a static setup
+    of a daemon that doesn't require a session manager and is able to
+    run JACK applicaions.
+  - Nice levels are now only changed on the servers, not the clients.
+  - Add an option to suspend nodes when idle.
+  - Make it possible to avoid quantum and rate changes with
+    pw-metadata. This is essential in a locked down system.
+  - Handle mixer port errors better and fail to create the link instead
+    of silently not working.
+  - Nodes that are moved to a driver now have all the linked nodes moved
+    as well. This makes it possible to run some graphs without a
+    driver, such as paplay -> zita-j2n.
+  - pw-cli and pw-dump can now also list objects by name, serial and
+    object.path using glob style pattern matching.
+
+
+## modules
+  - filter-chain can now also configure parameters by index.
+  - Fix the client name of module-protocol-simple. (#2017)
+  - module-rtkit was merged into module-rt. This makes it easier to
+    ship a default config that works on more systems by default.
+  - module-adapter can now configure the adapter node from the config.
+    Previously, this was a task only performed by the session manager.
+  - module-metadata can now also create metadata object from the
+    config file.
+  - The ROC module should now work again. (#2045)
+  - An X11-bell module was added to handle X11 bell events. (#1668)
+  - filter-chain and loopback modules now have better unique default
+    names for the streams, which makes it possible to save and restore
+    their volumes independently. (#1983)
+  - module-echo-cancel now has properties to control the delay and
+    buffer size.
+
+## ALSA
+  - The monitor names are now correctly parsed.
+  - The default period size for batch devices is limited now to avoid
+    large latency.
+  - The unused min/max-latency properties were removed.
+  - Internal latency is now also configurable with params at runtime.
+  - The udev rule for TI2902 was removed because it causes problems.
+  - Fix a race where some devices would sometimes be missing. (#2046)
+  - Add some more timeouts to work around a race in udev device
+    permission changes when switching VTs.
+
+## SPA
+  - Fix potential infinite loop in audioconvert.
+  - The spa-resample tools can now also use optimized implementations.
+  - Fix a potential crash in resampler. (#1994)
+  - audioconvert can now also handle F64 formats. (#1990)
+  - The channelmixer now does normalization by default to avoid clipping
+    when downmixing is active.
+  - The channelmixer will now generate LFE channels when the lfe_cutoff
+    frequency is set, even when upmix is disabled.
+  - The channelmixer will now always generate FC when the target has it.
+  - Adapter now reports latency correctly, even after linking the monitor
+    ports.
+  - Reduce memory usage and preallocated memory in some of the
+    audioconvert nodes.
+  - Many properties are now exposed in adapter, such as the resample
+    quality.
+  - The resampler and channelmixer can now be disabled.
+
+## V4L2
+  - pw-v4l2 now also works for ffplay. (#2029)
+  - Take product names from udev now that the kernel returns a generic
+    name.
+
+## JACK
+  - The jack pkgconfig file now has the `jack_implementation=pipewire`
+    variable to be able to distinguish jack implementations. (#1666)
+  - jconvolver now starts correctly again. (#1989)
+  - The object.serial is now used for the port_id. This makes it easier
+    to track old objects in the cache.
+  - Add a dummy jacknet implementation. (#2043)
+  - A bug in the port allocation was fixed that would make it impossible
+    to allocate ports at some point. (#1714)
+
+## Bluetooth
+  - Bluetooth profiles are now saved properly by the session manager.
+  - Improved profile detections, increased timeouts for slow devices.
+  - Implement HFP call indicator for improved compatibility.
+  - Handle the case where bluez does not set the adapter or address
+    properties on the device instead of crashing.
+  - Improved support for setting the profile from the session manager.
+
+## pulse-server
+  - Monitor sources now have the device.class=monitor for better
+    compatibility.
+  - Behaviour after seeking is improved. The algorithm for requesting
+    bytes from the client was simplified and improved. (#1981)
+  - module-ladspa-sink implements the control argument now. (#1987)
+  - A potential memory leak in the message queue was fixed. (#1840)
+  - Use the object.serial for the pulseaudio object index. The index is
+    not supposed to be reused and this would cause problems with some
+    clients.
+  - Servers should now again be able to listen in IPv4. (#2047)
+  - module-x11-bell was added. (#1668)
+  - There is now support for per-application quirks and properties in
+    the pipewire-pulse.conf file. Per-application latency and buffering
+    properties can also be configured.
+  - Fix a regression in telegram sounds not playing.
+
+# PipeWire 0.3.43 (2022-01-05)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Flatpak apps such as Ardour can now remove links again.
+  - Many fixes to pulse-server. Memory usage should be improved. Some
+    crashes are fixed. Underrun handling should work better. Better
+    compatibility with GStreamer based applications after seeking.
+  - Many of the samplerate and quantum changes bugs in previous releases
+    were fixed. This fixes some issues where the microphone would fail
+    to work.
+  - Many more small fixes and improvements all over the place.
+
+## PipeWire
+  - Quantum and rate changes are now applied immediately when the driver
+    is idle. This avoids setting the driver in the previous samplerate.
+    (#1913)
+  - Object destruction now does not need write permissions anymore. This
+    restriction needs some more work. (#1920)
+  - When we reposition, start a sync operation. This fixes a problem
+    in Ardour when seeking. (#1907)
+  - Require meson 0.56.0
+  - Make the align property in BUFFER_PARAM optional. We now only set this
+    if the plugin has specific requirements and we default to the CPU
+    largest alignment requirement.
+  - pw-record will now also list monitors and streams as possible targets.
+
+## modules
+  - Improve LV2 plugin support in filter-chain. Add support for Worker and
+    Options.
+  - The loopback module now has a unique media.name to make it possible
+    for the session manager to restore unique volume settings.
+
+## SPA
+  - Improve sample rate for EAC3 streams, some clients scale it while
+    others don't so use some heuristics to make things work better.
+    (#1902)
+  - Allocate ports dynamically in audioconvert. This avoids using larger
+    memory blocks of preallocated memory that confuses the allocator.
+    (#1840)
+
+## ALSA
+  - Merge the latest pulseaudio UCM improvements. (#1849)
+  - Fixes for selecting the sample rate. (#1892)
+  - Improve latency on USB devices by scaling the period size based on
+    the desired quantum when the device is opened.
+  - Add api.alsa.period-num to configure the amount of periods to use
+    in the device. Some devices have lower latency when a small value
+    is forced. (#1473)
+  - Allow multi-rate by default. In previous versions cards could only
+    be opened in one samplerate to avoid bugs in pre 5.16 kernels. This
+    however caused other problems so the default was removed.
+  - Fix a bug where a card was not freed correctly.
+  - Fix a bug in the alsa boundary check that could hang the alsa-plugin
+    for a long time.
+  - The ALSA plugin now has a parameter to configure the allowed
+    samplerates.
+
+## JACK
+  - Improve handling of monitor nodes.
+
+## Bluetooth
+  - Codecs now have a priority. This should improve codec selection.
+
+## pulse-server
+  - The stream FIX_ flags are now implemented. (#1912)
+  - Improve flushing and draining behaviour. Short samples will now
+    play correctly. (#1549)
+  - Fix a crash when enumerating the formats. (#1928)
+  - Track quantum changes and update the amount of required buffering
+    accordingly. This improves forced quantum handling. (#1930)
+  - Improve handling of channels > 32.
+  - Handle the case where a module is destroyed before it could be
+    completely loaded.
+  - Fixes some issues when samples were removed while they were playing.
+    (#1953)
+  - Fix some issues in module-zeroconf-publish.
+  - Fix some memory leaks in module-roc.
+  - Add command access control. This avoids execution of commands without
+    proper authentication.
+
+# PipeWire 0.3.42 (2021-12-16)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+This is a quick emergency release to fix some severe
+problems with the previous release.
+
+## Highlights
+  - Fixes a bug in pulse-server underrun handling that broke qemu
+    and orca.
+  - A fix was added to pulse-server to handle quantum changes
+    gracefully.
+  - Fix module-echo-cancel again.
+  - Fix a bug where the bluetooth headset capture was producing
+    noise.
+
+
+# PipeWire 0.3.41 (2021-12-13)
+
+This is a bugfix release that is API and ABI compatible with previous
+0.3.x releases.
+
+## Highlights
+  - Improved compatibility for flatpaks. Flatpaks with newer PipeWire
+    version can connect to an older server in all cases.
+  - A new RAOP module was added to stream to Apple Airplay devices.
+  - OBS can now capture from the monitor devices again when using
+    WirePlumber.
+  - Improved JACK compatibility. Improved stability in Carla and Ardour
+    when changing buffer size. Improved latency calculations and
+    playback latency in Ardour.
+  - Improved pulse-server handling of underruns and buffer size changes.
+  - Many bugfixes and improvements.
+
+
+## PipeWire
+  - The systemd service files now have better names.
+  - client.access permission checks are improved.
+  - Fix some memory leaks in error paths.
+  - Objects now have a global serial number that is unique for the
+    lifetime of the server.
+  - Make clock.rate, clock.allowed-rates and clock.quantum
+    runtime tunable parameters with the settings metadata.
+  - Add some additional memory checks in client-node to avoid
+    sending invalid memory to clients. (#1859)
+  - Improve buffer memory allocation. If one of the nodes is a
+    remote node, ensure we only use memory that can be shared.
+  - Version checks when binding to objects is removed. This means
+    that newer clients can now bind to older servers, which is
+    a typical case for a flatpak.
+  - A bug in the latency calculations was fixed where it would in
+    some cases report the wrong minumum latency.
+
+## modules
+  - module-echo-cancel has voice-detection enabled now.
+  - module-raop-sink and module-raop-discover to stream audio to
+    an Apple Airplay device.
+  - module-filter-chain now has preliminary support for LV2
+    plugins.
+
+## SPA
+  - The audio resampler now has improved buffer size calculations.
+    In some cases it was too small and would cause distortions.
+  - More checks are done when doing volume changes so that the
+    channelmap is correct.
+  - Audioadapter now exposes most config options with params so that
+    they can be adjusted at runtime.
+  - The resampler can now calculate the expected input buffer size
+    before receiving the first buffer, which avoids some confusion
+    when starting streams.
+  - Support was added for some 10bit video formats.
+  - MONO channel handling was improved.
+  - Most plugins now set a clock name and this is configurable where
+    it makes sense. The clock.system.monotonic clock name is used
+    for most plugins that use the system clock for timing.
+
+## pulse-server
+  - implement module-raop-discover
+  - Use STREAM_CAPTURE_SINK property when capturing from a monitor
+    source to better inform the session manager. This fixes some
+    issues where OBS would capture from the microphone instead of
+    the output monitor.
+  - Limit the amount of cache messages to 16MB and don't add large
+    memory blocks to the cache. This should fix some excessive
+    memory usage that people reported.
+  - Fix a potential memory leak when cleaning up a client.
+  - Do some additional checks to avoid buffer overruns.
+  - Improve recovery from underruns better. (#1857) This improves
+    seeking in gnome-music.
+  - Improve recovery when the quantum is forced larger that the
+    stream configured latency.
+  - The prebuf state is now handled correctly.
+
+## JACK
+  - A per type object cache is now implemented. This ensures that
+    port objects remain valid for a longer time because many
+    JACK applications inspect objects after they are destroyed.
+    This improves catia/carla compatibility.
+  - Recompute the latencies when the buffer-size changes. Fix some
+    cases where we would end up with negative latencies.
+  - Handle regcomp errors to avoid some crashes later.
+  - Latency calculations are improved a lot.
+  - More care is taken to not call a process callback while a buffer
+    size change is pending. This fixes some crashes in Carla, which
+    expect that all clients are paused when one handles the buffersize
+    callback.
+  - Loopback links to a client are now handled correctly and without
+    latency. This fixes playback latency in ardour6 (#1839)
+
+## ALSA
+  - ALSA devices now keep track of the samplerate of the card and
+    ensure that all PCM use the same rate. This is a workaround for
+    a kernel bug that is fixed in 5.16.
+  - Refactor the ALSA plugin a little.
+  - The ALSA plugin now reports correct delay for a capture PCM. (#1697)
+  - The ALSA nodes now expose all config options with params that can be
+    changed at runtime.
+  - The ALSA node has a configurable clock name. Adaptive resampling to
+    match clock rates is avoided when the driver has the same clock
+    name as the ALSA node. This can be used to link alsa devices together
+    with a word clock.
+
 # PipeWire 0.3.40 (2021-11-11)
 
 This is a bugfix release that is API and ABI compatible with previous
@@ -74,9 +2807,6 @@ This is a bugfix release that is API and ABI compatible with previous
   - _prepare should exit the draining state. (#1467)
   - Fix the precision of the _delay function by taking into account
     the amount of queued samples are the correct samplerate.
-
-
-Older versions:
 
 
 # PipeWire 0.3.39 (2021-10-21)

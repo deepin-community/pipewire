@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_CORE_H
 #define PIPEWIRE_CORE_H
@@ -54,7 +34,7 @@ extern "C" {
 #define PW_TYPE_INTERFACE_Core		PW_TYPE_INFO_INTERFACE_BASE "Core"
 #define PW_TYPE_INTERFACE_Registry	PW_TYPE_INFO_INTERFACE_BASE "Registry"
 
-#define PW_VERSION_CORE		3
+#define PW_VERSION_CORE		4
 struct pw_core;
 #define PW_VERSION_REGISTRY	3
 struct pw_registry;
@@ -100,21 +80,22 @@ void pw_core_info_free(struct pw_core_info *info);
 
 /** Core */
 
-#define PW_CORE_EVENT_INFO	0
-#define PW_CORE_EVENT_DONE	1
-#define PW_CORE_EVENT_PING	2
-#define PW_CORE_EVENT_ERROR	3
-#define PW_CORE_EVENT_REMOVE_ID	4
-#define PW_CORE_EVENT_BOUND_ID	5
-#define PW_CORE_EVENT_ADD_MEM	6
+#define PW_CORE_EVENT_INFO		0
+#define PW_CORE_EVENT_DONE		1
+#define PW_CORE_EVENT_PING		2
+#define PW_CORE_EVENT_ERROR		3
+#define PW_CORE_EVENT_REMOVE_ID		4
+#define PW_CORE_EVENT_BOUND_ID		5
+#define PW_CORE_EVENT_ADD_MEM		6
 #define PW_CORE_EVENT_REMOVE_MEM	7
-#define PW_CORE_EVENT_NUM		8
+#define PW_CORE_EVENT_BOUND_PROPS	8
+#define PW_CORE_EVENT_NUM		9
 
 /** \struct pw_core_events
  *  \brief Core events
  */
 struct pw_core_events {
-#define PW_VERSION_CORE_EVENTS	0
+#define PW_VERSION_CORE_EVENTS	1
 	uint32_t version;
 
 	/**
@@ -125,7 +106,7 @@ struct pw_core_events {
 	 *
 	 * \param info new core info
 	 */
-	void (*info) (void *object, const struct pw_core_info *info);
+	void (*info) (void *data, const struct pw_core_info *info);
 	/**
 	 * Emit a done event
 	 *
@@ -134,14 +115,14 @@ struct pw_core_events {
 	 *
 	 * \param seq the seq number passed to the sync method call
 	 */
-	void (*done) (void *object, uint32_t id, int seq);
+	void (*done) (void *data, uint32_t id, int seq);
 
 	/** Emit a ping event
 	 *
 	 * The client should reply with a pong reply with the same seq
 	 * number.
 	 */
-	void (*ping) (void *object, uint32_t id, int seq);
+	void (*ping) (void *data, uint32_t id, int seq);
 
 	/**
 	 * Fatal error event
@@ -160,7 +141,7 @@ struct pw_core_events {
          * \param res error code
          * \param message error description
 	 */
-	void (*error) (void *object, uint32_t id, int seq, int res, const char *message);
+	void (*error) (void *data, uint32_t id, int seq, int res, const char *message);
 	/**
 	 * Remove an object ID
          *
@@ -172,7 +153,7 @@ struct pw_core_events {
 	 *
          * \param id deleted object ID
 	 */
-	void (*remove_id) (void *object, uint32_t id);
+	void (*remove_id) (void *data, uint32_t id);
 
 	/**
 	 * Notify an object binding
@@ -184,7 +165,7 @@ struct pw_core_events {
 	 * \param id bound object ID
 	 * \param global_id the global id bound to
 	 */
-	void (*bound_id) (void *object, uint32_t id, uint32_t global_id);
+	void (*bound_id) (void *data, uint32_t id, uint32_t global_id);
 
 	/**
 	 * Add memory for a client
@@ -200,14 +181,16 @@ struct pw_core_events {
 	 * \param fd the file descriptor
 	 * \param flags extra flags
 	 */
-	void (*add_mem) (void *object, uint32_t id, uint32_t type, int fd, uint32_t flags);
+	void (*add_mem) (void *data, uint32_t id, uint32_t type, int fd, uint32_t flags);
 
 	/**
 	 * Remove memory for a client
 	 *
 	 * \param id the memory id to remove
 	 */
-	void (*remove_mem) (void *object, uint32_t id);
+	void (*remove_mem) (void *data, uint32_t id);
+
+	void (*bound_props) (void *data, uint32_t id, uint32_t global_id, const struct spa_dict *props);
 };
 
 #define PW_CORE_METHOD_ADD_LISTENER	0
@@ -442,7 +425,7 @@ struct pw_registry_events {
 	 * \param version the version of the interface
 	 * \param props extra properties of the global
 	 */
-	void (*global) (void *object, uint32_t id,
+	void (*global) (void *data, uint32_t id,
 		       uint32_t permissions, const char *type, uint32_t version,
 		       const struct spa_dict *props);
 	/**
@@ -454,7 +437,7 @@ struct pw_registry_events {
 	 *
 	 * \param id the id of the global that was removed
 	 */
-	void (*global_remove) (void *object, uint32_t id);
+	void (*global_remove) (void *data, uint32_t id);
 };
 
 #define PW_REGISTRY_METHOD_ADD_LISTENER	0

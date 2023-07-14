@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_UTILS_KEYS_H
 #define SPA_UTILS_KEYS_H
@@ -62,6 +42,8 @@ extern "C" {
 #define SPA_KEY_API_ALSA_USE_UCM	"api.alsa.use-ucm"		/**< if UCM should be used */
 #define SPA_KEY_API_ALSA_IGNORE_DB	"api.alsa.ignore-dB"		/**< if decibel info should be ignored */
 #define SPA_KEY_API_ALSA_OPEN_UCM	"api.alsa.open.ucm"		/**< if UCM should be opened card */
+#define SPA_KEY_API_ALSA_DISABLE_LONGNAME	\
+					"api.alsa.disable-longname"	/**< if card long name should not be passed to MIDI port */
 
 /** info from alsa card_info */
 #define SPA_KEY_API_ALSA_CARD_ID	"api.alsa.card.id"		/**< id from card_info */
@@ -93,6 +75,8 @@ extern "C" {
 #define SPA_KEY_API_LIBCAMERA		"api.libcamera"			/**< key for the libcamera api */
 #define SPA_KEY_API_LIBCAMERA_PATH	"api.libcamera.path"	/**< libcamera device path as can be
 									  *  used in open() */
+#define SPA_KEY_API_LIBCAMERA_LOCATION	"api.libcamera.location"	/**< location of the camera:
+									  * "front", "back" or "external" */
 
 /** info from libcamera_capability */
 #define SPA_KEY_API_LIBCAMERA_CAP_DRIVER	"api.libcamera.cap.driver"	/**< driver from capbility */
@@ -125,11 +109,16 @@ extern "C" {
 #define SPA_KEY_API_BLUEZ5_CODEC	"api.bluez5.codec"		/**< a bluetooth codec */
 #define SPA_KEY_API_BLUEZ5_CLASS	"api.bluez5.class"		/**< a bluetooth class */
 #define SPA_KEY_API_BLUEZ5_ICON		"api.bluez5.icon"		/**< a bluetooth icon */
+#define SPA_KEY_API_BLUEZ5_ROLE		"api.bluez5.role"		/**< "client" or "server" */
 
 /** keys for jack api */
 #define SPA_KEY_API_JACK		"api.jack"			/**< key for the JACK api */
 #define SPA_KEY_API_JACK_SERVER		"api.jack.server"		/**< a jack server name */
 #define SPA_KEY_API_JACK_CLIENT		"api.jack.client"		/**< an internal jack client */
+
+/** keys for glib api */
+#define SPA_KEY_API_GLIB_MAINLOOP	"api.glib.mainloop"		/**< whether glib mainloop runs
+									 * in same thread as PW loop */
 
 /**
  * \}

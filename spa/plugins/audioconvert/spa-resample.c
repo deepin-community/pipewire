@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -33,6 +13,7 @@
 #include <spa/support/log-impl.h>
 #include <spa/debug/mem.h>
 #include <spa/utils/string.h>
+#include <spa/utils/result.h>
 
 #include <sndfile.h>
 
@@ -49,6 +30,7 @@ struct data {
 	int rate;
 	int format;
 	int quality;
+	int cpu_flags;
 
 	const char *iname;
 	SF_INFO iinfo;
@@ -61,7 +43,7 @@ struct data {
 
 #define STR_FMTS "(s8|s16|s32|f32|f64)"
 
-#define OPTIONS		"hvr:f:q:"
+#define OPTIONS		"hvr:f:q:c:"
 static const struct option long_options[] = {
 	{ "help",	no_argument,		NULL, 'h'},
 	{ "verbose",	no_argument,		NULL, 'v'},
@@ -69,6 +51,7 @@ static const struct option long_options[] = {
 	{ "rate",	required_argument,	NULL, 'r' },
 	{ "format",	required_argument,	NULL, 'f' },
 	{ "quality",	required_argument,	NULL, 'q' },
+	{ "cpuflags",	required_argument,	NULL, 'c' },
 
         { NULL, 0, NULL, 0 }
 };
@@ -88,6 +71,7 @@ static void show_usage(const char *name, bool is_error)
 		"  -r  --rate                            Output sample rate (default as input)\n"
 		"  -f  --format                          Output sample format %s (default as input)\n"
 		"  -q  --quality                         Resampler quality (default %u)\n"
+		"  -c  --cpuflags                        CPU flags (default 0)\n"
 		"\n",
 		STR_FMTS, DEFAULT_QUALITY);
 }
@@ -181,22 +165,26 @@ static int do_conversion(struct data *d)
 	float out[MAX_SAMPLES * channels];
 	float ibuf[MAX_SAMPLES * channels];
 	float obuf[MAX_SAMPLES * channels];
-	uint32_t in_len, out_len;
-        uint32_t pin_len, pout_len;
+	uint32_t in_len, out_len, queued;
+	uint32_t pin_len, pout_len;
 	size_t read, written;
 	const void *src[channels];
 	void *dst[channels];
 	uint32_t i;
-	int j, k, queued;
-	bool flushing = false;
+	int res, j, k;
+	uint32_t flushing = UINT32_MAX;
 
 	spa_zero(r);
+	r.cpu_flags = d->cpu_flags;
 	r.log = &logger.log;
 	r.channels = channels;
 	r.i_rate = d->iinfo.samplerate;
 	r.o_rate = d->oinfo.samplerate;
 	r.quality = d->quality < 0 ? DEFAULT_QUALITY : d->quality;
-	resample_native_init(&r);
+	if ((res = resample_native_init(&r)) < 0) {
+		fprintf(stderr, "can't init converter: %s\n", spa_strerror(res));
+		return res;
+	}
 
 	for (j = 0; j < channels; j++)
 		src[j] = &in[MAX_SAMPLES * j];
@@ -206,25 +194,29 @@ static int do_conversion(struct data *d)
 	read = written = queued = 0;
 	while (true) {
 		pout_len = out_len = MAX_SAMPLES;
-                in_len = SPA_MIN(MAX_SAMPLES, resample_in_len(&r, out_len)) - queued;
+		in_len = SPA_MIN(MAX_SAMPLES, resample_in_len(&r, out_len));
+		in_len -= SPA_MIN(queued, in_len);
 
-		pin_len = in_len = sf_readf_float(d->ifile, &ibuf[queued * channels], in_len);
+		if (in_len > 0) {
+			pin_len = in_len = sf_readf_float(d->ifile, &ibuf[queued * channels], in_len);
 
-		read += pin_len;
+			read += pin_len;
 
-		if (pin_len == 0) {
-			if (flushing)
-				break;
+			if (pin_len == 0) {
+				if (flushing == 0)
+					break;
+				if (flushing == UINT32_MAX)
+					flushing = resample_delay(&r);
 
-			flushing = true;
-			pin_len = in_len = resample_delay(&r);
+				pin_len = in_len = SPA_MIN(MAX_SAMPLES, flushing);
+				flushing -= in_len;
 
-			for (k = 0, i = 0; i < pin_len; i++) {
-				for (j = 0; j < channels; j++)
-					ibuf[k++] = 0.0;
+				for (k = 0, i = 0; i < pin_len; i++) {
+					for (j = 0; j < channels; j++)
+						ibuf[k++] = 0.0;
+				}
 			}
 		}
-
 		in_len += queued;
 		pin_len = in_len;
 
@@ -239,18 +231,20 @@ static int do_conversion(struct data *d)
 		if (queued)
 			memmove(ibuf, &ibuf[pin_len * channels], queued * channels * sizeof(float));
 
-		for (k = 0, i = 0; i < pout_len; i++) {
-			for (j = 0; j < channels; j++) {
-				obuf[k++] = out[MAX_SAMPLES * j + i];
+		if (pout_len > 0) {
+			for (k = 0, i = 0; i < pout_len; i++) {
+				for (j = 0; j < channels; j++) {
+					obuf[k++] = out[MAX_SAMPLES * j + i];
+				}
 			}
-		}
-		pout_len = sf_writef_float(d->ofile, obuf, pout_len);
+			pout_len = sf_writef_float(d->ofile, obuf, pout_len);
 
-		written += pout_len;
+			written += pout_len;
+		}
 	}
-	if (d->verbose) {
+	if (d->verbose)
 		fprintf(stdout, "read %zu samples, wrote %zu samples\n", read, written);
-	}
+
 	return 0;
 }
 
@@ -296,6 +290,9 @@ int main(int argc, char *argv[])
                                 goto error_usage;
 			}
 			data.quality = ret;
+			break;
+		case 'c':
+			data.cpu_flags = strtol(optarg, NULL, 0);
 			break;
                 default:
 			fprintf(stderr, "error: unknown option '%c'\n", c);

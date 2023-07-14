@@ -14,12 +14,11 @@ pwtest_deps = [
 ]
 
 pwtest_c_args = [
-  '-DBUILD_ROOT="@0@"'.format(meson.build_root()),
-  '-DSOURCE_ROOT="@0@"'.format(meson.source_root()),
+  '-DBUILD_ROOT="@0@"'.format(meson.project_build_root()),
+  '-DSOURCE_ROOT="@0@"'.format(meson.project_source_root()),
 ]
 
 pwtest_inc = [
-  spa_inc,
   pipewire_inc,
   configinc,
   includes_inc,
@@ -37,6 +36,7 @@ test('test-pwtest',
     executable('test-pwtest',
                'test-pwtest.c',
                include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
                link_with: pwtest_lib)
 )
 
@@ -45,6 +45,7 @@ test('test-pwtest',
 executable('test-example',
   'test-example.c',
   include_directories: pwtest_inc,
+  dependencies: [ spa_dep ],
   link_with: pwtest_lib)
 
 test('test-pw-utils',
@@ -54,6 +55,7 @@ test('test-pw-utils',
                'test-map.c',
                'test-utils.c',
                include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
                link_with: pwtest_lib)
 )
 
@@ -61,6 +63,7 @@ test('test-lib',
     executable('test-lib',
                'test-lib.c',
                include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
                link_with: pwtest_lib)
 )
 
@@ -68,6 +71,15 @@ test('test-client',
     executable('test-client',
                'test-client.c',
                include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
+               link_with: pwtest_lib)
+)
+
+test('test-loop',
+    executable('test-loop',
+               'test-loop.c',
+               include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
                link_with: pwtest_lib)
 )
 
@@ -76,7 +88,7 @@ test('test-context',
                'test-context.c',
                'test-config.c',
                include_directories: pwtest_inc,
-               dependencies: [spa_support_dep, spa_dbus_dep],
+               dependencies: [spa_dep, spa_support_dep, spa_dbus_dep],
                link_with: [pwtest_lib,
                             pipewire_module_protocol_native,
                             pipewire_module_client_node,
@@ -91,7 +103,7 @@ test('test-support',
                'test-support.c',
                'test-logger.c',
                include_directories: pwtest_inc,
-               dependencies: [systemd_dep, spa_support_dep, spa_journal_dep],
+               dependencies: [spa_dep, systemd_dep, spa_support_dep, spa_journal_dep],
                link_with: [pwtest_lib])
 )
 test('test-spa',
@@ -103,8 +115,31 @@ test('test-spa',
                'test-spa-node.c',
                'test-spa-pod.c',
                include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
                link_with: pwtest_lib)
 )
+
+openal_info = find_program('openal-info', required: false)
+if openal_info.found()
+    cdata.set_quoted('OPENAL_INFO_PATH', openal_info.full_path())
+endif
+summary({'openal-info': openal_info.found()}, bool_yn: true, section: 'Functional test programs')
+
+pactl = find_program('pactl', required: false)
+if pactl.found()
+    cdata.set_quoted('PACTL_PATH', pactl.full_path())
+endif
+summary({'pactl': pactl.found()}, bool_yn: true, section: 'Functional test programs')
+
+if default_sm == 'media-session' or default_sm == 'wireplumber'
+  test('test-functional',
+    executable('test-functional',
+               'test-functional.c',
+               include_directories: pwtest_inc,
+               dependencies: [ spa_dep ],
+               link_with: pwtest_lib)
+  )
+endif
 
 valgrind = find_program('valgrind', required: false)
 summary({'valgrind (test setup)': valgrind.found()}, bool_yn: true, section: 'Optional programs')

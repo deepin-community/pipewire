@@ -1,26 +1,6 @@
-/* ALSA Card Profile
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* ALSA Card Profile */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef ACP_H
 #define ACP_H
@@ -49,7 +29,7 @@ struct acp_dict_item {
 	const char *key;
 	const char *value;
 };
-#define ACP_DICT_ITEM_INIT(key,value) (struct acp_dict_item) { key, value }
+#define ACP_DICT_ITEM_INIT(key,value) ((struct acp_dict_item) { (key), (value) })
 
 struct acp_dict {
 	uint32_t flags;
@@ -115,8 +95,8 @@ struct acp_format {
 	uint32_t map[ACP_MAX_CHANNELS];
 };
 
-#define ACP_DICT_INIT(items,n_items) (struct acp_dict) { 0, n_items, items }
-#define ACP_DICT_INIT_ARRAY(items) (struct acp_dict) { 0, sizeof(items)/sizeof((items)[0]), items }
+#define ACP_DICT_INIT(items,n_items) ((struct acp_dict) { 0, (n_items), (items) })
+#define ACP_DICT_INIT_ARRAY(items) ((struct acp_dict) { 0, sizeof(items)/sizeof((items)[0]), (items) })
 
 #define acp_dict_for_each(item, dict)				\
 	for ((item) = (dict)->items;				\
@@ -237,6 +217,7 @@ struct acp_card_profile {
 #define ACP_PROFILE_ACTIVE	(1<<0)
 #define ACP_PROFILE_OFF		(1<<1)		/* the Off profile */
 #define ACP_PROFILE_SAVE	(1<<2)		/* if the profile needs saving */
+#define ACP_PROFILE_PRO		(1<<3)		/* the Pro profile */
 	uint32_t flags;
 
 	const char *name;

@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -49,37 +29,14 @@ static char *get_cpuinfo_line(char *cpuinfo, const char *tag)
 	return strndup(colon, end - colon);
 }
 
-static char *get_cpuinfo(void)
-{
-	char *cpuinfo;
-	int n, fd;
-
-	cpuinfo = malloc(MAX_BUFFER);
-
-	if ((fd = open("/proc/cpuinfo", O_RDONLY | O_CLOEXEC, 0)) < 0) {
-		free(cpuinfo);
-		return NULL;
-	}
-
-	if ((n = read(fd, cpuinfo, MAX_BUFFER-1)) < 0) {
-		free(cpuinfo);
-		close(fd);
-		return NULL;
-	}
-	cpuinfo[n] = 0;
-	close(fd);
-
-	return cpuinfo;
-}
-
 static int
 arm_init(struct impl *impl)
 {
 	uint32_t flags = 0;
-	char *cpuinfo, *line;
+	char *cpuinfo, *line, buffer[MAX_BUFFER];
 	int arch;
 
-	if (!(cpuinfo = get_cpuinfo())) {
+	if (!(cpuinfo = spa_cpu_read_file("/proc/cpuinfo", buffer, sizeof(buffer)))) {
 		spa_log_warn(impl->log, "%p: Can't read cpuinfo", impl);
 		return 1;
 	}
@@ -116,8 +73,6 @@ arm_init(struct impl *impl)
 
 		free(line);
 	}
-
-	free(cpuinfo);
 
 	impl->flags = flags;
 

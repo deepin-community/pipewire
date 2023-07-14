@@ -1,26 +1,6 @@
-/* Spa A2DP aptX codec
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa A2DP aptX codec */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <unistd.h>
 #include <stddef.h>
@@ -35,7 +15,7 @@
 #include <freeaptx.h>
 
 #include "rtp.h"
-#include "a2dp-codecs.h"
+#include "media-codecs.h"
 
 #define APTX_LL_LEVEL1(level) (((level) >> 8) & 0xFF)
 #define APTX_LL_LEVEL2(level) (((level) >> 0) & 0xFF)
@@ -71,18 +51,19 @@ struct msbc_impl {
 	sbc_t msbc;
 };
 
-static inline bool codec_is_hd(const struct a2dp_codec *codec)
+static inline bool codec_is_hd(const struct media_codec *codec)
 {
 	return codec->vendor.codec_id == APTX_HD_CODEC_ID
 		&& codec->vendor.vendor_id == APTX_HD_VENDOR_ID;
 }
 
-static inline bool codec_is_ll(const struct a2dp_codec *codec)
+static inline bool codec_is_ll(const struct media_codec *codec)
 {
-	return codec->id == SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL;
+	return (codec->id == SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL) ||
+		(codec->id == SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL_DUPLEX);
 }
 
-static inline size_t codec_get_caps_size(const struct a2dp_codec *codec)
+static inline size_t codec_get_caps_size(const struct media_codec *codec)
 {
 	if (codec_is_hd(codec))
 		return sizeof(a2dp_aptx_hd_t);
@@ -92,7 +73,7 @@ static inline size_t codec_get_caps_size(const struct a2dp_codec *codec)
 		return sizeof(a2dp_aptx_t);
 }
 
-static int codec_fill_caps(const struct a2dp_codec *codec, uint32_t flags,
+static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 		uint8_t caps[A2DP_MAX_CAPS_SIZE])
 {
 	size_t actual_conf_size = codec_get_caps_size(codec);
@@ -118,7 +99,7 @@ static int codec_fill_caps(const struct a2dp_codec *codec, uint32_t flags,
 	return actual_conf_size;
 }
 
-static const struct a2dp_codec_config
+static const struct media_codec_config
 aptx_frequencies[] = {
 	{ APTX_SAMPLING_FREQ_48000, 48000, 3 },
 	{ APTX_SAMPLING_FREQ_44100, 44100, 2 },
@@ -126,9 +107,9 @@ aptx_frequencies[] = {
 	{ APTX_SAMPLING_FREQ_16000, 16000, 0 },
 };
 
-static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
+static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
-		const struct a2dp_codec_audio_info *info,
+		const struct media_codec_audio_info *info,
 		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
 {
 	a2dp_aptx_t conf;
@@ -144,7 +125,7 @@ static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
 	    codec->vendor.codec_id != conf.info.codec_id)
 		return -ENOTSUP;
 
-	if ((i = a2dp_codec_select_config(aptx_frequencies,
+	if ((i = media_codec_select_config(aptx_frequencies,
 					  SPA_N_ELEMENTS(aptx_frequencies),
 					  conf.frequency,
 				    	  info ? info->rate : A2DP_CODEC_DEFAULT_RATE
@@ -162,9 +143,9 @@ static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
 	return actual_conf_size;
 }
 
-static int codec_select_config_ll(const struct a2dp_codec *codec, uint32_t flags,
+static int codec_select_config_ll(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
-		const struct a2dp_codec_audio_info *info,
+		const struct media_codec_audio_info *info,
 		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
 {
 	a2dp_aptx_ll_ext_t conf = { 0 };
@@ -217,7 +198,7 @@ static int codec_select_config_ll(const struct a2dp_codec *codec, uint32_t flags
 	return actual_conf_size;
 }
 
-static int codec_enum_config(const struct a2dp_codec *codec,
+static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size, uint32_t id, uint32_t idx,
 		struct spa_pod_builder *b, struct spa_pod **param)
 {
@@ -266,11 +247,12 @@ static int codec_enum_config(const struct a2dp_codec *codec,
 			spa_pod_builder_int(b, 16000);
 		spa_pod_builder_int(b, 16000);
 	}
-	if (i == 0)
-		return -EINVAL;
 	if (i > 1)
 		choice->body.type = SPA_CHOICE_Enum;
 	spa_pod_builder_pop(b, &f[1]);
+
+	if (i == 0)
+		return -EINVAL;
 
 	if (SPA_FLAG_IS_SET(conf.channel_mode, APTX_CHANNEL_MODE_MONO | APTX_CHANNEL_MODE_STEREO)) {
 		spa_pod_builder_add(b,
@@ -314,7 +296,7 @@ static int codec_get_block_size(void *data)
 	return this->codesize;
 }
 
-static void *codec_init(const struct a2dp_codec *codec, uint32_t flags,
+static void *codec_init(const struct media_codec *codec, uint32_t flags,
 		void *config, size_t config_len, const struct spa_audio_info *info,
 		void *props, size_t mtu)
 {
@@ -342,6 +324,8 @@ static void *codec_init(const struct a2dp_codec *codec, uint32_t flags,
 
 	if (this->hd)
 		this->max_frames = (this->mtu - sizeof(struct rtp_header)) / this->frame_length;
+	else if (codec_is_ll(codec))
+		this->max_frames = SPA_MIN(256u, this->mtu) / this->frame_length;
 	else
 		this->max_frames = this->mtu / this->frame_length;
 
@@ -401,7 +385,7 @@ static int codec_encode(void *data,
 
 	avail_dst_size = (this->max_frames - this->frame_count) * this->frame_length;
 	if (SPA_UNLIKELY(dst_size < avail_dst_size)) {
-		*need_flush = 1;
+		*need_flush = NEED_FLUSH_ALL;
 		return 0;
 	}
 
@@ -411,7 +395,7 @@ static int codec_encode(void *data,
 		return -EINVAL;
 
 	this->frame_count += *dst_out / this->frame_length;
-	*need_flush = this->frame_count >= this->max_frames;
+	*need_flush = (this->frame_count >= this->max_frames) ? NEED_FLUSH_ALL : NEED_FLUSH_NO;
 	return res;
 }
 
@@ -455,7 +439,7 @@ static int codec_decode(void *data,
  * When connected as SRC to SNK, aptX-LL sink may send back mSBC data.
  */
 
-static int msbc_enum_config(const struct a2dp_codec *codec,
+static int msbc_enum_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size, uint32_t id, uint32_t idx,
 		struct spa_pod_builder *b, struct spa_pod **param)
 {
@@ -476,7 +460,7 @@ static int msbc_enum_config(const struct a2dp_codec *codec,
 	return *param == NULL ? -EIO : 1;
 }
 
-static int msbc_validate_config(const struct a2dp_codec *codec, uint32_t flags,
+static int msbc_validate_config(const struct media_codec *codec, uint32_t flags,
 			const void *caps, size_t caps_size,
 			struct spa_audio_info *info)
 {
@@ -505,7 +489,7 @@ static int msbc_get_block_size(void *data)
 	return MSBC_DECODED_SIZE;
 }
 
-static void *msbc_init(const struct a2dp_codec *codec, uint32_t flags,
+static void *msbc_init(const struct media_codec *codec, uint32_t flags,
 		void *config, size_t config_len, const struct spa_audio_info *info,
 		void *props, size_t mtu)
 {
@@ -607,7 +591,7 @@ static int msbc_decode(void *data,
 }
 
 
-const struct a2dp_codec a2dp_codec_aptx = {
+const struct media_codec a2dp_codec_aptx = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_APTX,
 	.codec_id = A2DP_CODEC_VENDOR,
 	.vendor = { .vendor_id = APTX_VENDOR_ID,
@@ -630,7 +614,7 @@ const struct a2dp_codec a2dp_codec_aptx = {
 };
 
 
-const struct a2dp_codec a2dp_codec_aptx_hd = {
+const struct media_codec a2dp_codec_aptx_hd = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_APTX_HD,
 	.codec_id = A2DP_CODEC_VENDOR,
 	.vendor = { .vendor_id = APTX_HD_VENDOR_ID,
@@ -668,7 +652,7 @@ const struct a2dp_codec a2dp_codec_aptx_hd = {
 	.increase_bitpool = codec_increase_bitpool
 
 
-const struct a2dp_codec a2dp_codec_aptx_ll_0 = {
+const struct media_codec a2dp_codec_aptx_ll_0 = {
 	APTX_LL_COMMON_DEFS,
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL,
 	.vendor = { .vendor_id = APTX_LL_VENDOR_ID,
@@ -677,7 +661,7 @@ const struct a2dp_codec a2dp_codec_aptx_ll_0 = {
 	.endpoint_name = "aptx_ll_0",
 };
 
-const struct a2dp_codec a2dp_codec_aptx_ll_1 = {
+const struct media_codec a2dp_codec_aptx_ll_1 = {
 	APTX_LL_COMMON_DEFS,
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL,
 	.vendor = { .vendor_id = APTX_LL_VENDOR_ID2,
@@ -687,7 +671,7 @@ const struct a2dp_codec a2dp_codec_aptx_ll_1 = {
 };
 
 /* Voice channel mSBC, not a real A2DP codec */
-static const struct a2dp_codec aptx_ll_msbc = {
+static const struct media_codec aptx_ll_msbc = {
 	.codec_id = A2DP_CODEC_VENDOR,
 	.name = "aptx_ll_msbc",
 	.description = "aptX-LL mSBC",
@@ -707,7 +691,12 @@ static const struct a2dp_codec aptx_ll_msbc = {
 	.increase_bitpool = msbc_increase_bitpool,
 };
 
-const struct a2dp_codec a2dp_codec_aptx_ll_duplex_0 = {
+static const struct spa_dict_item duplex_info_items[] = {
+	{ "duplex.boost", "true" },
+};
+static const struct spa_dict duplex_info = SPA_DICT_INIT_ARRAY(duplex_info_items);
+
+const struct media_codec a2dp_codec_aptx_ll_duplex_0 = {
 	APTX_LL_COMMON_DEFS,
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL_DUPLEX,
 	.vendor = { .vendor_id = APTX_LL_VENDOR_ID,
@@ -715,9 +704,10 @@ const struct a2dp_codec a2dp_codec_aptx_ll_duplex_0 = {
 	.name = "aptx_ll_duplex",
 	.endpoint_name = "aptx_ll_duplex_0",
 	.duplex_codec = &aptx_ll_msbc,
+	.info = &duplex_info,
 };
 
-const struct a2dp_codec a2dp_codec_aptx_ll_duplex_1 = {
+const struct media_codec a2dp_codec_aptx_ll_duplex_1 = {
 	APTX_LL_COMMON_DEFS,
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL_DUPLEX,
 	.vendor = { .vendor_id = APTX_LL_VENDOR_ID2,
@@ -725,9 +715,10 @@ const struct a2dp_codec a2dp_codec_aptx_ll_duplex_1 = {
 	.name = "aptx_ll_duplex",
 	.endpoint_name = "aptx_ll_duplex_1",
 	.duplex_codec = &aptx_ll_msbc,
+	.info = &duplex_info,
 };
 
-A2DP_CODEC_EXPORT_DEF(
+MEDIA_CODEC_EXPORT_DEF(
 	"aptx",
 	&a2dp_codec_aptx_hd,
 	&a2dp_codec_aptx,

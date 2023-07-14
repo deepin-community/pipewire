@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -59,7 +39,8 @@ struct pw_protocol *pw_protocol_native_ext_client_node_init(struct pw_context *c
 struct pw_protocol *pw_protocol_native_ext_client_node0_init(struct pw_context *context);
 
 struct factory_data {
-	struct pw_impl_factory *this;
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
@@ -77,9 +58,15 @@ static void *create_object(void *_data,
 {
 	void *result;
 	struct pw_resource *node_resource;
-	struct pw_impl_client *client = pw_resource_get_client(resource);
+	struct pw_impl_client *client;
 	int res;
 
+	if (resource == NULL) {
+		res = -EINVAL;
+		goto error_exit;
+	}
+
+	client = pw_resource_get_client(resource);
 	node_resource = pw_resource_new(client, new_id, PW_PERM_ALL, type, version, 0);
 	if (node_resource == NULL) {
 		res = -errno;
@@ -115,23 +102,38 @@ static const struct pw_impl_factory_implementation impl_factory = {
 	.create_object = create_object,
 };
 
+static void factory_destroy(void *data)
+{
+	struct factory_data *d = data;
+	spa_hook_remove(&d->factory_listener);
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
+}
+
+static const struct pw_impl_factory_events factory_events = {
+	PW_VERSION_IMPL_FACTORY_EVENTS,
+	.destroy = factory_destroy,
+};
+
 static void module_destroy(void *data)
 {
 	struct factory_data *d = data;
 
 	spa_hook_remove(&d->module_listener);
-
 	spa_list_remove(&d->export_node.link);
 	spa_list_remove(&d->export_spanode.link);
 
-	pw_impl_factory_destroy(d->this);
+	d->module = NULL;
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
 {
 	struct factory_data *d = data;
 	struct pw_impl_module *module = d->module;
-	struct pw_impl_factory *factory = d->this;
+	struct pw_impl_factory *factory = d->factory;
 	struct spa_dict_item items[1];
 	char id[16];
 	int res;
@@ -157,6 +159,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_impl_factory *factory;
 	struct factory_data *data;
+	int res;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -170,7 +173,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		return -errno;
 
 	data = pw_impl_factory_get_user_data(factory);
-	data->this = factory;
+	data->factory = factory;
 	data->module = module;
 
 	pw_log_debug("module %p: new", module);
@@ -179,20 +182,28 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 				      &impl_factory,
 				      data);
 
-	pw_protocol_native_ext_client_node_init(context);
-	pw_protocol_native_ext_client_node0_init(context);
-
 	data->export_node.type = PW_TYPE_INTERFACE_Node;
 	data->export_node.func = pw_core_node_export;
-	pw_context_register_export_type(context, &data->export_node);
+	if ((res = pw_context_register_export_type(context, &data->export_node)) < 0)
+		goto error;
 
 	data->export_spanode.type = SPA_TYPE_INTERFACE_Node;
 	data->export_spanode.func = pw_core_spa_node_export;
-	pw_context_register_export_type(context, &data->export_spanode);
+	if ((res = pw_context_register_export_type(context, &data->export_spanode)) < 0)
+		goto error_remove;
 
+	pw_protocol_native_ext_client_node_init(context);
+	pw_protocol_native_ext_client_node0_init(context);
+
+	pw_impl_factory_add_listener(factory, &data->factory_listener, &factory_events, data);
 	pw_impl_module_add_listener(module, &data->module_listener, &module_events, data);
 
 	pw_impl_module_update_properties(module, &SPA_DICT_INIT_ARRAY(module_props));
 
 	return 0;
+error_remove:
+	spa_list_remove(&data->export_node.link);
+error:
+	pw_impl_factory_destroy(data->factory);
+	return res;
 }

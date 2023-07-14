@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "fmt-ops.h"
 
@@ -30,7 +10,7 @@ static void
 conv_s24_to_f32d_4s_ssse3(void *data, void * SPA_RESTRICT dst[], const void * SPA_RESTRICT src,
 		uint32_t n_channels, uint32_t n_samples)
 {
-	const uint8_t *s = src;
+	const int24_t *s = src;
 	float *d0 = dst[0], *d1 = dst[1], *d2 = dst[2], *d3 = dst[3];
 	uint32_t n, unrolled;
 	__m128i in[4];
@@ -48,9 +28,9 @@ conv_s24_to_f32d_4s_ssse3(void *data, void * SPA_RESTRICT dst[], const void * SP
 
 	for(n = 0; n < unrolled; n += 4) {
                 in[0] = _mm_loadu_si128((__m128i*)(s + 0*n_channels));
-                in[1] = _mm_loadu_si128((__m128i*)(s + 3*n_channels));
-                in[2] = _mm_loadu_si128((__m128i*)(s + 6*n_channels));
-                in[3] = _mm_loadu_si128((__m128i*)(s + 9*n_channels));
+                in[1] = _mm_loadu_si128((__m128i*)(s + 1*n_channels));
+                in[2] = _mm_loadu_si128((__m128i*)(s + 2*n_channels));
+                in[3] = _mm_loadu_si128((__m128i*)(s + 3*n_channels));
 		in[0] = _mm_shuffle_epi8(in[0], mask);
 		in[1] = _mm_shuffle_epi8(in[1], mask);
 		in[2] = _mm_shuffle_epi8(in[2], mask);
@@ -74,13 +54,13 @@ conv_s24_to_f32d_4s_ssse3(void *data, void * SPA_RESTRICT dst[], const void * SP
 		_mm_store_ps(&d1[n], out[1]);
 		_mm_store_ps(&d2[n], out[2]);
 		_mm_store_ps(&d3[n], out[3]);
-		s += 12 * n_channels;
+		s += 4 * n_channels;
 	}
 	for(; n < n_samples; n++) {
-		out[0] = _mm_cvtsi32_ss(out[0], read_s24(s));
-		out[1] = _mm_cvtsi32_ss(out[1], read_s24(s+3));
-		out[2] = _mm_cvtsi32_ss(out[2], read_s24(s+6));
-		out[3] = _mm_cvtsi32_ss(out[3], read_s24(s+9));
+		out[0] = _mm_cvtsi32_ss(factor, s24_to_s32(*s));
+		out[1] = _mm_cvtsi32_ss(factor, s24_to_s32(*(s+1)));
+		out[2] = _mm_cvtsi32_ss(factor, s24_to_s32(*(s+2)));
+		out[3] = _mm_cvtsi32_ss(factor, s24_to_s32(*(s+3)));
 		out[0] = _mm_mul_ss(out[0], factor);
 		out[1] = _mm_mul_ss(out[1], factor);
 		out[2] = _mm_mul_ss(out[2], factor);
@@ -89,7 +69,7 @@ conv_s24_to_f32d_4s_ssse3(void *data, void * SPA_RESTRICT dst[], const void * SP
 		_mm_store_ss(&d1[n], out[1]);
 		_mm_store_ss(&d2[n], out[2]);
 		_mm_store_ss(&d3[n], out[3]);
-		s += 3 * n_channels;
+		s += n_channels;
 	}
 }
 

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -35,9 +15,9 @@
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
+#include <spa/param/audio/format-utils.h>
 
 #include <pipewire/impl.h>
-#include <pipewire/private.h>
 #include <pipewire/i18n.h>
 
 #include <avahi-client/lookup.h>
@@ -48,6 +28,26 @@
 #include "module-zeroconf-discover/avahi-poll.h"
 
 /** \page page_module_zeroconf_discover PipeWire Module: Zeroconf Discover
+ *
+ * Use zeroconf to detect and load module-pulse-tunnel with the right
+ * parameters. This will automatically create sinks and sources to stream
+ * audio to/from remote PulseAudio servers. It also works with
+ * module-protocol-pulse.
+ *
+ * ## Module Options
+ *
+ * - `pulse.latency`: the latency to end-to-end latency in milliseconds to
+ *                    maintain (Default 200ms).
+ *
+ * ## Example configuration
+ *
+ *\code{.unparsed}
+ * context.modules = [
+ * {   name = libpipewire-module-zeroconf-discover
+ *     args = { }
+ * }
+ * ]
+ *\endcode
  */
 
 #define NAME "zeroconf-discover"
@@ -55,7 +55,7 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
-#define MODULE_USAGE	" "
+#define MODULE_USAGE	"( pulse.latency=<latency in msec, default 200> ) "
 
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
@@ -73,7 +73,6 @@ struct impl {
 
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
-	struct pw_work_queue *work;
 
 	struct pw_properties *properties;
 
@@ -83,19 +82,13 @@ struct impl {
 	AvahiServiceBrowser *source_browser;
 
 	struct spa_list tunnel_list;
-
-	unsigned int unloading:1;
 };
 
 struct tunnel_info {
-	AvahiIfIndex interface;
-	AvahiProtocol protocol;
 	const char *name;
-	const char *type;
-	const char *domain;
 };
 
-#define TUNNEL_INFO(...) (struct tunnel_info){ __VA_ARGS__ }
+#define TUNNEL_INFO(...) ((struct tunnel_info){ __VA_ARGS__ })
 
 struct tunnel {
 	struct spa_list link;
@@ -106,20 +99,6 @@ struct tunnel {
 
 static int start_client(struct impl *impl);
 
-static void do_unload_module(void *obj, void *data, int res, uint32_t id)
-{
-	struct impl *impl = data;
-	pw_impl_module_destroy(impl->module);
-}
-
-static void unload_module(struct impl *impl)
-{
-	if (!impl->unloading) {
-		impl->unloading = true;
-		pw_work_queue_add(impl->work, impl, 0, do_unload_module, impl);
-	}
-}
-
 static struct tunnel *make_tunnel(struct impl *impl, const struct tunnel_info *info)
 {
 	struct tunnel *t;
@@ -128,11 +107,7 @@ static struct tunnel *make_tunnel(struct impl *impl, const struct tunnel_info *i
 	if (t == NULL)
 		return NULL;
 
-	t->info.interface = info->interface;
-	t->info.protocol = info->protocol;
 	t->info.name = strdup(info->name);
-	t->info.type = strdup(info->type);
-	t->info.domain = strdup(info->domain);
 	spa_list_append(&impl->tunnel_list, &t->link);
 
 	return t;
@@ -142,11 +117,7 @@ static struct tunnel *find_tunnel(struct impl *impl, const struct tunnel_info *i
 {
 	struct tunnel *t;
 	spa_list_for_each(t, &impl->tunnel_list, link) {
-		if (t->info.interface == info->interface &&
-		    t->info.protocol == info->protocol &&
-		    spa_streq(t->info.name, info->name) &&
-		    spa_streq(t->info.type, info->type) &&
-		    spa_streq(t->info.domain, info->domain))
+		if (spa_streq(t->info.name, info->name))
 			return t;
 	}
 	return NULL;
@@ -154,7 +125,12 @@ static struct tunnel *find_tunnel(struct impl *impl, const struct tunnel_info *i
 
 static void free_tunnel(struct tunnel *t)
 {
-	pw_impl_module_destroy(t->module);
+	spa_list_remove(&t->link);
+	if (t->module)
+		pw_impl_module_destroy(t->module);
+	free((char *) t->info.name);
+
+	free(t);
 }
 
 static void impl_free(struct impl *impl)
@@ -173,8 +149,6 @@ static void impl_free(struct impl *impl)
 	if (impl->avahi_poll)
 		pw_avahi_poll_free(impl->avahi_poll);
 	pw_properties_free(impl->properties);
-	if (impl->work)
-		pw_work_queue_cancel(impl->work, impl, SPA_ID_INVALID);
 	free(impl);
 }
 
@@ -190,15 +164,17 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static void pw_properties_from_avahi_string(const char *key, const char *value, struct pw_properties *props) {
+static void pw_properties_from_avahi_string(const char *key, const char *value,
+		struct pw_properties *props)
+{
 	if (spa_streq(key, "device")) {
-		pw_properties_set(props, PW_KEY_NODE_TARGET, value);
+		pw_properties_set(props, PW_KEY_TARGET_OBJECT, value);
 	}
 	else if (spa_streq(key, "rate")) {
-		pw_properties_setf(props, PW_KEY_AUDIO_RATE, "%u", atoi(value));
+		pw_properties_set(props, PW_KEY_AUDIO_RATE, value);
 	}
 	else if (spa_streq(key, "channels")) {
-		pw_properties_setf(props, PW_KEY_AUDIO_CHANNELS, "%u", atoi(value));
+		pw_properties_set(props, PW_KEY_AUDIO_CHANNELS, value);
 	}
 	else if (spa_streq(key, "channel_map")) {
 		struct channel_map channel_map;
@@ -209,12 +185,12 @@ static void pw_properties_from_avahi_string(const char *key, const char *value, 
 		channel_map_parse(value, &channel_map);
 		channel_map_to_positions(&channel_map, pos);
 
-		p = s = alloca(4 + channel_map.channels * 6);
-		p += snprintf(p, 6, "[");
+		p = s = alloca(4 + channel_map.channels * 8);
+		p += spa_scnprintf(p, 2, "[");
 		for (i = 0; i < channel_map.channels; i++)
-			p += snprintf(p, 6, "%s%s", i == 0 ? "" : ",",
+			p += spa_scnprintf(p, 8, "%s%s", i == 0 ? "" : ",",
 				channel_id2name(pos[i]));
-		p += snprintf(p, 6, "]");
+		p += spa_scnprintf(p, 2, "]");
 		pw_properties_set(props, SPA_KEY_AUDIO_POSITION, s);
 	}
 	else if (spa_streq(key, "format")) {
@@ -243,14 +219,8 @@ static void submodule_destroy(void *data)
 {
 	struct tunnel *t = data;
 
-	spa_list_remove(&t->link);
 	spa_hook_remove(&t->module_listener);
-
-	free((char *) t->info.name);
-	free((char *) t->info.type);
-	free((char *) t->info.domain);
-
-	free(t);
+	t->module = NULL;
 }
 
 static const struct pw_impl_module_events submodule_events = {
@@ -281,11 +251,20 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 				avahi_strerror(avahi_client_errno(impl->client)));
 		goto done;
 	}
-	tinfo = TUNNEL_INFO(.interface = interface,
-			.protocol = protocol,
-			.name = name,
-			.type = type,
-			.domain = domain);
+
+	tinfo = TUNNEL_INFO(.name = name);
+
+	t = find_tunnel(impl, &tinfo);
+	if (t == NULL)
+		t = make_tunnel(impl, &tinfo);
+	if (t == NULL) {
+		pw_log_error("Can't make tunnel: %m");
+		goto done;
+	}
+	if (t->module != NULL) {
+		pw_log_info("found duplicate mdns entry - skipping tunnel creation");
+		goto done;
+	}
 
 	props = pw_properties_new(NULL, NULL);
 	if (props == NULL) {
@@ -304,14 +283,14 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 		avahi_free(value);
 	}
 
-	if ((device = pw_properties_get(props, PW_KEY_NODE_TARGET)) != NULL)
+	if ((device = pw_properties_get(props, PW_KEY_TARGET_OBJECT)) != NULL)
 		pw_properties_setf(props, PW_KEY_NODE_NAME,
 				"tunnel.%s.%s", host_name, device);
 	else
 		pw_properties_setf(props, PW_KEY_NODE_NAME,
 				"tunnel.%s", host_name);
 
-	str = strstr(type, "sink") ? "playback" : "capture";
+	str = strstr(type, "sink") ? "sink" : "source";
 	pw_properties_set(props, "tunnel.mode", str);
 
 	if (a->proto == AVAHI_PROTO_INET6 &&
@@ -327,7 +306,7 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 	if (desc == NULL)
 		desc = pw_properties_get(props, PW_KEY_DEVICE_PRODUCT_NAME);
 	if (desc == NULL)
-		desc = pw_properties_get(props, PW_KEY_NODE_TARGET);
+		desc = pw_properties_get(props, PW_KEY_TARGET_OBJECT);
 	if (desc == NULL)
 		desc = _("Unknown device");
 
@@ -348,15 +327,20 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 				_("%s on %s"), desc, fqdn);
 	}
 
-	f = open_memstream(&args, &size);
+	if ((str = pw_properties_get(impl->properties, "pulse.latency")) != NULL)
+		pw_properties_set(props, "pulse.latency", str);
+
+	if ((f = open_memstream(&args, &size)) == NULL) {
+		pw_log_error("Can't open memstream: %m");
+		goto done;
+	}
+
 	fprintf(f, "{");
 	pw_properties_serialize_dict(f, &props->dict, 0);
 	fprintf(f, " stream.props = {");
 	fprintf(f, " }");
 	fprintf(f, "}");
         fclose(f);
-
-	pw_properties_free(props);
 
 	pw_log_info("loading module args:'%s'", args);
 	mod = pw_context_load_module(impl->context,
@@ -369,19 +353,13 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
                 goto done;
 	}
 
-	t = make_tunnel(impl, &tinfo);
-	if (t == NULL) {
-		pw_log_error("Can't make tunnel: %m");
-		pw_impl_module_destroy(mod);
-		goto done;
-	}
-
 	pw_impl_module_add_listener(mod, &t->module_listener, &submodule_events, t);
 
 	t->module = mod;
 
 done:
 	avahi_service_resolver_free(r);
+	pw_properties_free(props);
 }
 
 
@@ -396,18 +374,16 @@ static void browser_cb(AvahiServiceBrowser *b, AvahiIfIndex interface, AvahiProt
 	if (flags & AVAHI_LOOKUP_RESULT_LOCAL)
 		return;
 
-	info = TUNNEL_INFO(.interface = interface,
-			.protocol = protocol,
-			.name = name,
-			.type = type,
-			.domain = domain);
+	info = TUNNEL_INFO(.name = name);
 
 	t = find_tunnel(impl, &info);
 
 	switch (event) {
 	case AVAHI_BROWSER_NEW:
-		if (t != NULL)
+		if (t != NULL) {
+			pw_log_info("found duplicate mdns entry - skipping tunnel creation");
 			return;
+		}
 		if (!(avahi_service_resolver_new(impl->client,
 						interface, protocol,
 						name, type, domain,
@@ -483,7 +459,7 @@ static void client_callback(AvahiClient *c, AvahiClientState state, void *userda
 	}
 	return;
 error:
-	unload_module(impl);
+	pw_impl_module_schedule_destroy(impl->module);
 }
 
 static int start_client(struct impl *impl)
@@ -494,7 +470,7 @@ static int start_client(struct impl *impl)
 					client_callback, impl,
 					&res)) == NULL) {
 		pw_log_error("can't create client: %s", avahi_strerror(res));
-		unload_module(impl);
+		pw_impl_module_schedule_destroy(impl->module);
 		return -EIO;
 	}
 	return 0;
@@ -538,10 +514,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->module = module;
 	impl->context = context;
 	impl->properties = props;
-
-	impl->work = pw_context_get_work_queue(context);
-	if (impl->work == NULL)
-		goto error_errno;
 
 	pw_impl_module_add_listener(module, &impl->module_listener, &module_events, impl);
 

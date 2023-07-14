@@ -1,31 +1,12 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 #include <signal.h>
 #include <math.h>
 #include <getopt.h>
+#include <locale.h>
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -40,6 +21,7 @@ struct data {
 
 	const char *opt_remote;
 	const char *opt_name;
+	bool opt_list;
 	bool opt_monitor;
 	bool opt_delete;
 	uint32_t opt_id;
@@ -67,14 +49,17 @@ static int metadata_property(void *data, uint32_t id,
 {
 	struct data *d = data;
 
+	if (d->opt_list)
+		return 0;
+
 	if ((d->opt_id == SPA_ID_INVALID || d->opt_id == id) &&
 	    (d->opt_key == NULL || spa_streq(d->opt_key, key))) {
 		if (key == NULL) {
-			fprintf(stdout, "remove: id:%u all keys\n", id);
+			printf("remove: id:%u all keys\n", id);
 		} else if (value == NULL) {
-			fprintf(stdout, "remove: id:%u key:'%s'\n", id, key);
+			printf("remove: id:%u key:'%s'\n", id, key);
 		} else {
-			fprintf(stdout, "update: id:%u key:'%s' value:'%s' type:'%s'\n", id, key, value, type);
+			printf("update: id:%u key:'%s' value:'%s' type:'%s'\n", id, key, value, type);
 		}
 	}
 
@@ -91,37 +76,46 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
 				  const struct spa_dict *props)
 {
 	struct data *d = data;
-	const char *str;
+	const char *name;
 
 	if (!spa_streq(type, PW_TYPE_INTERFACE_Metadata))
 		return;
 
-	if ((str = spa_dict_lookup(props, PW_KEY_METADATA_NAME)) != NULL &&
-	    !spa_streq(str, d->opt_name))
+	if (props == NULL)
 		return;
 
-	if (d->metadata != NULL) {
+	name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
+	if (name == NULL)
+		return;
+
+	if (d->opt_name && !spa_streq(name, d->opt_name))
+		return;
+
+	if (!d->opt_list && d->metadata != NULL) {
 		pw_log_warn("Multiple metadata: ignoring metadata %d", id);
 		return;
 	}
 
-	fprintf(stdout, "Found \"%s\" metadata %d\n", d->opt_name, id);
+	printf("Found \"%s\" metadata %d\n", name, id);
+	if (d->opt_list)
+		return;
+
 	d->metadata = pw_registry_bind(d->registry,
 			id, type, PW_VERSION_METADATA, 0);
 
 	if (d->opt_delete) {
 		if (d->opt_id != SPA_ID_INVALID) {
 			if (d->opt_key != NULL)
-				fprintf(stdout, "delete property: id:%u key:%s\n", d->opt_id, d->opt_key);
+				printf("delete property: id:%u key:%s\n", d->opt_id, d->opt_key);
 			else
-				fprintf(stdout, "delete properties: id:%u\n", d->opt_id);
+				printf("delete properties: id:%u\n", d->opt_id);
 			pw_metadata_set_property(d->metadata, d->opt_id, d->opt_key, NULL, NULL);
 		} else {
-			fprintf(stdout, "delete all properties\n");
+			printf("delete all properties\n");
 			pw_metadata_clear(d->metadata);
 		}
 	} else if (d->opt_id != SPA_ID_INVALID && d->opt_key != NULL && d->opt_value != NULL) {
-		fprintf(stdout, "set property: id:%u key:%s value:%s type:%s\n",
+		printf("set property: id:%u key:%s value:%s type:%s\n",
 				d->opt_id, d->opt_key, d->opt_value, d->opt_type);
 		pw_metadata_set_property(d->metadata, d->opt_id, d->opt_key, d->opt_type, d->opt_value);
 	} else {
@@ -169,12 +163,13 @@ static void do_quit(void *userdata, int signal_number)
 	pw_main_loop_quit(data->loop);
 }
 
-static void show_help(struct data *data, const char *name)
+static void show_help(struct data *data, const char *name, bool error)
 {
-        fprintf(stdout, "%s [options] [ id [ key [ value [ type ] ] ] ]\n"
+        fprintf(error ? stderr : stdout, "%s [options] [ id [ key [ value [ type ] ] ] ]\n"
 		"  -h, --help                            Show this help\n"
 		"      --version                         Show version\n"
 		"  -r, --remote                          Remote daemon name\n"
+		"  -l, --list                            List available metadata\n"
 		"  -m, --monitor                         Monitor metadata\n"
 		"  -d, --delete                          Delete metadata\n"
 		"  -n, --name                            Metadata name (default: \"%s\")\n",
@@ -189,23 +184,27 @@ int main(int argc, char *argv[])
 		{ "help",	no_argument,		NULL, 'h' },
 		{ "version",	no_argument,		NULL, 'V' },
 		{ "remote",	required_argument,	NULL, 'r' },
+		{ "list",	no_argument,		NULL, 'l' },
 		{ "monitor",	no_argument,		NULL, 'm' },
 		{ "delete",	no_argument,		NULL, 'd' },
 		{ "name",	required_argument,	NULL, 'n' },
 		{ NULL,	0, NULL, 0}
 	};
 
+	setlinebuf(stdout);
+
+	setlocale(LC_ALL, "");
 	pw_init(&argc, &argv);
 
 	data.opt_name = "default";
 
-	while ((c = getopt_long(argc, argv, "hVr:mdn:", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "hVr:lmdn:", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h':
-			show_help(&data, argv[0]);
+			show_help(&data, argv[0], false);
 			return 0;
 		case 'V':
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -214,6 +213,10 @@ int main(int argc, char *argv[])
 			return 0;
 		case 'r':
 			data.opt_remote = optarg;
+			break;
+		case 'l':
+			data.opt_name = NULL;
+			data.opt_list = true;
 			break;
 		case 'm':
 			data.opt_monitor = true;
@@ -225,7 +228,7 @@ int main(int argc, char *argv[])
 			data.opt_name = optarg;
 			break;
 		default:
-			show_help(&data, argv[0]);
+			show_help(&data, argv[0], true);
 			return -1;
 		}
 	}
@@ -280,7 +283,9 @@ int main(int argc, char *argv[])
 
 	if (data.metadata)
 		pw_proxy_destroy((struct pw_proxy*)data.metadata);
+	spa_hook_remove(&data.registry_listener);
 	pw_proxy_destroy((struct pw_proxy*)data.registry);
+	spa_hook_remove(&data.core_listener);
 	pw_core_disconnect(data.core);
 	pw_context_destroy(data.context);
 	pw_main_loop_destroy(data.loop);

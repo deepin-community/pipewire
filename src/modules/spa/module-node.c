@@ -1,27 +1,8 @@
-/* PipeWire
- * Copyright © 2016 Axis Communications <dev-gstreamer@axis.com>
- *	@author Linus Svensson <linus.svensson@axis.com>
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2016 Axis Communications <dev-gstreamer@axis.com> */
+/*                         @author Linus Svensson <linus.svensson@axis.com> */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -29,6 +10,7 @@
 #include <getopt.h>
 #include <limits.h>
 
+#include <pipewire/cleanup.h>
 #include <pipewire/impl.h>
 
 #include "spa-node.h"
@@ -71,8 +53,8 @@ SPA_EXPORT
 int pipewire__module_init(struct pw_impl_module *module, const char *args)
 {
 	struct pw_properties *props = NULL;
-	char **argv = NULL;
-	int n_tokens, res;
+	spa_auto(pw_strv) argv = NULL;
+	int n_tokens;
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_impl_node *node;
         struct node_data *data;
@@ -88,10 +70,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	if (n_tokens == 2) {
 		props = pw_properties_new_string(argv[1]);
-		if (props == NULL) {
-			res = -errno;
-			goto error_exit_cleanup;
-		}
+		if (props == NULL)
+			return -errno;
 	}
 
 	node = pw_spa_node_load(context,
@@ -100,12 +80,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 				props,
 				sizeof(struct node_data));
 
-	if (node == NULL) {
-		res = -errno;
-		goto error_exit_cleanup;
-	}
-
-	pw_free_strv(argv);
+	if (node == NULL)
+		return -errno;
 
 	data = pw_spa_node_get_user_data(node);
 	data->this = node;
@@ -120,10 +96,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	return 0;
 
 error_arguments:
-	res = -EINVAL;
 	pw_log_error("usage: module-spa-node " MODULE_USAGE);
-	goto error_exit_cleanup;
-error_exit_cleanup:
-	pw_free_strv(argv);
-	return res;
+	return -EINVAL;
 }

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -35,14 +15,16 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <ctype.h>
-#if HAVE_PWD_H
+#ifdef HAVE_PWD_H
 #include <pwd.h>
 #endif
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
 #include <sys/ucred.h>
 #endif
 
 #include <spa/pod/iter.h>
+#include <spa/pod/parser.h>
+#include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
@@ -57,6 +39,7 @@
 
 #include "modules/module-protocol-native/connection.h"
 #include "modules/module-protocol-native/defs.h"
+#include "modules/module-protocol-native/protocol-footer.h"
 
 
 #define NAME "protocol-native"
@@ -71,6 +54,59 @@ PW_LOG_TOPIC(mod_topic_connection, "conn." NAME);
 #include <spa/debug/types.h>
 
 /** \page page_module_protocol_native PipeWire Module: Protocol Native
+ *
+ * The native protocol module implements the PipeWire communication between
+ * a client and a server using unix local sockets.
+ *
+ * Normally this module is loaded in both client and server config files
+ * so that they cam communicate.
+ *
+ * ## Module Options
+ *
+ * The module has no options.
+ *
+ * ## General Options
+ *
+ * The name of the core is obtained as:
+ *
+ * - PIPEWIRE_CORE : the environment variable with the name of the core
+ * - \ref PW_KEY_CORE_NAME : in the context properties
+ * - a name based on the process id
+ *
+ * The context will also become a server if:
+ *
+ * - PIPEWIRE_DAEMON : the environment is true
+ * - \ref PW_KEY_CORE_DAEMON : in the context properties is true
+ *
+ * The socket will be located in the directory obtained by looking at the
+ * following environment variables:
+ *
+ * - PIPEWIRE_RUNTIME_DIR
+ * - XDG_RUNTIME_DIR
+ * - USERPROFILE
+ *
+ * The socket address will be written into the notification file descriptor
+ * if the following environment variable is set:
+ *
+ * - PIPEWIRE_NOTIFICATION_FD
+ *
+ * When a client connect, the connection will be made to:
+ *
+ * - PIPEWIRE_REMOTE : the environment with the remote name
+ * - \ref PW_KEY_REMOTE_NAME : the property in the context.
+ * - The default remote named "pipewire-0"
+ *
+ * A Special remote named "internal" can be used to make a connection to the
+ * local context. This can be done even when the server is not a daemon. It can
+ * be used to treat a local context as if it was a server.
+ *
+ * ## Example configuration
+ *
+ *\code{.unparsed}
+ * context.modules = [
+   { name = libpipewire-module-protocol-native }
+ * ]
+ *\endcode
  */
 
 #ifndef UNIX_PATH_MAX
@@ -115,6 +151,8 @@ struct client {
 
 	int ref;
 
+	struct footer_core_global_state footer_state;
+
 	unsigned int connected:1;
 	unsigned int disconnecting:1;
 	unsigned int need_flush:1;
@@ -151,6 +189,8 @@ struct client_data {
 	struct pw_protocol_native_connection *connection;
 	struct spa_hook conn_listener;
 
+	struct footer_client_global_state footer_state;
+
 	unsigned int busy:1;
 	unsigned int need_flush:1;
 
@@ -161,15 +201,61 @@ static void debug_msg(const char *prefix, const struct pw_protocol_native_messag
 {
 	struct spa_pod *pod;
 	pw_logt_debug(mod_topic_connection,
-		      "%s: id:%d op:%d size:%d seq:%d", prefix,
-		      msg->id, msg->opcode, msg->size, msg->seq);
+		      "%s: id:%d op:%d size:%d seq:%d fds:%d", prefix,
+		      msg->id, msg->opcode, msg->size, msg->seq, msg->n_fds);
 
-	if ((pod = spa_pod_from_data(msg->data, msg->size, 0, msg->size)) != NULL)
+	if ((pod = get_first_pod_from_data(msg->data, msg->size, 0)) != NULL)
 		spa_debug_pod(0, NULL, pod);
 	else
 		hex = true;
 	if (hex)
 		spa_debug_mem(0, msg->data, msg->size);
+
+	pw_logt_debug(mod_topic_connection, "%s ****", prefix);
+
+}
+
+static void pre_demarshal(struct pw_protocol_native_connection *conn,
+		const struct pw_protocol_native_message *msg,
+		void *object, const struct footer_demarshal *opcodes, size_t n_opcodes)
+{
+	struct spa_pod *footer = NULL;
+	struct spa_pod_parser parser;
+	struct spa_pod_frame f[2];
+	uint32_t opcode;
+	int ret;
+
+	footer = pw_protocol_native_connection_get_footer(conn, msg);
+	if (footer == NULL)
+		return;   /* No valid footer. Ignore silently. */
+
+	/*
+	 * Version 3 footer
+	 *
+	 * spa_pod Struct { [Id opcode, Struct { ... }]* }
+	 */
+
+	spa_pod_parser_pod(&parser, footer);
+	if (spa_pod_parser_push_struct(&parser, &f[0]) < 0) {
+		pw_log_error("malformed message footer");
+		return;
+	}
+
+	while (1) {
+		if (spa_pod_parser_get_id(&parser, &opcode) < 0)
+			break;
+		if (spa_pod_parser_push_struct(&parser, &f[1]) < 0)
+			break;
+		if (opcode < n_opcodes) {
+			if ((ret = opcodes[opcode].demarshal(object, &parser)) < 0)
+				pw_log_error("failed processing message footer (opcode %u): %d (%s)",
+						opcode, ret, spa_strerror(ret));
+		} else {
+			/* Ignore (don't log errors), in case we need to extend this later. */
+			pw_log_debug("unknown message footer opcode %u", opcode);
+		}
+		spa_pod_parser_pop(&parser, &f[1]);
+	}
 }
 
 static int
@@ -201,6 +287,7 @@ process_messages(struct client_data *data)
 			break;
 
 		if (client->core_resource == NULL) {
+			pw_log_debug("%p: no core resource", client);
 			res = -EPROTO;
 			goto error;
 		}
@@ -213,6 +300,9 @@ process_messages(struct client_data *data)
 		if (debug_messages)
 			debug_msg("<<<<<< in", msg, false);
 
+		pre_demarshal(conn, msg, client, footer_client_demarshal,
+				SPA_N_ELEMENTS(footer_client_demarshal));
+
 		resource = pw_impl_client_find_resource(client, msg->id);
 		if (resource == NULL) {
 			pw_resource_errorf(client->core_resource,
@@ -222,14 +312,18 @@ process_messages(struct client_data *data)
 
 		marshal = pw_resource_get_marshal(resource);
 		if (marshal == NULL || msg->opcode >= marshal->n_client_methods) {
-			res = -ENOSYS;
-			goto invalid_method;
+			pw_resource_errorf_id(resource, msg->id,
+					-ENOSYS, "invalid method id:%u op:%u",
+					msg->id, msg->opcode);
+			continue;
 		}
 
 		demarshal = marshal->server_demarshal;
 		if (!demarshal[msg->opcode].func) {
-			res = -ENOTSUP;
-			goto invalid_message;
+			pw_resource_errorf_id(resource, msg->id,
+					-ENOTSUP, "function not supported id:%u op:%u",
+					msg->id, msg->opcode);
+			continue;
 		}
 
 		permissions = pw_resource_get_permissions(resource);
@@ -237,34 +331,34 @@ process_messages(struct client_data *data)
 
 		if ((required & permissions) != required) {
 			pw_resource_errorf_id(resource, msg->id,
-				-EACCES, "no permission to call method %u on %u (requires %08x, have %08x)",
-				msg->opcode, msg->id, required, permissions);
+				-EACCES, "no permission to call method %u on %u "
+				"(requires "PW_PERMISSION_FORMAT", have "PW_PERMISSION_FORMAT")",
+				msg->opcode, msg->id,
+				PW_PERMISSION_ARGS(required), PW_PERMISSION_ARGS(permissions));
 			continue;
 		}
 
+		resource->refcount++;
 		pw_protocol_native_connection_enter(conn);
 		res = demarshal[msg->opcode].func(resource, msg);
 		pw_protocol_native_connection_leave(conn);
-		if (res < 0)
-			goto invalid_message;
+		pw_resource_unref(resource);
+
+		if (res < 0) {
+			pw_resource_errorf_id(resource, msg->id,
+					res, "invalid message id:%u op:%u (%s)",
+					msg->id, msg->opcode, spa_strerror(res));
+			debug_msg("*invalid message*", msg, true);
+		}
 	}
 	res = 0;
 done:
 	context->current_client = NULL;
+
 	return res;
 
-invalid_method:
-	pw_resource_errorf_id(resource, msg->id, res, "invalid method id:%u op:%u",
-			msg->id, msg->opcode);
-	goto done;
-invalid_message:
-	pw_resource_errorf_id(resource, msg->id, res, "invalid message id:%u op:%u (%s)",
-			msg->id, msg->opcode, spa_strerror(res));
-	debug_msg("*invalid message*", msg, true);
-	goto done;
 error:
-	if (client->core_resource)
-		pw_resource_errorf(client->core_resource, res, "client error %d (%s)",
+	pw_resource_errorf(client->core_resource, res, "client error %d (%s)",
 				res, spa_strerror(res));
 	goto done;
 }
@@ -288,14 +382,15 @@ client_busy_changed(void *data, bool busy)
 		pw_loop_signal_event(s->loop, s->resume);
 }
 
-static void handle_client_error(struct pw_impl_client *client, int res)
+static void handle_client_error(struct pw_impl_client *client, int res, const char *msg)
 {
-	if (res == -EPIPE)
-		pw_log_info("%p: client %p disconnected", client->protocol, client);
+	if (res == -EPIPE || res == -ECONNRESET)
+		pw_log_info("%p: %s: client %p disconnected", client->protocol, msg, client);
 	else
-		pw_log_error("%p: client %p error %d (%s)", client->protocol,
+		pw_log_error("%p: %s: client %p error %d (%s)", client->protocol, msg,
 				client, res, spa_strerror(res));
-	pw_impl_client_destroy(client);
+	if (!client->destroyed)
+		pw_impl_client_destroy(client);
 }
 
 static void
@@ -304,6 +399,8 @@ connection_data(void *data, int fd, uint32_t mask)
 	struct client_data *this = data;
 	struct pw_impl_client *client = this->client;
 	int res;
+
+	client->refcount++;
 
 	if (mask & SPA_IO_HUP) {
 		res = -EPIPE;
@@ -326,9 +423,19 @@ connection_data(void *data, int fd, uint32_t mask)
 		} else if (res != -EAGAIN)
 			goto error;
 	}
+done:
+	pw_impl_client_unref(client);
 	return;
 error:
-	handle_client_error(client, res);
+	handle_client_error(client, res, "connection_data");
+	goto done;
+}
+
+static void client_destroy(void *data)
+{
+	struct client_data *this = data;
+	pw_log_debug("%p: destroy", this);
+	spa_list_remove(&this->protocol_link);
 }
 
 static void client_free(void *data)
@@ -337,8 +444,6 @@ static void client_free(void *data)
 	struct pw_impl_client *client = this->client;
 
 	pw_log_debug("%p: free", this);
-	spa_list_remove(&this->protocol_link);
-
 	spa_hook_remove(&this->client_listener);
 
 	if (this->source)
@@ -351,6 +456,7 @@ static void client_free(void *data)
 
 static const struct pw_impl_client_events client_events = {
 	PW_VERSION_IMPL_CLIENT_EVENTS,
+	.destroy = client_destroy,
 	.free = client_free,
 	.busy_changed = client_busy_changed,
 };
@@ -419,7 +525,7 @@ static struct client_data *client_new(struct server *s, int fd)
 	struct pw_impl_client *client;
 	struct pw_protocol *protocol = s->this.protocol;
 	socklen_t len;
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
 	struct xucred xucred;
 #else
 	struct ucred ucred;
@@ -468,7 +574,7 @@ static struct client_data *client_new(struct server *s, int fd)
 					(int)len, buffer);
 		}
 	}
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__MidnightBSD__)
 	len = sizeof(xucred);
 	if (getsockopt(fd, 0, LOCAL_PEERCRED, &xucred, &len) < 0) {
 		pw_log_warn("server %p: no peercred: %m", s);
@@ -490,12 +596,15 @@ static struct client_data *client_new(struct server *s, int fd)
 	if (client == NULL)
 		goto exit;
 
-
 	this = pw_impl_client_get_user_data(client);
 	spa_list_append(&s->this.client_list, &this->protocol_link);
 
 	this->server = s;
 	this->client = client;
+	pw_map_init(&this->compat_v2.types, 0, 32);
+
+	pw_impl_client_add_listener(client, &this->client_listener, &client_events, this);
+
 	this->source = pw_loop_add_io(pw_context_get_main_loop(context),
 				      fd, SPA_IO_ERR | SPA_IO_HUP, true,
 				      connection_data, this);
@@ -510,14 +619,10 @@ static struct client_data *client_new(struct server *s, int fd)
 		goto cleanup_client;
 	}
 
-	pw_map_init(&this->compat_v2.types, 0, 32);
-
 	pw_protocol_native_connection_add_listener(this->connection,
 						   &this->conn_listener,
 						   &server_conn_events,
 						   this);
-
-	pw_impl_client_add_listener(client, &this->client_listener, &client_events, this);
 
 	if ((res = pw_impl_client_register(client, NULL)) < 0)
 		goto cleanup_client;
@@ -646,6 +751,44 @@ socket_data(void *data, int fd, uint32_t mask)
 	}
 }
 
+static int write_socket_address(struct server *s)
+{
+	long v;
+	int fd, res = 0;
+	char *endptr;
+	const char *env = getenv("PIPEWIRE_NOTIFICATION_FD");
+
+	if (env == NULL || env[0] == '\0')
+		return 0;
+
+	errno = 0;
+	v = strtol(env, &endptr, 10);
+	if (endptr[0] != '\0')
+		errno = EINVAL;
+	if (errno != 0) {
+		res = -errno;
+		pw_log_error("server %p: strtol() failed with error: %m", s);
+		goto error;
+	}
+	fd = (int)v;
+	if (v != fd) {
+		res = -ERANGE;
+		pw_log_error("server %p: invalid fd %ld: %s", s, v, spa_strerror(res));
+		goto error;
+	}
+	if (dprintf(fd, "%s\n", s->addr.sun_path) < 0) {
+		res = -errno;
+		pw_log_error("server %p: dprintf() failed with error: %m", s);
+		goto error;
+	}
+	close(fd);
+	unsetenv("PIPEWIRE_NOTIFICATION_FD");
+	return 0;
+
+error:
+	return res;
+}
+
 static int add_socket(struct pw_protocol *protocol, struct server *s)
 {
 	socklen_t size;
@@ -700,6 +843,12 @@ static int add_socket(struct pw_protocol *protocol, struct server *s)
 		}
 	}
 
+	res = write_socket_address(s);
+	if (res < 0) {
+		pw_log_error("server %p: failed to write socket address: %s", s,
+				spa_strerror(res));
+		goto error_close;
+	}
 	s->activated = activated;
 	s->loop = pw_context_get_main_loop(protocol->context);
 	if (s->loop == NULL) {
@@ -767,14 +916,23 @@ process_remote(struct client *impl)
 		if (debug_messages)
 			debug_msg("<<<<<< in", msg, false);
 
+		pre_demarshal(conn, msg, this, footer_core_demarshal,
+				SPA_N_ELEMENTS(footer_core_demarshal));
+
 		proxy = pw_core_find_proxy(this, msg->id);
 		if (proxy == NULL || proxy->zombie) {
+			uint32_t i;
+
 			if (proxy == NULL)
 				pw_log_error("%p: could not find proxy %u", this, msg->id);
 			else
 				pw_log_debug("%p: zombie proxy %u", this, msg->id);
 
-			/* FIXME close fds */
+			/* close fds */
+			for (i = 0; i < msg->n_fds; i++) {
+				pw_log_debug("%p: close fd:%d", conn, msg->fds[i]);
+				close(msg->fds[i]);
+			}
 			continue;
 		}
 
@@ -872,35 +1030,9 @@ error:
 	goto done;
 }
 
-static void on_client_connection_destroy(void *data)
-{
-	struct client *impl = data;
-	spa_hook_remove(&impl->conn_listener);
-}
-
-static void on_client_need_flush(void *data)
-{
-        struct client *impl = data;
-
-	pw_log_trace("need flush");
-	impl->need_flush = true;
-
-	if (impl->source && !(impl->source->mask & SPA_IO_OUT)) {
-		pw_loop_update_io(impl->context->main_loop,
-				impl->source, impl->source->mask | SPA_IO_OUT);
-	}
-}
-
-static const struct pw_protocol_native_connection_events client_conn_events = {
-	PW_VERSION_PROTOCOL_NATIVE_CONNECTION_EVENTS,
-	.destroy = on_client_connection_destroy,
-	.need_flush = on_client_need_flush,
-};
-
 static int impl_connect_fd(struct pw_protocol_client *client, int fd, bool do_close)
 {
 	struct client *impl = SPA_CONTAINER_OF(client, struct client, this);
-	int res;
 
 	impl->connected = false;
 	impl->disconnecting = false;
@@ -910,23 +1042,10 @@ static int impl_connect_fd(struct pw_protocol_client *client, int fd, bool do_cl
 					fd,
 					SPA_IO_IN | SPA_IO_OUT | SPA_IO_HUP | SPA_IO_ERR,
 					do_close, on_remote_data, impl);
-	if (impl->source == NULL) {
-		res = -errno;
-		goto error_cleanup;
-	}
+	if (impl->source == NULL)
+		return -errno;
 
-	pw_protocol_native_connection_add_listener(impl->connection,
-						   &impl->conn_listener,
-						   &client_conn_events,
-						   impl);
 	return 0;
-
-error_cleanup:
-	if (impl->connection) {
-		pw_protocol_native_connection_destroy(impl->connection);
-		impl->connection = NULL;
-	}
-	return res;
 }
 
 static void impl_disconnect(struct pw_protocol_client *client)
@@ -939,9 +1058,7 @@ static void impl_disconnect(struct pw_protocol_client *client)
                 pw_loop_destroy_source(impl->context->main_loop, impl->source);
 	impl->source = NULL;
 
-	if (impl->connection)
-                pw_protocol_native_connection_destroy(impl->connection);
-	impl->connection = NULL;
+	pw_protocol_native_connection_set_fd(impl->connection, -1);
 }
 
 static void impl_destroy(struct pw_protocol_client *client)
@@ -949,6 +1066,10 @@ static void impl_destroy(struct pw_protocol_client *client)
 	struct client *impl = SPA_CONTAINER_OF(client, struct client, this);
 
 	impl_disconnect(client);
+
+	if (impl->connection)
+                pw_protocol_native_connection_destroy(impl->connection);
+	impl->connection = NULL;
 
 	spa_list_remove(&client->link);
 	client_unref(impl);
@@ -1016,6 +1137,31 @@ error:
 	goto done;
 }
 
+static void on_client_connection_destroy(void *data)
+{
+	struct client *impl = data;
+	spa_hook_remove(&impl->conn_listener);
+}
+
+static void on_client_need_flush(void *data)
+{
+        struct client *impl = data;
+
+	pw_log_trace("need flush");
+	impl->need_flush = true;
+
+	if (impl->source && !(impl->source->mask & SPA_IO_OUT)) {
+		pw_loop_update_io(impl->context->main_loop,
+				impl->source, impl->source->mask | SPA_IO_OUT);
+	}
+}
+
+static const struct pw_protocol_native_connection_events client_conn_events = {
+	PW_VERSION_PROTOCOL_NATIVE_CONNECTION_EVENTS,
+	.destroy = on_client_connection_destroy,
+	.need_flush = on_client_need_flush,
+};
+
 static struct pw_protocol_client *
 impl_new_client(struct pw_protocol *protocol,
 		struct pw_core *core,
@@ -1042,6 +1188,10 @@ impl_new_client(struct pw_protocol *protocol,
 		res = -errno;
 		goto error_free;
 	}
+	pw_protocol_native_connection_add_listener(impl->connection,
+						   &impl->conn_listener,
+						   &client_conn_events,
+						   impl);
 
 	if (props) {
 		str = spa_dict_lookup(props, PW_KEY_REMOTE_INTENTION);
@@ -1113,12 +1263,12 @@ static void do_resume(void *_data, uint64_t count)
 	pw_log_debug("flush");
 
 	spa_list_for_each_safe(data, tmp, &this->client_list, protocol_link) {
+		data->client->refcount++;
 		if ((res = process_messages(data)) < 0)
-			goto error;
+			handle_client_error(data->client, res, "do_resume");
+		pw_impl_client_unref(data->client);
 	}
 	return;
-error:
-	handle_client_error(data->client, res);
 }
 
 static const char *
@@ -1126,10 +1276,9 @@ get_server_name(const struct spa_dict *props)
 {
 	const char *name = NULL;
 
-	if (props)
+	name = getenv("PIPEWIRE_CORE");
+	if (name == NULL && props != NULL)
 		name = spa_dict_lookup(props, PW_KEY_CORE_NAME);
-	if (name == NULL)
-		name = getenv("PIPEWIRE_CORE");
 	if (name == NULL)
 		name = PW_DEFAULT_REMOTE;
 	return name;
@@ -1225,11 +1374,25 @@ static int impl_ext_get_proxy_fd(struct pw_proxy *proxy, uint32_t index)
 	return pw_protocol_native_connection_get_fd(impl->connection, index);
 }
 
+static void assert_single_pod(struct spa_pod_builder *builder)
+{
+	/*
+	 * Check the invariant that the message we just marshaled
+	 * consists of at most one POD.
+	 */
+	struct spa_pod *pod = builder->data;
+	spa_assert(builder->data == NULL ||
+			builder->state.offset < sizeof(struct spa_pod) ||
+			builder->state.offset == SPA_POD_SIZE(pod));
+}
+
 static int impl_ext_end_proxy(struct pw_proxy *proxy,
 			       struct spa_pod_builder *builder)
 {
 	struct pw_core *core = proxy->core;
 	struct client *impl = SPA_CONTAINER_OF(core->conn, struct client, this);
+	assert_single_pod(builder);
+	marshal_core_footers(&impl->footer_state, core, builder);
 	return core->send_seq = pw_protocol_native_connection_end(impl->connection, builder);
 }
 
@@ -1257,6 +1420,8 @@ static int impl_ext_end_resource(struct pw_resource *resource,
 {
 	struct client_data *data = resource->client->user_data;
 	struct pw_impl_client *client = resource->client;
+	assert_single_pod(builder);
+	marshal_client_footers(&data->footer_state, client, builder);
 	return client->send_seq = pw_protocol_native_connection_end(data->connection, builder);
 }
 static const struct pw_protocol_native_ext protocol_ext_impl = {
@@ -1289,10 +1454,9 @@ static int need_server(struct pw_context *context, const struct spa_dict *props)
 {
 	const char *val = NULL;
 
-	if (props)
+	val = getenv("PIPEWIRE_DAEMON");
+	if (val == NULL && props != NULL)
 		val = spa_dict_lookup(props, PW_KEY_CORE_DAEMON);
-	if (val == NULL)
-		val = getenv("PIPEWIRE_DAEMON");
 	if (val && pw_properties_parse_bool(val))
 		return 1;
 	return 0;
@@ -1303,6 +1467,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 {
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_protocol *this;
+	struct pw_impl_core *core = context->core;
 	struct protocol_data *d;
 	const struct pw_properties *props;
 	int res;
@@ -1310,8 +1475,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	PW_LOG_TOPIC_INIT(mod_topic);
 	PW_LOG_TOPIC_INIT(mod_topic_connection);
 
-	if (pw_context_find_protocol(context, PW_TYPE_INFO_PROTOCOL_Native) != NULL)
-		return 0;
+	if (pw_context_find_protocol(context, PW_TYPE_INFO_PROTOCOL_Native) != NULL) {
+		pw_log_error("protocol %s is already loaded", PW_TYPE_INFO_PROTOCOL_Native);
+		return -EEXIST;
+	}
 
 	this = pw_protocol_new(context, PW_TYPE_INFO_PROTOCOL_Native, sizeof(struct protocol_data));
 	if (this == NULL)
@@ -1332,10 +1499,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	d->module = module;
 
 	props = pw_context_get_properties(context);
-	d->local = create_server(this, context->core, &props->dict);
+	d->local = create_server(this, core, &props->dict);
 
 	if (need_server(context, &props->dict)) {
-		if (impl_add_server(this, context->core, &props->dict) == NULL) {
+		if (impl_add_server(this, core, &props->dict) == NULL) {
 			res = -errno;
 			goto error_cleanup;
 		}

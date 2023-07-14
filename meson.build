@@ -1,9 +1,10 @@
 project('pipewire', ['c' ],
-  version : '0.3.40',
+  version : '0.3.74',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
-  meson_version : '>= 0.54.0',
+  meson_version : '>= 0.61.1',
   default_options : [ 'warning_level=3',
-                      'c_std=gnu99',
+                      'c_std=gnu11',
+                      'cpp_std=c++17',
                       'b_pie=true',
                       #'b_sanitize=address,undefined',
                       'buildtype=debugoptimized' ])
@@ -60,13 +61,13 @@ alsadatadir = pipewire_datadir / 'alsa-card-profile' / 'mixer'
 
 pipewire_headers_dir = pipewire_name / 'pipewire'
 
-gnome = import('gnome')
 pkgconfig = import('pkgconfig')
 
 cc = meson.get_compiler('c')
 
 common_flags = [
   '-fvisibility=hidden',
+  '-fno-strict-aliasing',
   '-Werror=suggest-attribute=format',
   '-Wsign-compare',
   '-Wpointer-arith',
@@ -77,17 +78,25 @@ common_flags = [
   '-Wmissing-braces',
   '-Wtype-limits',
   '-Wvariadic-macros',
+  '-Wmaybe-uninitialized',
   '-Wno-missing-field-initializers',
   '-Wno-unused-parameter',
   '-Wno-pedantic',
-  '-Wold-style-declaration',
+  '-Wdeprecated-declarations',
   '-Wunused-result',
+  '-Werror=return-type',
 ]
 
 cc_flags = common_flags + [
   '-D_GNU_SOURCE',
   '-DFASTPATH',
 # '-DSPA_DEBUG_MEMCPY',
+  '-Werror=implicit-function-declaration',
+  '-Werror=int-conversion',
+  '-Werror=old-style-declaration',
+  '-Werror=old-style-definition',
+  '-Werror=missing-parameter-type',
+  '-Werror=strict-prototypes',
 ]
 add_project_arguments(cc.get_supported_arguments(cc_flags), language: 'c')
 
@@ -95,7 +104,7 @@ have_cpp = add_languages('cpp', native: false, required : false)
 
 if have_cpp
   cxx = meson.get_compiler('cpp')
-  cxx_flags = common_flags
+  cxx_flags = common_flags + [ '-Wno-c99-designator' ]
   add_project_arguments(cxx.get_supported_arguments(cxx_flags), language: 'cpp')
 endif
 
@@ -186,6 +195,7 @@ versiondata.set('PIPEWIRE_VERSION_NANO', pipewire_version_nano)
 versiondata.set_quoted('PIPEWIRE_API_VERSION', apiversion)
 
 cdata = configuration_data()
+cdata.set_quoted('PREFIX', prefix)
 cdata.set_quoted('PIPEWIRE_CONFDATADIR', pipewire_confdatadir)
 cdata.set_quoted('LOCALEDIR', pipewire_localedir)
 cdata.set_quoted('LIBDIR', pipewire_libdir)
@@ -200,8 +210,6 @@ cdata.set_quoted('MODULEDIR', modules_install_dir)
 cdata.set_quoted('PIPEWIRE_CONFIG_DIR', pipewire_configdir)
 cdata.set_quoted('PLUGINDIR', spa_plugindir)
 cdata.set_quoted('SPADATADIR', spa_datadir)
-# FIXME: --with-memory-alignment],[8,N,malloc,pagesize (default is 32)]) option
-cdata.set('MEMORY_ALIGNMENT_MALLOC', 1)
 cdata.set_quoted('PA_ALSA_PATHS_DIR', alsadatadir / 'paths')
 cdata.set_quoted('PA_ALSA_PROFILE_SETS_DIR', alsadatadir / 'profile-sets')
 
@@ -209,104 +217,35 @@ if host_machine.endian() == 'big'
   cdata.set('WORDS_BIGENDIAN', 1)
 endif
 
-check_headers = [['dlfcn.h','HAVE_DLFCN_H'],
-  ['inttypes.h', 'HAVE_INTTYPES_H'],
-  ['memory.h', 'HAVE_MEMORY_H'],
-  ['poll.h', 'HAVE_POLL_H'],
-  ['stddef.h', 'HAVE_STDDEF_H'],
-  ['stdint.h', 'HAVE_STDINT_H'],
-  ['stdio_ext.h', 'HAVE_STDIO_EXT_H'],
-  ['strings.h', 'HAVE_STRINGS_H'],
-  ['string.h', 'HAVE_STRING_H'],
+check_headers = [
   ['sys/mount.h', 'HAVE_SYS_MOUNT_H'],
   ['sys/param.h', 'HAVE_SYS_PARAM_H'],
-  ['sys/poll.h', 'HAVE_SYS_POLL_H'],
-  ['sys/prctl.h', 'HAVE_SYS_PRCTL_H'],
   ['sys/random.h', 'HAVE_SYS_RANDOM_H'],
-  ['sys/socket.h', 'HAVE_SYS_SOCKET_H'],
-  ['sys/stat.h', 'HAVE_SYS_STAT_H'],
-  ['sys/times.h', 'HAVE_SYS_TIMES_H'],
-  ['sys/time.h', 'HAVE_SYS_TIME_H'],
-  ['sys/types.h', 'HAVE_SYS_TYPES_H'],
-  ['sys/utsname.h', 'HAVE_SYS_UTSNAME_H'],
   ['sys/vfs.h', 'HAVE_SYS_VFS_H'],
-  ['sys/wait.h', 'HAVE_SYS_WAIT_H'],
   ['pwd.h', 'HAVE_PWD_H'],
-  ['ucontext.h', 'HAVE_UCONTEXT_H'],
-  ['unistd.h', 'HAVE_UNISTD_H'],
 ]
 
 foreach h : check_headers
-  if cc.has_header(h.get(0))
-    cdata.set(h.get(1), 1)
-  endif
+  cdata.set(h.get(1), cc.has_header(h.get(0)))
 endforeach
 
-if cc.has_function('poll', prefix : '#include<poll.h>')
-  cdata.set('HAVE_POLL', 1)
-endif
-if cc.has_function('pselect', prefix : '#include<sys/select.h>')
-  cdata.set('HAVE_PSELECT', 1)
-endif
-cdata.set('HAVE_MMAP', 1)
-
-if cc.has_function('posix_memalign', prefix : '#include<stdlib.h>')
-  cdata.set('HAVE_POSIX_MEMALIGN', 1)
-endif
-if cc.has_function('getpagesize', prefix : '#include<unistd.h>')
-  cdata.set('HAVE_GETPAGESIZE', 1)
-endif
-if cc.has_function('gettid', prefix : '#include<unistd.h>', args: [ '-D_GNU_SOURCE' ])
-  cdata.set('HAVE_GETTID', 1)
-endif
-if cc.has_function('clock_gettime', prefix : '#include <time.h>')
-  cdata.set('HAVE_CLOCK_GETTIME', 1)
-endif
-
-if cc.has_type('ptrdiff_t', prefix : '#include <stddef.h>')
-  cdata.set('HAVE_PTRDIFF_T', 1)
-endif
-
-if cc.has_header_symbol('string.h', 'strndupa', args : [ '-D_GNU_SOURCE' ])
-  cdata.set('HAVE_STRNDUPA', 1)
-endif
-
-if cc.has_function('mkstemp', prefix : '#include <stdlib.h>')
-  cdata.set('HAVE_MKSTEMP', 1)
-endif
-
-if cc.has_function('memfd_create', prefix : '#include <sys/mman.h>', args : [ '-D_GNU_SOURCE' ])
-  cdata.set('HAVE_MEMFD_CREATE', 1)
-endif
-
-if cc.has_function('getrandom', prefix : '#include <stddef.h>\n#include <sys/random.h>', args : [ '-D_GNU_SOURCE' ])
-  cdata.set('HAVE_GETRANDOM', 1)
-endif
-
-if cc.has_function('sigabbrev_np', prefix : '#include <string.h>', args : [ '-D_GNU_SOURCE' ])
-  cdata.set('HAVE_SIGABBREV_NP', 1)
-endif
-
-if cc.get_define('SYS_pidfd_open', prefix : '#include <sys/syscall.h>') != ''
-  cdata.set('HAVE_PIDFD_OPEN', 1)
-endif
+cdata.set('HAVE_PIDFD_OPEN',
+          cc.get_define('SYS_pidfd_open', prefix: '#include <sys/syscall.h>') != '')
 
 systemd = dependency('systemd', required: get_option('systemd'))
 systemd_dep = dependency('libsystemd',required: get_option('systemd'))
 summary({'systemd conf data': systemd.found()}, bool_yn: true)
 summary({'libsystemd': systemd_dep.found()}, bool_yn: true)
-if systemd.found() and systemd_dep.found()
-  cdata.set('HAVE_SYSTEMD', 1)
-endif
+cdata.set('HAVE_SYSTEMD', systemd.found() and systemd_dep.found())
 
 configinc = include_directories('.')
 includes_inc = include_directories('include')
 pipewire_inc = include_directories('src')
 
 makedata = configuration_data()
-  makedata.set('BUILD_ROOT', meson.build_root())
-  makedata.set('SOURCE_ROOT', meson.source_root())
-  makedata.set('VERSION', pipewire_version)
+makedata.set('BUILD_ROOT', meson.project_build_root())
+makedata.set('SOURCE_ROOT', meson.project_source_root())
+makedata.set('VERSION', pipewire_version)
 if version_arr.length() == 4
   makedata.set('TAG', 'HEAD')
 else
@@ -323,42 +262,74 @@ rt_lib = cc.find_library('rt', required : false) # clock_gettime
 dl_lib = cc.find_library('dl', required : false)
 pthread_lib = dependency('threads')
 dbus_dep = dependency('dbus-1', required : get_option('dbus'))
-summary({'dbus (Bluetooth, rtkit, portal, pw-reserve)': dbus_dep.found()}, bool_yn: true, section: 'Misc dependencies')
-if dbus_dep.found()
-  cdata.set('HAVE_DBUS', 1)
-endif
+summary({'dbus (Bluetooth, rt, portal, pw-reserve)': dbus_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+cdata.set('HAVE_DBUS', dbus_dep.found())
 sdl_dep = dependency('sdl2', required : get_option('sdl2'))
-summary({'SDL 2': sdl_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+summary({'SDL2 (video examples)': sdl_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 drm_dep = dependency('libdrm', required : false)
-readline_dep = dependency('readline', required : false)
+readline_dep = dependency('readline', required : get_option('readline'))
 
 if not readline_dep.found()
-  readline_dep = cc.find_library('readline', required: false)
+  readline_dep = cc.find_library('readline', required : get_option('readline'))
 endif
 
+# Both the FFmpeg SPA plugin and the pw-cat FFmpeg integration use libavcodec.
+# But only the latter also needs libavformat and libavutil.
+# Search for these libraries here, globally, so both of these subprojects can reuse the results.
+pw_cat_ffmpeg = get_option('pw-cat-ffmpeg')
+ffmpeg = get_option('ffmpeg')
+if pw_cat_ffmpeg.allowed() or ffmpeg.allowed()
+  avcodec_dep = dependency('libavcodec', required: pw_cat_ffmpeg.enabled() or ffmpeg.enabled())
+  avformat_dep = dependency('libavformat', required: pw_cat_ffmpeg.enabled())
+  avutil_dep = dependency('libavutil', required: pw_cat_ffmpeg.enabled())
+else
+  avcodec_dep = dependency('', required: false)
+endif
+cdata.set('HAVE_PW_CAT_FFMPEG_INTEGRATION', pw_cat_ffmpeg.allowed())
+
+opus_dep = dependency('opus', required : get_option('opus'))
+summary({'opus (Bluetooth, RTP)': opus_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+cdata.set('HAVE_OPUS', opus_dep.found())
+
 summary({'readline (for pw-cli)': readline_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+cdata.set('HAVE_READLINE', readline_dep.found())
 ncurses_dep = dependency('ncursesw', required : false)
 sndfile_dep = dependency('sndfile', version : '>= 1.0.20', required : get_option('sndfile'))
 summary({'sndfile': sndfile_dep.found()}, bool_yn: true, section: 'pw-cat/pw-play/pw-dump/filter-chain')
-if sndfile_dep.found()
-  cdata.set('HAVE_SNDFILE', 1)
-endif
+cdata.set('HAVE_SNDFILE', sndfile_dep.found())
+libmysofa_dep = dependency('libmysofa', required : get_option('libmysofa'))
+summary({'libmysofa': libmysofa_dep.found()}, bool_yn: true, section: 'filter-chain')
 pulseaudio_dep = dependency('libpulse', required : get_option('libpulse'))
 summary({'libpulse': pulseaudio_dep.found()}, bool_yn: true, section: 'Streaming between daemons')
 avahi_dep = dependency('avahi-client', required : get_option('avahi'))
 summary({'Avahi DNS-SD (Zeroconf)': avahi_dep.found()}, bool_yn: true,
   section: 'Streaming between daemons')
 
+x11_dep = dependency('x11-xcb', required : get_option('x11'))
+summary({'X11 (x11-bell)': x11_dep.found()}, bool_yn: true,
+  section: 'Misc dependencies')
+
+xfixes_dep = dependency('xfixes', required : get_option('x11-xfixes'), version: '>= 6')
+cdata.set('HAVE_XFIXES_6', xfixes_dep.found())
+
+canberra_dep = dependency('libcanberra', required : get_option('libcanberra'))
+summary({'libcanberra (x11-bell)': canberra_dep.found()}, bool_yn: true,
+  section: 'Misc dependencies')
+
 libusb_dep = dependency('libusb-1.0', required : get_option('libusb'))
 summary({'libusb (Bluetooth quirks)': libusb_dep.found()}, bool_yn: true, section: 'Backend')
-if libusb_dep.found()
-  cdata.set('HAVE_LIBUSB', 1)
-endif
+cdata.set('HAVE_LIBUSB', libusb_dep.found())
 
 cap_lib = dependency('libcap', required : false)
-if cap_lib.found()
-  cdata.set('HAVE_LIBCAP', 1)
-endif
+cdata.set('HAVE_LIBCAP', cap_lib.found())
+
+glib2_dep = dependency('glib-2.0', required : get_option('flatpak'))
+summary({'GLib-2.0 (Flatpak support)': glib2_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+flatpak_support = glib2_dep.found()
+cdata.set('HAVE_GLIB2', flatpak_support)
+
+gio_dep = dependency('gio-2.0', version : '>= 2.26.0', required : get_option('gsettings'))
+summary({'GIO (GSettings)': gio_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 
 gst_option = get_option('gstreamer')
 gst_deps_def = {
@@ -393,33 +364,27 @@ endforeach
 gst_dp_found = gst_dep.length() > 0
 summary({'gstreamer-device-provider': gst_dp_found}, bool_yn: true, section: 'Backend')
 
-if not get_option('gstreamer-device-provider').disabled()
-  cdata.set('HAVE_GSTREAMER_DEVICE_PROVIDER', 1)
-endif
+cdata.set('HAVE_GSTREAMER_DEVICE_PROVIDER', get_option('gstreamer-device-provider').allowed())
 
 webrtc_dep = dependency('webrtc-audio-processing',
   version : ['>= 0.2', '< 1.0'],
   required : get_option('echo-cancel-webrtc'))
 summary({'WebRTC Echo Canceling': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+cdata.set('HAVE_WEBRTC', webrtc_dep.found())
 
-if webrtc_dep.found()
-  cdata.set('HAVE_WEBRTC', 1)
-endif
-
-# On FreeBSD, epoll-shim library is required for eventfd() and timerfd()
-epoll_shim_dep = (build_machine.system() == 'freebsd'
+# On FreeBSD and MidnightBSD, epoll-shim library is required for eventfd() and timerfd()
+epoll_shim_dep = (host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
     ? dependency('epoll-shim', required: true)
     : dependency('', required: false))
 
-libinotify_dep = (build_machine.system() == 'freebsd'
+libinotify_dep = (host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
     ? dependency('libinotify', required: true)
     : dependency('', required: false))
 
-# On FreeBSD, libintl library is required for gettext
-libintl_dep = dependency('intl', required: false)
-
+# On FreeBSD and MidnightBSD, libintl library is required for gettext
+libintl_dep = cc.find_library('intl', required: false)
 if not libintl_dep.found()
-    libintl_dep = cc.find_library('intl', required: false)
+    libintl_dep = dependency('intl', required: false)
 endif
 summary({'intl support': libintl_dep.found()}, bool_yn: true)
 
@@ -427,83 +392,121 @@ need_alsa = get_option('pipewire-alsa').enabled() or 'media-session' in get_opti
 alsa_dep = dependency('alsa', version : '>=1.1.7', required: need_alsa)
 summary({'pipewire-alsa': alsa_dep.found()}, bool_yn: true)
 
+if host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
+# On FreeBSD and MidnightBSD the OpenSSL library may come from base or a package.
+# Check for a package first and fallback to the base library if we can't find it via pkgconfig
+    openssl_lib = dependency('openssl', required: false)
+    if not openssl_lib.found()
+        openssl_lib = declare_dependency(link_args : [ '-lssl', '-lcrypto'])
+    endif
+else
+    openssl_lib = dependency('openssl', required: get_option('raop'))
+endif
+summary({'OpenSSL (for raop-sink)': openssl_lib.found()}, bool_yn: true)
+
+lilv_lib = dependency('lilv-0', required: get_option('lv2'))
+summary({'lilv (for lv2 plugins)': lilv_lib.found()}, bool_yn: true)
+
+libffado_dep = dependency('libffado', required: get_option('libffado'))
+summary({'ffado': libffado_dep.found()}, bool_yn: true)
+
+check_functions = [
+  ['gettid', '#include <unistd.h>', ['-D_GNU_SOURCE'], []],
+  ['memfd_create', '#include <sys/mman.h>', ['-D_GNU_SOURCE'], []],
+  ['getrandom', '#include <stddef.h>\n#include <sys/random.h>', ['-D_GNU_SOURCE'], []],
+  ['random_r', '#include <stdlib.h>', ['-D_GNU_SOURCE'], []],
+  ['reallocarray', '#include <stdlib.h>', ['-D_GNU_SOURCE'], []],
+  ['sigabbrev_np', '#include <string.h>', ['-D_GNU_SOURCE'], []],
+  ['XSetIOErrorExitHandler', '#include <X11/Xlib.h>', [], [x11_dep]],
+]
+
+foreach f : check_functions
+  cdata.set('HAVE_' + f.get(0).to_upper(),
+            cc.has_function(f.get(0),
+                            prefix: f.get(1),
+                            args: f.get(2),
+                            dependencies: f.get(3)))
+endforeach
+
 installed_tests_metadir = pipewire_datadir / 'installed-tests' / pipewire_name
 installed_tests_execdir = pipewire_libexecdir / 'installed-tests' / pipewire_name
-installed_tests_enabled = not get_option('installed_tests').disabled()
+installed_tests_enabled = get_option('installed_tests').allowed()
 installed_tests_template = files('template.test.in')
 
-if not get_option('tests').disabled()
+if get_option('tests').allowed()
   gstack = find_program('gstack', required : false)
-  cdata.set10('HAVE_GSTACK', gstack.found())
+  cdata.set('HAVE_GSTACK', gstack.found())
 endif
 
 subdir('po')
 subdir('spa')
 subdir('src')
 
-if not get_option('tests').disabled()
+if get_option('tests').allowed()
   subdir('test')
 endif
 
 configure_file(output : 'config.h',
                configuration : cdata)
 
-if not get_option('pipewire-jack').disabled()
+if get_option('pipewire-jack').allowed()
   subdir('pipewire-jack')
 endif
-if not get_option('pipewire-v4l2').disabled()
+if get_option('pipewire-v4l2').allowed()
   subdir('pipewire-v4l2')
 endif
 
 if alsa_dep.found()
   subdir('pipewire-alsa/alsa-plugins')
   subdir('pipewire-alsa/conf')
+  subdir('pipewire-alsa/tests')
 endif
+
+generate_manpages = false
+if get_option('man').allowed()
+  rst2man = find_program('rst2man', required: false)
+  if not rst2man.found()
+    rst2man = find_program('rst2man.py', required: get_option('man'))
+  endif
+  if rst2man.found()
+    generate_manpages = true
+  endif
+endif
+
+summary({'Manpage generation': generate_manpages}, bool_yn: true)
+subdir('man')
 
 doxygen = find_program('doxygen', required : get_option('docs'))
 if doxygen.found()
   subdir('doc')
 endif
 
-if not get_option('man').disabled()
-  rst2man = find_program('rst2man', required: false)
-  if not rst2man.found()
-    rst2man = find_program('rst2man.py', required: get_option('man'))
-  endif
-  summary({'Manpage generation': rst2man.found()}, bool_yn: true)
-  if rst2man.found()
-    subdir('man')
-  endif
-endif
-
 setenv = find_program('pw-uninstalled.sh')
 run_target('pw-uninstalled',
   command : [setenv,
-             '-b@0@'.format(meson.build_root()),
+             '-b@0@'.format(meson.project_build_root()),
              '-v@0@'.format(pipewire_version)]
 )
 
-if meson.version().version_compare('>=0.58.0')
-  devenv = environment()
+devenv = environment()
 
-  builddir = meson.current_build_dir()
-  srcdir = meson.current_source_dir()
+builddir = meson.project_build_root()
+srcdir = meson.project_source_root()
 
-  devenv.set('PIPEWIRE_CONFIG_DIR', builddir / 'src' / 'daemon')
-  devenv.set('PIPEWIRE_MODULE_DIR', builddir / 'src' / 'modules')
+devenv.set('PIPEWIRE_CONFIG_DIR', pipewire_dep.get_variable('confdatadir'))
+devenv.set('PIPEWIRE_MODULE_DIR', pipewire_dep.get_variable('moduledir'))
 
-  devenv.set('SPA_PLUGIN_DIR', builddir / 'spa' / 'plugins')
-  devenv.set('SPA_DATA_DIR', srcdir / 'spa' / 'plugins')
+devenv.set('SPA_PLUGIN_DIR', spa_dep.get_variable('plugindir'))
+devenv.set('SPA_DATA_DIR', spa_dep.get_variable('datadir'))
 
-  devenv.set('GST_PLUGIN_PATH', builddir / 'src'/ 'gst')
+devenv.set('GST_PLUGIN_PATH', builddir / 'src'/ 'gst')
 
-  devenv.set('ALSA_PLUGIN_DIR', builddir / 'pipewire-alsa' / 'alsa-plugins')
-  devenv.set('ACP_PATHS_DIR', srcdir / 'spa' / 'plugins' / 'alsa' / 'mixer' / 'paths')
-  devenv.set('ACP_PROFILES_DIR', srcdir / 'spa' / 'plugins' / 'alsa' / 'mixer' / 'profile-sets')
+devenv.set('ALSA_PLUGIN_DIR', builddir / 'pipewire-alsa' / 'alsa-plugins')
+devenv.set('ACP_PATHS_DIR', srcdir / 'spa' / 'plugins' / 'alsa' / 'mixer' / 'paths')
+devenv.set('ACP_PROFILES_DIR', srcdir / 'spa' / 'plugins' / 'alsa' / 'mixer' / 'profile-sets')
 
-  devenv.set('LD_LIBRARY_PATH', builddir / 'pipewire-jack' / 'src')
+devenv.set('LD_LIBRARY_PATH', builddir / 'pipewire-jack' / 'src')
 
-  devenv.set('PW_UNINSTALLED', '1')
+devenv.set('PW_UNINSTALLED', '1')
 
-  meson.add_devenv(devenv)
-endif
+meson.add_devenv(devenv)

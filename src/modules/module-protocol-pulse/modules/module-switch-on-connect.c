@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans <wim.taymans@gmail.com>
- * Copyright © 2021 Pauli Virtanen <pav@iki.fi>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-FileCopyrightText: Copyright © 2021 Pauli Virtanen <pav@iki.fi> */
+/* SPDX-License-Identifier: MIT */
 
 #include <spa/utils/hook.h>
 #include <spa/utils/json.h>
@@ -31,7 +11,6 @@
 
 #include "../defs.h"
 #include "../module.h"
-#include "registry.h"
 
 #include "../manager.h"
 #include "../collect.h"
@@ -53,7 +32,7 @@ struct module_switch_on_connect_data {
 	struct spa_hook manager_listener;
 	struct pw_manager_object *metadata_default;
 
-	regex_t *blocklist;
+	regex_t blocklist;
 
 	int sync_seq;
 
@@ -123,7 +102,7 @@ static void manager_added(void *data, struct pw_manager_object *o)
 		return;
 	}
 
-	if (d->blocklist && regexec(d->blocklist, name, 0, NULL, 0) == 0) {
+	if (regexec(&d->blocklist, name, 0, NULL, 0) == 0) {
 		pw_log_debug("not switching to blocklisted device");
 		return;
 	}
@@ -176,13 +155,13 @@ static const struct pw_core_events core_events = {
 	.done = on_core_done,
 };
 
-static int module_switch_on_connect_load(struct client *client, struct module *module)
+static int module_switch_on_connect_load(struct module *module)
 {
-	struct impl *impl = client->impl;
+	struct impl *impl = module->impl;
 	struct module_switch_on_connect_data *d = module->user_data;
 	int res;
 
-	d->core = pw_context_connect(impl->context, pw_properties_copy(client->props), 0);
+	d->core = pw_context_connect(impl->context, NULL, 0);
 	if (d->core == NULL) {
 		res = -errno;
 		goto error;
@@ -209,7 +188,7 @@ error:
 	return res;
 }
 
-static int module_switch_on_connect_unload(struct client *client, struct module *module)
+static int module_switch_on_connect_unload(struct module *module)
 {
 	struct module_switch_on_connect_data *d = module->user_data;
 
@@ -225,20 +204,10 @@ static int module_switch_on_connect_unload(struct client *client, struct module 
 		d->core = NULL;
 	}
 
-	if (d->blocklist) {
-		regfree(d->blocklist);
-		free(d->blocklist);
-		d->blocklist = NULL;
-	}
+	regfree(&d->blocklist);
 
 	return 0;
 }
-
-static const struct module_methods module_switch_on_connect_methods = {
-	VERSION_MODULE_METHODS,
-	.load = module_switch_on_connect_load,
-	.unload = module_switch_on_connect_unload,
-};
 
 static const struct spa_dict_item module_switch_on_connect_info[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Pauli Virtanen <pav@iki.fi>" },
@@ -252,25 +221,14 @@ static const struct spa_dict_item module_switch_on_connect_info[] = {
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
-struct module *create_module_switch_on_connect(struct impl *impl, const char *argument)
+static int module_switch_on_connect_prepare(struct module * const module)
 {
-	struct module *module;
-	struct module_switch_on_connect_data *d;
-	struct pw_properties *props = NULL;
-	regex_t *blocklist = NULL;
+	struct module_switch_on_connect_data * const d = module->user_data;
+	struct pw_properties * const props = module->props;
 	bool only_from_unavailable = false, ignore_virtual = true;
 	const char *str;
-	int res;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
-
-	props = pw_properties_new_dict(&SPA_DICT_INIT_ARRAY(module_switch_on_connect_info));
-	if (!props) {
-		res = -EINVAL;
-		goto out;
-	}
-	if (argument)
-		module_args_add_props(props, argument);
 
 	if ((str = pw_properties_get(props, "only_from_unavailable")) != NULL) {
 		only_from_unavailable = module_args_parse_bool(str);
@@ -282,33 +240,15 @@ struct module *create_module_switch_on_connect(struct impl *impl, const char *ar
 		pw_properties_set(props, "ignore_virtual", NULL);
 	}
 
-	if ((blocklist = malloc(sizeof(regex_t))) == NULL) {
-		res = -ENOMEM;
-		goto out;
-	}
-
 	if ((str = pw_properties_get(props, "blocklist")) == NULL)
 		str = DEFAULT_BLOCKLIST;
 
-	if ((res = regcomp(blocklist, str, REG_NOSUB | REG_EXTENDED)) != 0) {
-		free(blocklist);
-		blocklist = NULL;
-		res = -EINVAL;
-		goto out;
-	}
+	if (regcomp(&d->blocklist, str, REG_NOSUB | REG_EXTENDED) != 0)
+		return -EINVAL;
 
 	pw_properties_set(props, "blocklist", NULL);
 
-	module = module_new(impl, &module_switch_on_connect_methods, sizeof(*d));
-	if (module == NULL) {
-		res = -errno;
-		goto out;
-	}
-
-	module->props = props;
-	d = module->user_data;
 	d->module = module;
-	d->blocklist = blocklist;
 	d->ignore_virtual = ignore_virtual;
 	d->only_from_unavailable = only_from_unavailable;
 
@@ -317,15 +257,15 @@ struct module *create_module_switch_on_connect(struct impl *impl, const char *ar
 		pw_log_warn("only_from_unavailable is not implemented");
 	}
 
-	return module;
-
-out:
-	pw_properties_free(props);
-	if (blocklist) {
-		regfree(blocklist);
-		free(blocklist);
-	}
-	errno = -res;
-
-	return NULL;
+	return 0;
 }
+
+DEFINE_MODULE_INFO(module_switch_on_connect) = {
+	.name = "module-switch-on-connect",
+	.load_once = true,
+	.prepare = module_switch_on_connect_prepare,
+	.load = module_switch_on_connect_load,
+	.unload = module_switch_on_connect_unload,
+	.properties = &SPA_DICT_INIT_ARRAY(module_switch_on_connect_info),
+	.data_size = sizeof(struct module_switch_on_connect_data),
+};

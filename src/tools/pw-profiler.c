@@ -1,35 +1,16 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 #include <signal.h>
 #include <getopt.h>
+#include <locale.h>
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/pod/parser.h>
-#include <spa/debug/pod.h>
+#include <spa/debug/types.h>
 
 #include <pipewire/impl.h>
 #include <pipewire/extensions/profiler.h>
@@ -131,7 +112,7 @@ static int process_driver_block(struct data *d, const struct spa_pod *pod, struc
 
 	if (d->driver_id == 0) {
 		d->driver_id = driver_id;
-		fprintf(stderr, "logging driver %u\n", driver_id);
+		printf("logging driver %u\n", driver_id);
 	}
 	else if (d->driver_id != driver_id)
 		return -1;
@@ -162,7 +143,7 @@ static int add_follower(struct data *d, uint32_t id, const char *name)
 	strncpy(d->followers[idx].name, name, MAX_NAME);
 	d->followers[idx].name[MAX_NAME-1] = '\0';
 	d->followers[idx].id = id;
-	fprintf(stderr, "logging follower %u (\"%s\")\n", id, name);
+	printf("logging follower %u (\"%s\")\n", id, name);
 
 	return idx;
 }
@@ -232,7 +213,7 @@ static void dump_point(struct data *d, struct point *point)
 					d4 > 0 ? d4 : 0,
 					d5 > 0 ? d5 : 0,
 					d6 > 0 ? d6 : 0,
-					(d5 > 0 && d4 > 0 && d5 > d4) ? d5 - d4 : 0,
+					(d5 > 0 && d4 >= 0 && d5 > d4) ? d5 - d4 : 0,
 					(d6 > 0 && d5 > 0 && d6 > d5) ? d6 - d5 : 0,
 					point->follower[i].status);
 		}
@@ -243,7 +224,7 @@ static void dump_point(struct data *d, struct point *point)
 		d->last_status = point->clock.nsec;
 	}
 	else if (point->clock.nsec - d->last_status > SPA_NSEC_PER_SEC) {
-		fprintf(stderr, "logging %"PRIi64" samples  %"PRIi64" seconds [CPU %f %f %f]\r",
+		printf("logging %"PRIi64" samples  %"PRIi64" seconds [CPU %f %f %f]\r",
 				d->count, (int64_t) ((d->last_status - d->start_status) / SPA_NSEC_PER_SEC),
 				point->cpu_load[0], point->cpu_load[1], point->cpu_load[2]);
 		d->last_status = point->clock.nsec;
@@ -259,9 +240,9 @@ static void dump_scripts(struct data *d)
 	if (d->driver_id == 0)
 		return;
 
-	fprintf(stderr, "\ndumping scripts for %d followers\n", d->n_followers);
+	printf("\ndumping scripts for %d followers\n", d->n_followers);
 
-	out = fopen("Timing1.plot", "w");
+	out = fopen("Timing1.plot", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open Timing1.plot: %m");
 	} else {
@@ -281,7 +262,7 @@ static void dump_scripts(struct data *d)
 		fclose(out);
 	}
 
-	out = fopen("Timing2.plot", "w");
+	out = fopen("Timing2.plot", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open Timing2.plot: %m");
 	} else {
@@ -297,7 +278,7 @@ static void dump_scripts(struct data *d)
 		fclose(out);
 	}
 
-	out = fopen("Timing3.plot", "w");
+	out = fopen("Timing3.plot", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open Timing3.plot: %m");
 	} else {
@@ -327,7 +308,7 @@ static void dump_scripts(struct data *d)
 		fclose(out);
 	}
 
-	out = fopen("Timing4.plot", "w");
+	out = fopen("Timing4.plot", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open Timing4.plot: %m");
 	} else {
@@ -354,7 +335,7 @@ static void dump_scripts(struct data *d)
 		fclose(out);
 	}
 
-	out = fopen("Timing5.plot", "w");
+	out = fopen("Timing5.plot", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open Timing5.plot: %m");
 	} else {
@@ -380,7 +361,7 @@ static void dump_scripts(struct data *d)
 			"unset output\n");
 		fclose(out);
 	}
-	out = fopen("Timings.html", "w");
+	out = fopen("Timings.html", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open Timings.html: %m");
 	} else {
@@ -408,7 +389,7 @@ static void dump_scripts(struct data *d)
 		fclose(out);
 	}
 
-	out = fopen("generate_timings.sh", "w");
+	out = fopen("generate_timings.sh", "we");
 	if (out == NULL) {
 		pw_log_error("Can't open generate_timings.sh: %m");
 	} else {
@@ -420,7 +401,7 @@ static void dump_scripts(struct data *d)
 			"gnuplot Timing5.plot\n");
 		fclose(out);
 	}
-	fprintf(stderr, "run 'sh generate_timings.sh' and load Timings.html in a browser\n");
+	printf("run 'sh generate_timings.sh' and load Timings.html in a browser\n");
 }
 
 static void profiler_profile(void *data, const struct spa_pod *pod)
@@ -487,7 +468,7 @@ static void registry_event_global(void *data, uint32_t id,
 	if (proxy == NULL)
 		goto error_proxy;
 
-	fprintf(stderr, "Attaching to Profiler id:%d\n", id);
+	printf("Attaching to Profiler id:%d\n", id);
 	d->profiler = proxy;
 	pw_proxy_add_object_listener(proxy, &d->profiler_listener, &profiler_events, d);
 
@@ -539,9 +520,9 @@ static void do_quit(void *data, int signal_number)
 	pw_main_loop_quit(d->loop);
 }
 
-static void show_help(const char *name)
+static void show_help(const char *name, bool error)
 {
-        fprintf(stdout, "%s [options]\n"
+        fprintf(error ? stderr : stdout, "%s [options]\n"
 		"  -h, --help                            Show this help\n"
 		"      --version                         Show version\n"
 		"  -r, --remote                          Remote daemon name\n"
@@ -565,15 +546,16 @@ int main(int argc, char *argv[])
 	};
 	int c;
 
+	setlocale(LC_ALL, "");
 	pw_init(&argc, &argv);
 
 	while ((c = getopt_long(argc, argv, "hVr:o:", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h':
-			show_help(argv[0]);
+			show_help(argv[0], false);
 			return 0;
 		case 'V':
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -587,7 +569,7 @@ int main(int argc, char *argv[])
 			opt_remote = optarg;
 			break;
 		default:
-			show_help(argv[0]);
+			show_help(argv[0], true);
 			return -1;
 		}
 	}
@@ -622,13 +604,13 @@ int main(int argc, char *argv[])
 
 	data.filename = opt_output;
 
-	data.output = fopen(data.filename, "w");
+	data.output = fopen(data.filename, "we");
 	if (data.output == NULL) {
 		fprintf(stderr, "Can't open file %s: %m\n", data.filename);
 		return -1;
 	}
 
-	fprintf(stderr, "Logging to %s\n", data.filename);
+	printf("Logging to %s\n", data.filename);
 
 	pw_core_add_listener(data.core,
 				   &data.core_listener,
@@ -643,8 +625,13 @@ int main(int argc, char *argv[])
 
 	pw_main_loop_run(data.loop);
 
-	pw_proxy_destroy((struct pw_proxy*)data.profiler);
+	if (data.profiler) {
+		spa_hook_remove(&data.profiler_listener);
+		pw_proxy_destroy((struct pw_proxy*)data.profiler);
+	}
+	spa_hook_remove(&data.registry_listener);
 	pw_proxy_destroy((struct pw_proxy*)data.registry);
+	spa_hook_remove(&data.core_listener);
 	pw_context_destroy(data.context);
 	pw_main_loop_destroy(data.loop);
 

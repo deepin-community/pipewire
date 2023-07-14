@@ -1,26 +1,6 @@
-/* Spa V4l2 Source
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa V4l2 Source */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <sys/types.h>
@@ -39,7 +19,7 @@
 #include <spa/pod/builder.h>
 #include <spa/monitor/device.h>
 #include <spa/monitor/utils.h>
-#include <spa/debug/pod.h>
+#include <spa/param/param.h>
 
 #include "v4l2.h"
 
@@ -49,7 +29,8 @@ static const char default_device[] = "/dev/video0";
 
 struct props {
 	char device[64];
-	char device_name[128];
+	char product_id[6];
+	char vendor_id[6];
 	int device_fd;
 };
 
@@ -74,7 +55,7 @@ struct impl {
 static int emit_info(struct impl *this, bool full)
 {
 	int res;
-	struct spa_dict_item items[10];
+	struct spa_dict_item items[12];
 	uint32_t n_items = 0;
 	struct spa_device_info info;
 	struct spa_param_info params[2];
@@ -92,6 +73,10 @@ static int emit_info(struct impl *this, bool full)
 	ADD_ITEM(SPA_KEY_OBJECT_PATH, path);
 	ADD_ITEM(SPA_KEY_DEVICE_API, "v4l2");
 	ADD_ITEM(SPA_KEY_MEDIA_CLASS, "Video/Device");
+	if (this->props.product_id[0])
+		ADD_ITEM(SPA_KEY_DEVICE_PRODUCT_ID, this->props.product_id);
+	if (this->props.vendor_id[0])
+		ADD_ITEM(SPA_KEY_DEVICE_VENDOR_ID, this->props.vendor_id);
 	ADD_ITEM(SPA_KEY_API_V4L2_PATH, (char *)this->props.device);
 	ADD_ITEM(SPA_KEY_API_V4L2_CAP_DRIVER, (char *)this->dev.cap.driver);
 	ADD_ITEM(SPA_KEY_API_V4L2_CAP_CARD, (char *)this->dev.cap.card);
@@ -248,6 +233,10 @@ impl_init(const struct spa_handle_factory *factory,
 
 	if (info && (str = spa_dict_lookup(info, SPA_KEY_API_V4L2_PATH)))
 		strncpy(this->props.device, str, 63);
+	if (info && (str = spa_dict_lookup(info, SPA_KEY_DEVICE_PRODUCT_ID)))
+		strncpy(this->props.product_id, str, 5);
+	if (info && (str = spa_dict_lookup(info, SPA_KEY_DEVICE_VENDOR_ID)))
+		strncpy(this->props.vendor_id, str, 5);
 
 	return 0;
 }

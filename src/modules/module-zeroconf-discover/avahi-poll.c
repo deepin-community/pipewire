@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <pipewire/pipewire.h>
 
@@ -37,6 +17,7 @@ struct AvahiWatch {
 	AvahiWatchEvent events;
 	AvahiWatchCallback callback;
 	void *userdata;
+	unsigned int dispatching;
 };
 
 struct AvahiTimeout {
@@ -65,9 +46,14 @@ static void watch_callback(void *data, int fd, uint32_t mask)
 {
 	AvahiWatch *w = data;
 
+	w->dispatching += 1;
+
 	w->events = from_pw_events(mask);
 	w->callback(w, fd, w->events, w->userdata);
 	w->events = 0;
+
+	if (--w->dispatching == 0 && !w->source)
+		free(w);
 }
 
 static AvahiWatch* watch_new(const AvahiPoll *api, int fd, AvahiWatchEvent event,
@@ -103,9 +89,11 @@ static AvahiWatchEvent watch_get_events(AvahiWatch *w)
 
 static void watch_free(AvahiWatch *w)
 {
-	struct impl *impl = w->impl;
-	pw_loop_destroy_source(impl->loop, w->source);
-	free(w);
+	pw_loop_destroy_source(w->impl->loop, w->source);
+	w->source = NULL;
+
+	if (!w->dispatching)
+		free(w);
 }
 
 static void timeout_callback(void *data, uint64_t expirations)

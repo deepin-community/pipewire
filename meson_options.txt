@@ -92,6 +92,10 @@ option('bluez5-backend-hfp-native',
        description: 'Enable HFP in native backend in bluez5 spa plugin',
        type: 'feature',
        value: 'enabled')
+option('bluez5-backend-native-mm',
+       description: 'Enable ModemManager in native backend in bluez5 spa plugin',
+       type: 'feature',
+       value: 'disabled')
 option('bluez5-backend-ofono',
        description: 'Enable oFono HFP backend in bluez5 spa plugin (no dependency on oFono)',
        type: 'feature',
@@ -112,6 +116,18 @@ option('bluez5-codec-aac',
         description: 'Enable Fraunhofer FDK AAC open source codec implementation',
         type: 'feature',
         value: 'auto')
+option('bluez5-codec-lc3plus',
+        description: 'Enable LC3plus open source codec implementation',
+        type: 'feature',
+        value: 'auto')
+option('bluez5-codec-opus',
+        description: 'Enable Opus open source codec implementation',
+        type: 'feature',
+        value: 'auto')
+option('bluez5-codec-lc3',
+        description: 'Enable LC3 open source codec implementation',
+        type: 'feature',
+        value: 'disabled')
 option('control',
        description: 'Enable control spa plugin integration',
        type: 'feature',
@@ -161,9 +177,9 @@ option('videotestsrc',
        type: 'feature',
        value: 'enabled')
 option('volume',
-       description: 'Enable volume spa plugin integration',
+       description: 'Build the legacy volume spa plugin',
        type: 'feature',
-       value: 'enabled')
+       value: 'disabled')
 option('vulkan',
        description: 'Enable vulkan spa plugin integration',
        type: 'feature',
@@ -172,6 +188,10 @@ option('pw-cat',
        description: 'Build pw-cat/pw-play/pw-record',
        type: 'feature',
        value: 'auto')
+option('pw-cat-ffmpeg',
+       description: 'Enable FFmpeg integration in pw-cat/pw-play/pw-record',
+       type: 'feature',
+       value: 'disabled')
 option('udev',
        description: 'Enable Udev integration',
        type: 'feature',
@@ -179,6 +199,9 @@ option('udev',
 option('udevrulesdir',
        type : 'string',
        description : 'Directory for udev rules (defaults to /lib/udev/rules.d)')
+option('systemd-system-unit-dir',
+       type : 'string',
+       description : 'Directory for system systemd units (defaults to /usr/lib/systemd/system)')
 option('systemd-user-unit-dir',
        type : 'string',
        description : 'Directory for user systemd units (defaults to /usr/lib/systemd/user)')
@@ -188,6 +211,10 @@ option('sdl2',
        value: 'auto')
 option('sndfile',
        description: 'Enable code that depends on libsndfile',
+       type: 'feature',
+       value: 'auto')
+option('libmysofa',
+       description: 'Enable code that depends on libmysofa',
        type: 'feature',
        value: 'auto')
 option('libpulse',
@@ -213,4 +240,89 @@ option('libusb',
 option('session-managers',
        description : 'Session managers to build (can be [] for none or an absolute path)',
        type : 'array',
-       value : ['media-session'])
+       value : ['wireplumber'])
+option('raop',
+       description: 'Enable module for Remote Audio Output Protocol',
+       type: 'feature',
+       value: 'auto')
+option('lv2',
+       description: 'Enable loading of LV2 plugins',
+       type: 'feature',
+       value: 'auto')
+option('x11',
+       description: 'Enable code that depends on X11',
+       type: 'feature',
+       value: 'auto')
+option('x11-xfixes',
+       description: 'Enable code that depends on XFixes',
+       type: 'feature',
+       value: 'auto')
+option('libcanberra',
+       description: 'Enable code that depends on libcanberra',
+       type: 'feature',
+       value: 'auto')
+option('legacy-rtkit',
+       description: 'Build legacy rtkit module',
+       type: 'boolean',
+       value: 'true')
+option('avb',
+       description: 'Enable AVB code',
+       type: 'feature',
+       value: 'auto')
+option('flatpak',
+       description: 'Enable Flatpak support',
+       type: 'feature',
+       value: 'enabled')
+option('readline',
+       description: 'Enable code that depends on libreadline',
+       type: 'feature',
+       value: 'auto')
+option('gsettings',
+       description: 'Enable code that depends on gsettings',
+       type: 'feature',
+       value: 'auto')
+option('compress-offload',
+       description: 'Enable ALSA Compress-Offload support',
+       type: 'feature',
+       value: 'auto')
+option('pam-defaults-install',
+       description: 'Install limits.d file modifying defaults for all PAM users. Only for old kernels/systemd!',
+       type: 'boolean',
+       value: 'false')
+option('pam-memlock-default',
+       description : 'The default memlock value for any PAM user in kilobytes. Multiples of 64 recommended.',
+       type : 'integer',
+       min: 640,
+       value: 8192)
+option('rlimits-install',
+       description: 'Install PAM limits.d file. Voids all following rlimits-* options, if false',
+       type: 'boolean',
+       value: 'true')
+option('rlimits-match',
+       description : 'PAM match rule for the generated limits.d file. @<name> denotes matching a group.',
+       type : 'string',
+       value: '@pipewire')
+option('rlimits-rtprio',
+       description : 'RR and FIFO scheduler priority permitted for realtime threads of the matching user(s)',
+       type : 'integer',
+       min: 11,
+       max: 99,
+       value: 95)
+option('rlimits-memlock',
+       description : 'kB of memory each process of the user matched by the rule can lock. Can be unlimited .',
+       type : 'string',
+       value: '4194304')
+option('rlimits-nice',
+       description : 'Not niceness permitted for non-realtime threads of the matching user(s)',
+       type : 'integer',
+       min: -20,
+       max: -1,
+       value: -19)
+option('opus',
+       description: 'Enable code that depends on opus',
+       type: 'feature',
+       value: 'auto')
+option('libffado',
+       description: 'Enable code that depends on libffado',
+       type: 'feature',
+       value: 'auto')

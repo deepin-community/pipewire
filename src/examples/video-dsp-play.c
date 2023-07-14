@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 /*
  [title]
@@ -139,6 +119,8 @@ on_process(void *_data, struct spa_io_position *position)
 
 	/* copy video image in texture */
 	sstride = buf->datas[0].chunk->stride;
+	if (sstride == 0)
+		sstride = buf->datas[0].chunk->size / data->position->video.size.height;
 
 	src = sdata;
 	dst = ddata;
@@ -263,7 +245,7 @@ int main(int argc, char *argv[])
 				PW_KEY_MEDIA_CATEGORY, "Capture",
 				PW_KEY_MEDIA_ROLE, "DSP",
 				PW_KEY_NODE_AUTOCONNECT, data.target ? "true" : "false",
-				PW_KEY_NODE_TARGET, data.target,
+				PW_KEY_TARGET_OBJECT, data.target,
 				PW_KEY_MEDIA_CLASS, "Stream/Input/Video",
 				NULL),
 			&filter_events,

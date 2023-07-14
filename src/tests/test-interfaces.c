@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <pipewire/pipewire.h>
 
@@ -54,14 +34,15 @@ static void test_core_abi(void)
 	} methods = { PW_VERSION_CORE_METHODS, };
 	static const struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_core_info *info);
-		void (*done) (void *object, uint32_t id, int seq);
-		void (*ping) (void *object, uint32_t id, int seq);
-		void (*error) (void *object, uint32_t id, int seq, int res, const char *error);
-		void (*remove_id) (void *object, uint32_t id);
-		void (*bound_id) (void *object, uint32_t id, uint32_t global_id);
-		void (*add_mem) (void *object, uint32_t id, uint32_t type, int fd, uint32_t flags);
-		void (*remove_mem) (void *object, uint32_t id);
+		void (*info) (void *data, const struct pw_core_info *info);
+		void (*done) (void *data, uint32_t id, int seq);
+		void (*ping) (void *data, uint32_t id, int seq);
+		void (*error) (void *data, uint32_t id, int seq, int res, const char *error);
+		void (*remove_id) (void *data, uint32_t id);
+		void (*bound_id) (void *data, uint32_t id, uint32_t global_id);
+		void (*add_mem) (void *data, uint32_t id, uint32_t type, int fd, uint32_t flags);
+		void (*remove_mem) (void *data, uint32_t id);
+		void (*bound_props) (void *data, uint32_t id, uint32_t global_id, const struct spa_dict *props);
 	} events = { PW_VERSION_CORE_EVENTS, };
 
 	struct pw_core_events e;
@@ -88,7 +69,8 @@ static void test_core_abi(void)
 	TEST_FUNC(e, events, bound_id);
 	TEST_FUNC(e, events, add_mem);
 	TEST_FUNC(e, events, remove_mem);
-	spa_assert_se(PW_VERSION_CORE_EVENTS == 0);
+	TEST_FUNC(e, events, bound_props);
+	spa_assert_se(PW_VERSION_CORE_EVENTS == 1);
 	spa_assert_se(sizeof(e) == sizeof(events));
 }
 
@@ -108,10 +90,10 @@ static void test_registry_abi(void)
 	} methods = { PW_VERSION_REGISTRY_METHODS, };
 	struct {
 		uint32_t version;
-		void (*global) (void *object, uint32_t id,
+		void (*global) (void *data, uint32_t id,
 			uint32_t permissions, const char *type, uint32_t version,
 			const struct spa_dict *props);
-		void (*global_remove) (void *object, uint32_t id);
+		void (*global_remove) (void *data, uint32_t id);
 	} events = { PW_VERSION_REGISTRY_EVENTS, };
 
 	TEST_FUNC(m, methods, version);
@@ -141,7 +123,7 @@ static void test_module_abi(void)
 	} methods = { PW_VERSION_MODULE_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_module_info *info);
+		void (*info) (void *data, const struct pw_module_info *info);
 	} events = { PW_VERSION_MODULE_EVENTS, };
 
 	TEST_FUNC(m, methods, version);
@@ -174,8 +156,8 @@ static void test_device_abi(void)
 	} methods = { PW_VERSION_DEVICE_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_device_info *info);
-		void (*param) (void *object, int seq,
+		void (*info) (void *data, const struct pw_device_info *info);
+		void (*param) (void *data, int seq,
 			uint32_t id, uint32_t index, uint32_t next,
 			const struct spa_pod *param);
 	} events = { PW_VERSION_DEVICE_EVENTS, };
@@ -214,8 +196,8 @@ static void test_node_abi(void)
 	} methods = { PW_VERSION_NODE_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_node_info *info);
-		void (*param) (void *object, int seq,
+		void (*info) (void *data, const struct pw_node_info *info);
+		void (*param) (void *data, int seq,
 			uint32_t id, uint32_t index, uint32_t next,
 			const struct spa_pod *param);
 	} events = { PW_VERSION_NODE_EVENTS, };
@@ -252,8 +234,8 @@ static void test_port_abi(void)
 	} methods = { PW_VERSION_PORT_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_port_info *info);
-		void (*param) (void *object, int seq,
+		void (*info) (void *data, const struct pw_port_info *info);
+		void (*param) (void *data, int seq,
 			uint32_t id, uint32_t index, uint32_t next,
 			const struct spa_pod *param);
 	} events = { PW_VERSION_PORT_EVENTS, };
@@ -284,7 +266,7 @@ static void test_factory_abi(void)
 	} methods = { PW_VERSION_FACTORY_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_factory_info *info);
+		void (*info) (void *data, const struct pw_factory_info *info);
 	} events = { PW_VERSION_FACTORY_EVENTS, };
 
 	TEST_FUNC(m, methods, version);
@@ -316,8 +298,8 @@ static void test_client_abi(void)
 	} methods = { PW_VERSION_CLIENT_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_client_info *info);
-		void (*permissions) (void *object, uint32_t index,
+		void (*info) (void *data, const struct pw_client_info *info);
+		void (*permissions) (void *data, uint32_t index,
 			uint32_t n_permissions, const struct pw_permission *permissions);
 	} events = { PW_VERSION_CLIENT_EVENTS, };
 
@@ -350,7 +332,7 @@ static void test_link_abi(void)
 	} methods = { PW_VERSION_LINK_METHODS, };
 	struct {
 		uint32_t version;
-		void (*info) (void *object, const struct pw_link_info *info);
+		void (*info) (void *data, const struct pw_link_info *info);
 	} events = { PW_VERSION_LINK_EVENTS, };
 
 	TEST_FUNC(m, methods, version);

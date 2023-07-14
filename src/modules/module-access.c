@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -29,13 +9,14 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include "config.h"
 
-#if HAVE_SYS_VFS_H
+#ifdef HAVE_SYS_VFS_H
 #include <sys/vfs.h>
 #endif
-#if HAVE_SYS_MOUNT_H
+#ifdef HAVE_SYS_MOUNT_H
 #include <sys/mount.h>
 #endif
 
@@ -44,7 +25,8 @@
 #include <spa/utils/json.h>
 
 #include <pipewire/impl.h>
-#include <pipewire/private.h>
+
+#include "flatpak-utils.h"
 
 /** \page page_module_access PipeWire Module: Access
  *
@@ -75,6 +57,9 @@
  *       on an external actor to update that property once permission is
  *       granted or rejected.
  *
+ * For connections from applications running inside Flatpak not mediated
+ * by a portal, the `access` module itself sets the `pipewire.access.portal.app_id`
+ * property to the Flatpak application ID.
  *
  * ## Module Options
  *
@@ -127,10 +112,10 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
-#define MODULE_USAGE	"[ access.force=flatpak ] "		\
-			"[ access.allowed=<cmd-line> ] "	\
-			"[ access.rejected=<cmd-line> ] "	\
-			"[ access.restricted=<cmd-line> ] "	\
+#define MODULE_USAGE	"( access.force=flatpak ) "		\
+			"( access.allowed= [ <cmd-line>,.. ] ) "	\
+			"( access.rejected= [ <cmd-line>,.. ] ) "	\
+			"( access.restricted= [ <cmd-line>,.. ] ) "	\
 
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
@@ -147,90 +132,58 @@ struct impl {
 	struct spa_hook module_listener;
 };
 
-static int check_cmdline(struct pw_impl_client *client, int pid, const char *str)
+static int get_exe_name(int pid, char *buf, size_t buf_size)
 {
-	char path[2048], key[1024];
-	ssize_t len;
-	int fd, res;
+	char path[256];
+	struct stat s1, s2;
+	int res;
+
+	/*
+	 * Find executable name, checking it is an existing file
+	 * (in the current namespace).
+	 */
+
+#if defined(__linux__)
+	spa_scnprintf(path, sizeof(path), "/proc/%u/exe", pid);
+#elif defined(__FreeBSD__) || defined(__MidnightBSD__)
+	spa_scnprintf(path, sizeof(path), "/proc/%u/file", pid);
+#else
+	return -ENOTSUP;
+#endif
+
+	res = readlink(path, buf, buf_size);
+	if (res < 0)
+		return -errno;
+	if ((size_t)res >= buf_size)
+		return -E2BIG;
+	buf[res] = '\0';
+
+	/* Check the file exists (= not deleted, and is in current namespace) */
+	if (stat(path, &s1) != 0 || stat(buf, &s2) != 0)
+		return -errno;
+	if (s1.st_dev != s2.st_dev || s1.st_ino != s2.st_ino)
+		return -ENXIO;
+
+	return 0;
+}
+
+static int check_exe(struct pw_impl_client *client, const char *path, const char *str)
+{
+	char key[1024];
+	int res;
 	struct spa_json it[2];
-
-	sprintf(path, "/proc/%u/cmdline", pid);
-
-	fd = open(path, O_RDONLY);
-	if (fd < 0) {
-		res = -errno;
-		goto exit;
-	}
-	if ((len = read(fd, path, sizeof(path)-1)) < 0) {
-		res = -errno;
-		goto exit_close;
-	}
-	path[len] = '\0';
 
 	spa_json_init(&it[0], str, strlen(str));
 	if ((res = spa_json_enter_array(&it[0], &it[1])) <= 0)
-		goto exit_close;
+		return res;
 
 	while (spa_json_get_string(&it[1], key, sizeof(key)) > 0) {
-		if (spa_streq(path, key)) {
-			res = 1;
-			goto exit_close;
-		}
+		if (spa_streq(path, key))
+			return 1;
 	}
-	res = 0;
-exit_close:
-	close(fd);
-exit:
-	return res;
-}
 
-#if defined(__linux__)
-static int check_flatpak(struct pw_impl_client *client, int pid)
-{
-	char root_path[2048];
-	int root_fd, info_fd, res;
-	struct stat stat_buf;
-
-	sprintf(root_path, "/proc/%u/root", pid);
-	root_fd = openat (AT_FDCWD, root_path, O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_CLOEXEC | O_NOCTTY);
-	if (root_fd == -1) {
-		res = -errno;
-		if (res == -EACCES) {
-			struct statfs buf;
-			/* Access to the root dir isn't allowed. This can happen if the root is on a fuse
-			 * filesystem, such as in a toolbox container. We will never have a fuse rootfs
-			 * in the flatpak case, so in that case its safe to ignore this and
-			 * continue to detect other types of apps. */
-			if (statfs(root_path, &buf) == 0 &&
-			    buf.f_type == 0x65735546) /* FUSE_SUPER_MAGIC */
-				return 0;
-		}
-		/* Not able to open the root dir shouldn't happen. Probably the app died and
-		 * we're failing due to /proc/$pid not existing. In that case fail instead
-		 * of treating this as privileged. */
-		pw_log_info("failed to open \"%s\": %s", root_path, spa_strerror(res));
-		return res;
-	}
-	info_fd = openat (root_fd, ".flatpak-info", O_RDONLY | O_CLOEXEC | O_NOCTTY);
-	close (root_fd);
-	if (info_fd == -1) {
-		if (errno == ENOENT) {
-			pw_log_debug("no .flatpak-info, client on the host");
-			/* No file => on the host */
-			return 0;
-		}
-		res = -errno;
-		pw_log_error("error opening .flatpak-info: %m");
-		return res;
-        }
-	if (fstat (info_fd, &stat_buf) != 0 || !S_ISREG (stat_buf.st_mode)) {
-		/* Some weird fd => failure, assume sandboxed */
-		pw_log_error("error fstat .flatpak-info: %m");
-	}
-	close(info_fd);
-	return 1;
+	return 0;
 }
-#endif
 
 static void
 context_check_access(void *data, struct pw_impl_client *client)
@@ -238,8 +191,11 @@ context_check_access(void *data, struct pw_impl_client *client)
 	struct impl *impl = data;
 	struct pw_permission permissions[1];
 	struct spa_dict_item items[2];
+	char exe_path[PATH_MAX];
 	const struct pw_properties *props;
 	const char *str, *access;
+	char *flatpak_app_id = NULL;
+	int nitems = 0;
 	int pid, res;
 
 	pid = -EINVAL;
@@ -257,10 +213,17 @@ context_check_access(void *data, struct pw_impl_client *client)
 		goto granted;
 	} else {
 		pw_log_info("client %p has trusted pid %d", client, pid);
+		if ((res = get_exe_name(pid, exe_path, sizeof(exe_path))) >= 0) {
+			pw_log_info("client %p has trusted exe path '%s'", client, exe_path);
+		} else {
+			pw_log_info("client %p has no trusted exe path: %s",
+					client, spa_strerror(res));
+			exe_path[0] = '\0';
+		}
 	}
 
 	if (impl->properties && (str = pw_properties_get(impl->properties, "access.allowed")) != NULL) {
-		res = check_cmdline(client, pid, str);
+		res = check_exe(client, exe_path, str);
 		if (res < 0) {
 			pw_log_warn("%p: client %p allowed check failed: %s",
 				impl, client, spa_strerror(res));
@@ -271,7 +234,7 @@ context_check_access(void *data, struct pw_impl_client *client)
 	}
 
 	if (impl->properties && (str = pw_properties_get(impl->properties, "access.rejected")) != NULL) {
-		res = check_cmdline(client, pid, str);
+		res = check_exe(client, exe_path, str);
 		if (res < 0) {
 			pw_log_warn("%p: client %p rejected check failed: %s",
 				impl, client, spa_strerror(res));
@@ -283,7 +246,7 @@ context_check_access(void *data, struct pw_impl_client *client)
 	}
 
 	if (impl->properties && (str = pw_properties_get(impl->properties, "access.restricted")) != NULL) {
-		res = check_cmdline(client, pid, str);
+		res = check_exe(client, exe_path, str);
 		if (res < 0) {
 			pw_log_warn("%p: client %p restricted check failed: %s",
 				impl, client, spa_strerror(res));
@@ -298,8 +261,7 @@ context_check_access(void *data, struct pw_impl_client *client)
 	    (access = pw_properties_get(impl->properties, "access.force")) != NULL)
 		goto wait_permissions;
 
-#if defined(__linux__)
-	res = check_flatpak(client, pid);
+	res = pw_check_flatpak(pid, &flatpak_app_id, NULL);
 	if (res != 0) {
 		if (res < 0) {
 			if (res == -EACCES) {
@@ -313,32 +275,43 @@ context_check_access(void *data, struct pw_impl_client *client)
 			pw_log_debug(" %p: flatpak client %p added", impl, client);
 		}
 		access = "flatpak";
+		items[nitems++] = SPA_DICT_ITEM_INIT("pipewire.access.portal.app_id",
+				flatpak_app_id);
 		goto wait_permissions;
 	}
-#endif
+
 	if ((access = pw_properties_get(props, PW_KEY_CLIENT_ACCESS)) == NULL)
 		access = "unrestricted";
 
+	if (spa_streq(access, "unrestricted") || spa_streq(access, "allowed"))
+		goto granted;
+	else
+		goto wait_permissions;
+
 granted:
 	pw_log_info("%p: client %p '%s' access granted", impl, client, access);
-	items[0] = SPA_DICT_ITEM_INIT(PW_KEY_ACCESS, access);
-	pw_impl_client_update_properties(client, &SPA_DICT_INIT(items, 1));
+	items[nitems++] = SPA_DICT_ITEM_INIT(PW_KEY_ACCESS, access);
+	pw_impl_client_update_properties(client, &SPA_DICT_INIT(items, nitems));
 
 	permissions[0] = PW_PERMISSION_INIT(PW_ID_ANY, PW_PERM_ALL);
 	pw_impl_client_update_permissions(client, 1, permissions);
-	return;
+	goto done;
 
 wait_permissions:
 	pw_log_info("%p: client %p wait for '%s' permissions",
 			impl, client, access);
-	items[0] = SPA_DICT_ITEM_INIT(PW_KEY_ACCESS, access);
-	pw_impl_client_update_properties(client, &SPA_DICT_INIT(items, 1));
-	return;
+	items[nitems++] = SPA_DICT_ITEM_INIT(PW_KEY_ACCESS, access);
+	pw_impl_client_update_properties(client, &SPA_DICT_INIT(items, nitems));
+	goto done;
 
 rejected:
 	pw_resource_error(pw_impl_client_get_core_resource(client), res, access);
-	items[0] = SPA_DICT_ITEM_INIT(PW_KEY_ACCESS, access);
-	pw_impl_client_update_properties(client, &SPA_DICT_INIT(items, 1));
+	items[nitems++] = SPA_DICT_ITEM_INIT(PW_KEY_ACCESS, access);
+	pw_impl_client_update_properties(client, &SPA_DICT_INIT(items, nitems));
+	goto done;
+
+done:
+	free(flatpak_app_id);
 	return;
 }
 

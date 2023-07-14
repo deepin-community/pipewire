@@ -1,28 +1,28 @@
-/** \page page_dma_buf DMA-BUF sharing
+/** \page page_dma_buf DMA-BUF Sharing
 
 PipeWire supports sharing Direct Memory Access buffers (DMA-BUFs) between
 clients via the `SPA_DATA_DmaBuf` data type. However properly negotiating
 DMA-BUF support on both the producer and the consumer side require following
 a specific procedure. This page describes said procedure by using events and
 methods from the filter or stream API.
+
 Note: This article focuses mostly on DMA-BUF sharing from arbitrary devices,
 like discrete GPUs. For using DMA-BUFs created by v4l2 please refer to the
 corresponding paragraph.
 
-# Capability negotiations
+# Capability Negotiations
 
-The capability negotiation for DMA-BUFs is complicated by the fact, that a
+The capability negotiation for DMA-BUFs is complicated by the fact that a
 usable and preferred optimal modifier for a given format can only be
-determined by the allocator, which has to be invoked with the intersection
-of all supported modifiers of all clients. As a result the fixation of the
-modifier has to be delegated from PipeWire to the node responsible for
+determined by the allocator. This allocator has to be invoked with the intersection
+of all supported modifiers for every client. As a result, the fixation of the
+modifier is delegated from PipeWire to the node responsible for
 allocating the buffers.
 
 ## pw_stream_connect
 
 The stream parameters should contain two `SPA_PARAM_EnumFormat` objects for
-each format: the first one is used for DMA-BUFs, the second one for shared
-memory buffers as a fallback.
+each format: one for DMA-BUFs, one for shared memory buffers as a fallback.
 
 Query the list of all supported modifiers from your graphics API of choice.
 Add a `SPA_FORMAT_VIDEO_modifier` property to the first stream parameter with
@@ -40,7 +40,7 @@ property.
 To prioritise DMA-BUFs place those `SPA_PARAM_EnumFormat` containing modifiers
 first, when emitting them to PipeWire.
 
-## param_changed hook
+## param_changed Hook
 
 When the `param_changed` hook is called for a `SPA_PARAM_Format` the client
 has to parse the `spa_pod` directly. Use
@@ -57,32 +57,32 @@ format modifier pair. The producer is also responsible to check if all clients
 announce sufficient capabilities or fallback to shared memory buffers when
 possible.
 
-### For consumers
+### For Consumers
 
 Use `spa_format_video_raw_parse` to get the format and modifier.
 
-### For producers
+### For Producers
 
 Producers have to handle two cases when it comes to modifiers wrt. to the
 previous announced capabilities: Using only the modifier-less API, only the
-modifier aware one, or supporting both.
+modifier-aware one, or supporting both.
 
 - modifier-less:
   In this case only the modifier `DRM_FORMAT_MOD_INVALID` was announced with
   the format.
   It is sufficient to check if the `SPA_PARAM_Format` contains the modifier
-  property as described above. Is that the case use DMA-BUFs for screen-sharing,
+  property as described above. If that is the case, use DMA-BUFs for screen-sharing,
   else fall back to SHM, if possible.
 - modifier-aware:
   In this case a list with all supported modifiers will be returned in the format.
   (using `DRM_FORMAT_MOD_INVALID` as the token for the modifier-less API).
   On the `param_changed` event check if the modifier key is present and has the flag
-  `SPA_POD_PROP_FLAG_DONT_FIXATE`. attached to it. In this case extract all modifiers
+  `SPA_POD_PROP_FLAG_DONT_FIXATE` attached to it. In this case, extract all modifiers
   from the list and do a test allocation with your allocator to choose the preferred
   modifier. Fixate on that `EnumFormat` by announcing a `SPA_PARAM_EnumFormat` with
   only one modifier in the `SPA_CHOICE_Enum` and without the
   `SPA_POD_PROP_FLAG_DONT_FIXATE` flag, followed by the previous announced
-  `EnumFormat`s. This will retrigger the `param_changed` event with an
+  `EnumFormat`. This will retrigger the `param_changed` event with an
   `SPA_PARAM_Format` as described below.
   If the `SPA_PARAM_Format` contains a modifier key, without the flag
   `SPA_POD_PROP_FLAG_DONT_FIXATE`, it should only contain one value in the
@@ -96,32 +96,32 @@ pass them all to the graphics API. If the allocation fails and the list of
 possible modifiers contains `DRM_FORMAT_MOD_INVALID`, fall back to allocating
 without an explicit modifier if the graphics API allows it.
 
-## add_buffer hook
+## add_buffer Hook
 
 This is relevant for producers.
 
 Allocate a DMA-BUF only using the negotiated format and modifier.
 
-## on_event hook
+## on_event Hook
 
 This is relevant for consumers.
 
 Check the type of the dequeued buffer. If its `SPA_DATA_MemFd` or
 `SPA_DATA_MemPtr` use the fallback SHM import mechanism.
-If it's `SPA_DATA_DmaBuf`:
-Get the DMA-BUF FDs (the plane count is encoded in the `n_datas` variable of the
+If it's `SPA_DATA_DmaBuf` 
+get the DMA-BUF FDs (the plane count is encoded in the `n_datas` variable of the
 `spa_buffer` struct) and import them with the graphics API.
 
 Note: Some graphics APIs have separated functions for the modifier-less case
 (`DRM_FORMAT_MOD_INVALID`) or are omitting the modifier, since it might be used
 for error handling.
 
-## Example programs
+## Example Programs
 
 - \ref video-src-fixate.c "": \snippet{doc} video-src-fixate.c title
 - \ref video-play-fixate.c "": \snippet{doc} video-play-fixate.c title
 
-# DMA-BUF mapping warning
+# DMA-BUF Mapping Warning
 
 It's important to make sure all consumers of the PipeWire stream are prepared
 to deal with DMA-BUFs. Most DMA-BUFs cannot be treated like shared memory in general
@@ -137,6 +137,15 @@ because of the following issues:
   buffer has been allocated on discrete hardware. Consumers are better off
   using a proper graphics API (such as EGL, Vulkan or VA-API) to process the
   DMA-BUFs.
+
+# Size of DMA-BUFs
+
+When importing a DMA-BUF with a proper graphics API the size of a single buffer plane
+is no relevant property since it will be derived by the driver from the other properties.
+Therefore consumers should ignore the field `maxsize` of a `spa_data` and the field
+`size` of a `spa_chunk` struct. Producers are allowed to set both to 0.
+In cases where mapping a single plane is required the size should be obtained locally
+via the filedescriptor.
 
 # v4l2
 

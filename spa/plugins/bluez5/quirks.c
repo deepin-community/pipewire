@@ -1,26 +1,6 @@
-/* Device/adapter/kernel quirk table
- *
- * Copyright © 2021 Pauli Virtanen
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Device/adapter/kernel quirk table */
+/* SPDX-FileCopyrightText: Copyright © 2021 Pauli Virtanen */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <stddef.h>
@@ -56,7 +36,6 @@
 #include <spa/utils/json.h>
 #include <spa/utils/string.h>
 
-#include "a2dp-codecs.h"
 #include "defs.h"
 
 static struct spa_log_topic log_topic = SPA_LOG_TOPIC(0, "spa.bluez5.quirks");
@@ -89,10 +68,9 @@ static enum spa_bt_feature parse_feature(const char *str)
 		{ "faststream", SPA_BT_FEATURE_FASTSTREAM },
 		{ "a2dp-duplex", SPA_BT_FEATURE_A2DP_DUPLEX },
 	};
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(feature_keys); ++i) {
-		if (spa_streq(str, feature_keys[i].key))
-			return feature_keys[i].value;
+	SPA_FOR_EACH_ELEMENT_VAR(feature_keys, f) {
+		if (spa_streq(str, f->key))
+			return f->value;
 	}
 	return 0;
 }
@@ -110,7 +88,7 @@ static int do_match(const char *rules, struct spa_dict *dict, uint32_t *no_featu
 		int match = true;
 		uint32_t no_features_cur = 0;
 
-		while (spa_json_get_string(&it[0], key, sizeof(key)-1) > 0) {
+		while (spa_json_get_string(&it[0], key, sizeof(key)) > 0) {
 			char val[4096];
 			const char *str, *value;
 			int len;
@@ -118,7 +96,7 @@ static int do_match(const char *rules, struct spa_dict *dict, uint32_t *no_featu
 
 			if (spa_streq(key, "no-features")) {
 				if (spa_json_enter_array(&it[0], &it[1]) > 0) {
-					while (spa_json_get_string(&it[1], val, sizeof(val)-1) > 0)
+					while (spa_json_get_string(&it[1], val, sizeof(val)) > 0)
 						no_features_cur |= parse_feature(val);
 				}
 				continue;
@@ -130,7 +108,8 @@ static int do_match(const char *rules, struct spa_dict *dict, uint32_t *no_featu
 			if (spa_json_is_null(value, len)) {
 				value = NULL;
 			} else {
-				spa_json_parse_string(value, SPA_MIN(len, (int)sizeof(val)-1), val);
+				if (spa_json_parse_stringn(value, len, val, sizeof(val)) < 0)
+					continue;
 				value = val;
 			}
 
@@ -183,7 +162,7 @@ static void load_quirks(struct spa_bt_quirks *this, const char *str, size_t len)
 	if (spa_json_enter_object(&data, &rules) <= 0)
 		spa_json_init(&rules, str, len);
 
-	while (spa_json_get_string(&rules, key, sizeof(key)-1)) {
+	while (spa_json_get_string(&rules, key, sizeof(key)) > 0) {
 		int sz;
 		const char *value;
 
@@ -261,14 +240,16 @@ struct spa_bt_quirks *spa_bt_quirks_create(const struct spa_dict *info, struct s
 	} else {
 		char path[PATH_MAX];
 		const char *dir = getenv("SPA_DATA_DIR");
+		int res;
 
 		if (dir == NULL)
 			dir = SPADATADIR;
 
 		if (spa_scnprintf(path, sizeof(path), "%s/bluez5/bluez-hardware.conf", dir) >= 0)
-			load_conf(this, path);
+			if ((res = load_conf(this, path)) < 0)
+				spa_log_warn(this->log, "failed to load '%s': %s", path,
+						spa_strerror(res));
 	}
-
 	if (!(this->kernel_rules && this->adapter_rules && this->device_rules))
 		spa_log_warn(this->log, "failed to load bluez-hardware.conf");
 
@@ -331,7 +312,7 @@ int spa_bt_quirks_get_features(const struct spa_bt_quirks *this,
 	}
 
 	/* Adapter */
-	if (this->adapter_rules) {
+	if (this->adapter_rules && adapter) {
 		uint32_t no_features = 0;
 		int nitems = 0;
 		char vendor_id[64], product_id[64], address[64];
@@ -356,7 +337,7 @@ int spa_bt_quirks_get_features(const struct spa_bt_quirks *this,
 	}
 
 	/* Device */
-	if (this->device_rules) {
+	if (this->device_rules && device) {
 		uint32_t no_features = 0;
 		int nitems = 0;
 		char vendor_id[64], product_id[64], version_id[64], address[64];

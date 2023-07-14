@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 #include <signal.h>
@@ -31,12 +11,18 @@
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/pod/parser.h>
-#include <spa/debug/pod.h>
+#include <spa/debug/types.h>
+#include <spa/param/format-utils.h>
+#include <spa/param/audio/format-utils.h>
+#include <spa/param/video/format-utils.h>
 
 #include <pipewire/impl.h>
 #include <pipewire/extensions/profiler.h>
 
+#define MAX_FORMAT		16
 #define MAX_NAME		128
+
+#define XRUN_INVALID	(uint32_t)-1
 
 struct driver {
 	int64_t count;
@@ -54,17 +40,24 @@ struct measurement {
 	int64_t awake;
 	int64_t finish;
 	struct spa_fraction latency;
+	uint32_t xrun_count;
 };
 
 struct node {
 	struct spa_list link;
+	struct data *data;
 	uint32_t id;
-	char name[MAX_NAME];
+	char name[MAX_NAME+1];
+	enum pw_node_state state;
 	struct measurement measurement;
 	struct driver info;
 	struct node *driver;
-	uint32_t errors;
-	int32_t last_error_status;
+	uint32_t generation;
+	char format[MAX_FORMAT+1];
+	struct pw_proxy *proxy;
+	struct spa_hook proxy_listener;
+	unsigned int inactive:1;
+	struct spa_hook object_listener;
 };
 
 struct data {
@@ -85,6 +78,8 @@ struct data {
 
 	int n_nodes;
 	struct spa_list node_list;
+	uint32_t generation;
+	unsigned pending_refresh:1;
 
 	WINDOW *win;
 };
@@ -129,6 +124,150 @@ static struct node *find_node(struct data *d, uint32_t id)
 	return NULL;
 }
 
+static void on_node_removed(void *data)
+{
+	struct node *n = data;
+	pw_proxy_destroy(n->proxy);
+}
+
+static void on_node_destroy(void *data)
+{
+	struct node *n = data;
+	n->proxy = NULL;
+	spa_hook_remove(&n->proxy_listener);
+	spa_hook_remove(&n->object_listener);
+}
+
+static const struct pw_proxy_events proxy_events = {
+	PW_VERSION_PROXY_EVENTS,
+	.removed = on_node_removed,
+	.destroy = on_node_destroy,
+};
+
+static void do_refresh(struct data *d);
+
+static void node_info(void *data, const struct pw_node_info *info)
+{
+	struct node *n = data;
+
+	if (n->state != info->state) {
+		n->state = info->state;
+		do_refresh(n->data);
+	}
+}
+
+static void node_param(void *data, int seq,
+			uint32_t id, uint32_t index, uint32_t next,
+			const struct spa_pod *param)
+{
+	struct node *n = data;
+
+	if (param == NULL) {
+		spa_zero(n->format);
+		goto done;
+	}
+
+	switch (id) {
+	case SPA_PARAM_Format:
+	{
+		uint32_t media_type, media_subtype;
+
+		if (spa_format_parse(param, &media_type, &media_subtype) < 0)
+			goto done;
+
+		switch(media_type) {
+		case SPA_MEDIA_TYPE_audio:
+			switch(media_subtype) {
+			case SPA_MEDIA_SUBTYPE_raw:
+			{
+				struct spa_audio_info_raw info = { 0 };
+				if (spa_format_audio_raw_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "%6.6s %d %d",
+						spa_debug_type_find_short_name(
+							spa_type_audio_format, info.format),
+						info.channels, info.rate);
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_dsd:
+			{
+				struct spa_audio_info_dsd info = { 0 };
+				if (spa_format_audio_dsd_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "DSD%d %d ",
+						8 * info.rate / 44100, info.channels);
+
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_iec958:
+			{
+				struct spa_audio_info_iec958 info = { 0 };
+				if (spa_format_audio_iec958_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "IEC958 %s %d",
+						spa_debug_type_find_short_name(
+							spa_type_audio_iec958_codec, info.codec),
+						info.rate);
+
+				}
+				break;
+			}
+			}
+			break;
+		case SPA_MEDIA_TYPE_video:
+			switch(media_subtype) {
+			case SPA_MEDIA_SUBTYPE_raw:
+			{
+				struct spa_video_info_raw info = { 0 };
+				if (spa_format_video_raw_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "%6.6s %dx%d",
+						spa_debug_type_find_short_name(spa_type_video_format, info.format),
+						info.size.width, info.size.height);
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_mjpg:
+			{
+				struct spa_video_info_mjpg info = { 0 };
+				if (spa_format_video_mjpg_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "MJPG %dx%d",
+						info.size.width, info.size.height);
+				}
+				break;
+			}
+			case SPA_MEDIA_SUBTYPE_h264:
+			{
+				struct spa_video_info_h264 info = { 0 };
+				if (spa_format_video_h264_parse(param, &info) >= 0) {
+					snprintf(n->format, sizeof(n->format), "H264 %dx%d",
+						info.size.width, info.size.height);
+				}
+				break;
+			}
+			}
+			break;
+		case SPA_MEDIA_TYPE_application:
+			switch(media_subtype) {
+			case SPA_MEDIA_SUBTYPE_control:
+				snprintf(n->format, sizeof(n->format), "%s", "CONTROL");
+				break;
+			}
+			break;
+		}
+		break;
+	}
+	default:
+		break;
+	}
+done:
+	do_refresh(n->data);
+}
+
+static const struct pw_node_events node_events = {
+	PW_VERSION_NODE,
+	.info = node_info,
+	.param = node_param,
+};
+
 static struct node *add_node(struct data *d, uint32_t id, const char *name)
 {
 	struct node *n;
@@ -137,21 +276,38 @@ static struct node *add_node(struct data *d, uint32_t id, const char *name)
 		return NULL;
 
 	if (name)
-		strncpy(n->name, name, MAX_NAME-1);
+		strncpy(n->name, name, MAX_NAME);
 	else
 		snprintf(n->name, sizeof(n->name), "%u", id);
+	n->data = d;
 	n->id = id;
 	n->driver = n;
+	n->proxy = pw_registry_bind(d->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);
+	if (n->proxy) {
+		uint32_t ids[1] = { SPA_PARAM_Format };
+
+		pw_proxy_add_listener(n->proxy,
+				&n->proxy_listener, &proxy_events, n);
+		pw_proxy_add_object_listener(n->proxy,
+				&n->object_listener, &node_events, n);
+
+		pw_node_subscribe_params((struct pw_node*)n->proxy,
+						ids, 1);
+	}
 	spa_list_append(&d->node_list, &n->link);
 	d->n_nodes++;
+	d->pending_refresh = true;
 
 	return n;
 }
 
 static void remove_node(struct data *d, struct node *n)
 {
+	if (n->proxy)
+		pw_proxy_destroy(n->proxy);
 	spa_list_remove(&n->link);
 	d->n_nodes--;
+	d->pending_refresh = true;
 	free(n);
 }
 
@@ -164,6 +320,7 @@ static int process_driver_block(struct data *d, const struct spa_pod *pod, struc
 	int res;
 
 	spa_zero(m);
+	m.xrun_count = XRUN_INVALID;
 	if ((res = spa_pod_parse_struct(pod,
 			SPA_POD_Int(&id),
 			SPA_POD_String(&name),
@@ -172,7 +329,8 @@ static int process_driver_block(struct data *d, const struct spa_pod *pod, struc
 			SPA_POD_Long(&m.awake),
 			SPA_POD_Long(&m.finish),
 			SPA_POD_Int(&m.status),
-			SPA_POD_Fraction(&m.latency))) < 0)
+			SPA_POD_Fraction(&m.latency),
+			SPA_POD_OPT_Int(&m.xrun_count))) < 0)
 		return res;
 
 	if ((n = find_node(d, id)) == NULL)
@@ -182,12 +340,7 @@ static int process_driver_block(struct data *d, const struct spa_pod *pod, struc
 	n->measurement = m;
 	n->info = point->info;
 	point->driver = n;
-
-	if (m.status != 3) {
-		n->errors++;
-		if (n->last_error_status == -1)
-			n->last_error_status = m.status;
-	}
+	n->generation = d->generation;
 	return 0;
 }
 
@@ -200,6 +353,7 @@ static int process_follower_block(struct data *d, const struct spa_pod *pod, str
 	int res;
 
 	spa_zero(m);
+	m.xrun_count = XRUN_INVALID;
 	if ((res = spa_pod_parse_struct(pod,
 			SPA_POD_Int(&id),
 			SPA_POD_String(&name),
@@ -208,26 +362,30 @@ static int process_follower_block(struct data *d, const struct spa_pod *pod, str
 			SPA_POD_Long(&m.awake),
 			SPA_POD_Long(&m.finish),
 			SPA_POD_Int(&m.status),
-			SPA_POD_Fraction(&m.latency))) < 0)
+			SPA_POD_Fraction(&m.latency),
+			SPA_POD_OPT_Int(&m.xrun_count))) < 0)
 		return res;
 
 	if ((n = find_node(d, id)) == NULL)
 		return -ENOENT;
 
 	n->measurement = m;
-	n->driver = point->driver;
-	if (m.status != 3) {
-		n->errors++;
-		if (n->last_error_status == -1)
-			n->last_error_status = m.status;
+	if (n->driver != point->driver) {
+		n->driver = point->driver;
+		d->pending_refresh = true;
 	}
+	n->generation = d->generation;
 	return 0;
 }
 
-static const char *print_time(char *buf, size_t len, uint64_t val)
+static const char *print_time(char *buf, bool active, size_t len, uint64_t val)
 {
-	if (val < 1000000llu)
-		snprintf(buf, len, "%5.1fµs", val/1000.f);
+	if (val == (uint64_t)-1 || !active)
+		snprintf(buf, len, "   --- ");
+	else if (val == (uint64_t)-2)
+		snprintf(buf, len, "   +++ ");
+	else if (val < 1000000llu)
+		snprintf(buf, len, "%5.1fus", val/1000.f);
 	else if (val < 1000000000llu)
 		snprintf(buf, len, "%5.1fms", val/1000000.f);
 	else
@@ -235,23 +393,52 @@ static const char *print_time(char *buf, size_t len, uint64_t val)
 	return buf;
 }
 
-static const char *print_perc(char *buf, size_t len, float val, float quantum)
+static const char *print_perc(char *buf, bool active, size_t len, uint64_t val, float quantum)
 {
-	snprintf(buf, len, "%5.2f", quantum == 0.0f ? 0.0f : val/quantum);
+	if (val == (uint64_t)-1 || !active) {
+		snprintf(buf, len, " --- ");
+	} else if (val == (uint64_t)-2) {
+		snprintf(buf, len, " +++ ");
+	} else {
+		float frac = val / 1000000000.f;
+		snprintf(buf, len, "%5.2f", quantum == 0.0f ? 0.0f : frac/quantum);
+	}
 	return buf;
 }
 
-static void print_node(struct data *d, struct driver *i, struct node *n)
+static const char *state_as_string(enum pw_node_state state)
 {
-	char line[1024];
+	switch (state) {
+	case PW_NODE_STATE_ERROR:
+		return "E";
+	case PW_NODE_STATE_CREATING:
+		return "C";
+	case PW_NODE_STATE_SUSPENDED:
+		return "S";
+	case PW_NODE_STATE_IDLE:
+		return "I";
+	case PW_NODE_STATE_RUNNING:
+		return "R";
+	}
+	return "!";
+}
+
+static void print_node(struct data *d, struct driver *i, struct node *n, int y)
+{
 	char buf1[64];
 	char buf2[64];
 	char buf3[64];
 	char buf4[64];
-	float waiting, busy, quantum;
+	uint64_t waiting, busy;
+	float quantum;
 	struct spa_fraction frac;
+	bool active;
 
-	if (n->driver == n)
+	active = n->state == PW_NODE_STATE_RUNNING || n->state == PW_NODE_STATE_IDLE;
+
+	if (!active)
+		frac = SPA_FRACTION(0, 0);
+	else if (n->driver == n)
 		frac = SPA_FRACTION((uint32_t)(i->clock.duration * i->clock.rate.num), i->clock.rate.denom);
 	else
 		frac = SPA_FRACTION(n->measurement.latency.num, n->measurement.latency.denom);
@@ -261,31 +448,50 @@ static void print_node(struct data *d, struct driver *i, struct node *n)
 	else
 		quantum = 0.0;
 
-	waiting = (n->measurement.awake - n->measurement.signal) / 1000000000.f,
-	busy = (n->measurement.finish - n->measurement.awake) / 1000000000.f,
+	if (n->measurement.awake >= n->measurement.signal)
+		waiting = n->measurement.awake - n->measurement.signal;
+	else if (n->measurement.signal > n->measurement.prev_signal)
+		waiting = -2;
+	else
+		waiting = -1;
 
-	snprintf(line, sizeof(line), "%s %4.1u %6.1u %6.1u %s %s %s %s  %3.1u  %s%s",
-			n->measurement.status != 3 ? "!" : " ",
+	if (n->measurement.finish >= n->measurement.awake)
+		busy = n->measurement.finish - n->measurement.awake;
+	else if (n->measurement.awake > n->measurement.prev_signal)
+		busy = -2;
+	else
+		busy = -1;
+
+	mvwprintw(d->win, y, 0, "%s %4.1u %6.1u %6.1u %s %s %s %s  %3.1u %16.16s %s%s",
+			state_as_string(n->state),
 			n->id,
 			frac.num, frac.denom,
-			print_time(buf1, 64, n->measurement.awake - n->measurement.signal),
-			print_time(buf2, 64, n->measurement.finish - n->measurement.awake),
-			print_perc(buf3, 64, waiting, quantum),
-			print_perc(buf4, 64, busy, quantum),
-			i->xrun_count + n->errors,
+			print_time(buf1, active, 64, waiting),
+			print_time(buf2, active, 64, busy),
+			print_perc(buf3, active, 64, waiting, quantum),
+			print_perc(buf4, active, 64, busy, quantum),
+			n->measurement.xrun_count == XRUN_INVALID ?
+					i->xrun_count : n->measurement.xrun_count,
+			active ? n->format : "",
 			n->driver == n ? "" : " + ",
 			n->name);
+}
 
-	wprintw(d->win, "%.*s\n", COLS-1, line);
+static void clear_node(struct node *n)
+{
+	n->driver = n;
+	spa_zero(n->measurement);
+	spa_zero(n->info);
 }
 
 static void do_refresh(struct data *d)
 {
 	struct node *n, *t, *f;
+	int y = 1;
 
 	wclear(d->win);
 	wattron(d->win, A_REVERSE);
-	wprintw(d->win, "%-*.*s", COLS, COLS, "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR  NAME ");
+	wprintw(d->win, "%-*.*s", COLS, COLS, "S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME ");
 	wattroff(d->win, A_REVERSE);
 	wprintw(d->win, "\n");
 
@@ -293,21 +499,36 @@ static void do_refresh(struct data *d)
 		if (n->driver != n)
 			continue;
 
-		print_node(d, &n->info, n);
+		print_node(d, &n->info, n, y++);
+		if(y > LINES)
+			break;
 
 		spa_list_for_each(f, &d->node_list, link) {
+			if (d->generation > f->generation + 22)
+				clear_node(f);
+
 			if (f->driver != n || f == n)
 				continue;
 
-			print_node(d, &n->info, f);
+			print_node(d, &n->info, f, y++);
+			if(y > LINES)
+				break;
+
 		}
 	}
+
+	// Clear from last line to the end of the window to hide text wrapping from the last node
+	wmove(d->win, y, 0);
+	wclrtobot(d->win);
+
 	wrefresh(d->win);
+	d->pending_refresh = false;
 }
 
 static void do_timeout(void *data, uint64_t expirations)
 {
 	struct data *d = data;
+	d->generation++;
 	do_refresh(d);
 }
 
@@ -347,6 +568,8 @@ static void profiler_profile(void *data, const struct spa_pod *pod)
 		if (res < 0)
 			continue;
 	}
+	if (d->pending_refresh)
+		do_refresh(d);
 }
 
 static const struct pw_profiler_events profiler_events = {
@@ -374,7 +597,7 @@ static void registry_event_global(void *data, uint32_t id,
 		}
 	} else if (spa_streq(type, PW_TYPE_INTERFACE_Profiler)) {
 		if (d->profiler != NULL) {
-			fprintf(stderr, "Ignoring profiler %d: already attached\n", id);
+			printf("Ignoring profiler %d: already attached\n", id);
 			return;
 		}
 
@@ -385,7 +608,8 @@ static void registry_event_global(void *data, uint32_t id,
 		d->profiler = proxy;
 		pw_proxy_add_object_listener(proxy, &d->profiler_listener, &profiler_events, d);
 	}
-
+	if (d->pending_refresh)
+		do_refresh(d);
 	return;
 
 error_proxy:
@@ -399,6 +623,8 @@ static void registry_event_global_remove(void *data, uint32_t id)
 	struct node *n;
 	if ((n = find_node(d, id)) != NULL)
 		remove_node(d, n);
+	if (d->pending_refresh)
+		do_refresh(d);
 }
 
 static const struct pw_registry_events registry_events = {
@@ -411,11 +637,20 @@ static void on_core_error(void *_data, uint32_t id, int seq, int res, const char
 {
 	struct data *data = _data;
 
-	pw_log_error("error id:%u seq:%d res:%d (%s): %s",
-			id, seq, res, spa_strerror(res), message);
-
-	if (id == PW_ID_CORE && res == -EPIPE)
-		pw_main_loop_quit(data->loop);
+	if (id == PW_ID_CORE) {
+		switch (res) {
+		case -EPIPE:
+			pw_main_loop_quit(data->loop);
+			break;
+		default:
+			pw_log_error("error id:%u seq:%d res:%d (%s): %s",
+				id, seq, res, spa_strerror(res), message);
+			break;
+		}
+	} else {
+		pw_log_info("error id:%u seq:%d res:%d (%s): %s",
+				id, seq, res, spa_strerror(res), message);
+	}
 }
 
 static void on_core_done(void *_data, uint32_t id, int seq)
@@ -426,8 +661,9 @@ static void on_core_done(void *_data, uint32_t id, int seq)
 		if (d->profiler == NULL) {
 			pw_log_error("no Profiler Interface found, please load one in the server");
 			pw_main_loop_quit(d->loop);
-		} else
+		} else {
 			do_refresh(d);
+		}
 	}
 }
 
@@ -443,16 +679,16 @@ static void do_quit(void *data, int signal_number)
 	pw_main_loop_quit(d->loop);
 }
 
-static void show_help(const char *name)
+static void show_help(const char *name, bool error)
 {
-        fprintf(stdout, "%s [options]\n"
+        fprintf(error ? stderr : stdout, "%s [options]\n"
 		"  -h, --help                            Show this help\n"
 		"      --version                         Show version\n"
 		"  -r, --remote                          Remote daemon name\n",
 		name);
 }
 
-static void terminal_start()
+static void terminal_start(void)
 {
 	initscr();
 	cbreak();
@@ -460,7 +696,7 @@ static void terminal_start()
 	refresh();
 }
 
-static void terminal_stop()
+static void terminal_stop(void)
 {
 	endwin();
 }
@@ -506,10 +742,10 @@ int main(int argc, char *argv[])
 	while ((c = getopt_long(argc, argv, "hVr:o:", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h':
-			show_help(argv[0]);
+			show_help(argv[0], false);
 			return 0;
 		case 'V':
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -520,7 +756,7 @@ int main(int argc, char *argv[])
 			opt_remote = optarg;
 			break;
 		default:
-			show_help(argv[0]);
+			show_help(argv[0], true);
 			return -1;
 		}
 	}
@@ -584,8 +820,13 @@ int main(int argc, char *argv[])
 	spa_list_consume(n, &data.node_list, link)
 		remove_node(&data, n);
 
-	pw_proxy_destroy((struct pw_proxy*)data.profiler);
+	if (data.profiler) {
+		spa_hook_remove(&data.profiler_listener);
+		pw_proxy_destroy((struct pw_proxy*)data.profiler);
+	}
+	spa_hook_remove(&data.registry_listener);
 	pw_proxy_destroy((struct pw_proxy*)data.registry);
+	spa_hook_remove(&data.core_listener);
 	pw_context_destroy(data.context);
 	pw_main_loop_destroy(data.loop);
 

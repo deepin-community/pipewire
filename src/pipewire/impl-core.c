@@ -1,33 +1,10 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
 #include <unistd.h>
-#ifndef ENODATA
-#define ENODATA 9919
-#endif
 
 #include <spa/debug/types.h>
 #include <spa/utils/string.h>
@@ -64,6 +41,9 @@ static void * registry_bind(void *object, uint32_t id,
 	if (!PW_PERM_IS_R(permissions))
 		goto error_no_id;
 
+	if (resource->client->recv_generation != 0 && global->generation > resource->client->recv_generation)
+		goto error_stale_id;
+
 	if (!spa_streq(global->type, type))
 		goto error_wrong_interface;
 
@@ -75,6 +55,12 @@ static void * registry_bind(void *object, uint32_t id,
 
 	return NULL;
 
+error_stale_id:
+	pw_log_debug("registry %p: not binding stale global "
+			"id %u to %u, generation:%"PRIu64" recv-generation:%"PRIu64,
+			resource, id, new_id, global->generation, resource->client->recv_generation);
+	pw_resource_errorf_id(resource, new_id, -ESTALE, "no global %u any more", id);
+	goto error_exit_clean;
 error_no_id:
 	pw_log_debug("registry %p: no global with id %u to bind to %u", resource, id, new_id);
 	pw_resource_errorf_id(resource, new_id, -ENOENT, "no global %u", id);
@@ -110,6 +96,9 @@ static int registry_destroy(void *object, uint32_t id)
 	if (!PW_PERM_IS_R(permissions))
 		goto error_no_id;
 
+	if (resource->client->recv_generation != 0 && global->generation > resource->client->recv_generation)
+		goto error_stale_id;
+
 	if (id == PW_ID_CORE || !PW_PERM_IS_X(permissions))
 		goto error_not_allowed;
 
@@ -118,6 +107,13 @@ static int registry_destroy(void *object, uint32_t id)
 	pw_global_destroy(global);
 	return 0;
 
+error_stale_id:
+	pw_log_debug("registry %p: not destroying stale global "
+			"id %u, generation:%"PRIu64" recv-generation:%"PRIu64,
+			resource, id, global->generation, resource->client->recv_generation);
+	pw_resource_errorf(resource, -ESTALE, "no global %u any more", id);
+	res = -ESTALE;
+	goto error_exit;
 error_no_id:
 	pw_log_debug("registry %p: no global with id %u to destroy", resource, id);
 	pw_resource_errorf(resource, -ENOENT, "no global %u", id);
@@ -138,9 +134,9 @@ static const struct pw_registry_methods registry_methods = {
 	.destroy = registry_destroy
 };
 
-static void destroy_registry_resource(void *object)
+static void destroy_registry_resource(void *_data)
 {
-	struct resource_data *data = object;
+	struct resource_data *data = _data;
 	struct pw_resource *resource = data->resource;
 	spa_list_remove(&resource->link);
 	spa_hook_remove(&data->resource_listener);
@@ -176,6 +172,8 @@ static int core_hello(void *object, uint32_t version)
 	pw_log_debug("%p: hello %d from resource %p", context, version, resource);
 	pw_map_for_each(&client->objects, destroy_resource, client);
 
+	resource->version = version;
+
 	pw_mempool_clear(client->pool);
 
 	this->info.change_mask = PW_CORE_CHANGE_MASK_ALL;
@@ -183,7 +181,7 @@ static int core_hello(void *object, uint32_t version)
 
 	if (version >= 3) {
 		if ((res = pw_global_bind(client->global, client,
-				PW_PERM_ALL, PW_VERSION_CLIENT, 1)) < 0)
+				PW_PERM_ALL, PW_VERSION_CLIENT, PW_ID_CLIENT)) < 0)
 			return res;
 	}
 	return 0;
@@ -314,8 +312,10 @@ core_create_object(void *object,
 	if (!spa_streq(factory->info.type, type))
 		goto error_type;
 
-	if (factory->info.version < version)
-		goto error_version;
+	if (factory->info.version < version) {
+		pw_log_info("%p: version %d < %d", context,
+				factory->info.version, version);
+	}
 
 	if (props) {
 		properties = pw_properties_new_dict(props);
@@ -325,18 +325,18 @@ core_create_object(void *object,
 		properties = NULL;
 
 	/* error will be posted */
-	obj = pw_impl_factory_create_object(factory, resource, type, version, properties, new_id);
+	obj = pw_impl_factory_create_object(factory, resource, type,
+			version, properties, new_id);
 	if (obj == NULL)
 		goto error_create_failed;
 
-	return 0;
+	return obj;
 
 error_no_factory:
 	res = -ENOENT;
 	pw_log_debug("%p: can't find factory '%s'", context, factory_name);
 	pw_resource_errorf_id(resource, new_id, res, "unknown factory name %s", factory_name);
 	goto error_exit;
-error_version:
 error_type:
 	res = -EPROTO;
 	pw_log_debug("%p: invalid resource type/version", context);
@@ -412,17 +412,7 @@ struct pw_impl_core *pw_context_create_core(struct pw_context *context,
 	this->info.user_name = pw_get_user_name();
 	this->info.host_name = pw_get_host_name();
 	this->info.version = pw_get_library_version();
-	do {
-		res = pw_getrandom(&this->info.cookie,
-				sizeof(this->info.cookie), 0);
-	} while ((res == -1) && (errno == EINTR));
-	if (res == -1) {
-		res = -errno;
-		goto error_exit;
-	} else if (res != sizeof(this->info.cookie)) {
-		res = -ENODATA;
-		goto error_exit;
-	}
+	this->info.cookie = pw_rand32();
 	this->info.name = name;
 	spa_hook_list_init(&this->listener_list);
 
@@ -486,13 +476,13 @@ static const struct pw_resource_events core_resource_events = {
 };
 
 static int
-global_bind(void *_data,
+global_bind(void *object,
 	    struct pw_impl_client *client,
 	    uint32_t permissions,
 	    uint32_t version,
 	    uint32_t id)
 {
-	struct pw_impl_core *this = _data;
+	struct pw_impl_core *this = object;
 	struct pw_global *global = this->global;
 	struct pw_resource *resource;
 	struct resource_data *data;
@@ -534,9 +524,9 @@ error:
 	return res;
 }
 
-static void global_destroy(void *object)
+static void global_destroy(void *data)
 {
-	struct pw_impl_core *core = object;
+	struct pw_impl_core *core = data;
 	spa_hook_remove(&core->global_listener);
 	core->global = NULL;
 	pw_impl_core_destroy(core);
@@ -581,6 +571,7 @@ int pw_impl_core_register(struct pw_impl_core *core,
 			 struct pw_properties *properties)
 {
 	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
 		PW_KEY_USER_NAME,
 		PW_KEY_HOST_NAME,
 		PW_KEY_CORE_NAME,
@@ -608,6 +599,8 @@ int pw_impl_core_register(struct pw_impl_core *core,
 
 	core->info.id = core->global->id;
 	pw_properties_setf(core->properties, PW_KEY_OBJECT_ID, "%d", core->info.id);
+	pw_properties_setf(core->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
+			pw_global_get_serial(core->global));
 	core->info.props = &core->properties->dict;
 
 	pw_global_update_keys(core->global, core->info.props, keys);

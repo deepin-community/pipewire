@@ -1,29 +1,10 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <string.h>
+#include <assert.h>
 
 #include <spa/utils/string.h>
 
@@ -120,20 +101,45 @@ static int error_resource(void *object, void *data)
 {
 	struct pw_resource *r = object;
 	struct error_data *d = data;
-	if (r && r->bound_id == d->id)
+
+	if (r && r->bound_id == d->id) {
+		pw_log_debug("%p: client error for global %u: %d (%s)",
+				r, d->id, d->res, d->error);
 		pw_resource_error(r, d->res, d->error);
+	}
 	return 0;
 }
 
 static int client_error(void *object, uint32_t id, int res, const char *error)
 {
 	struct resource_data *data = object;
+	struct pw_resource *resource = data->resource;
+	struct pw_impl_client *sender = resource->client;
 	struct pw_impl_client *client = data->client;
 	struct error_data d = { id, res, error };
+	struct pw_global *global;
 
-	pw_log_debug("%p: error for global %d", client, id);
+	/* Check the global id provided by sender refers to a registered global
+	 * known to the sender.
+	 */
+	if ((global = pw_context_find_global(resource->context, id)) == NULL)
+		goto error_no_id;
+	if (sender->recv_generation != 0 && global->generation > sender->recv_generation)
+		goto error_stale_id;
+
+	pw_log_debug("%p: sender %p: error for global %u", client, sender, id);
 	pw_map_for_each(&client->objects, error_resource, &d);
 	return 0;
+
+error_no_id:
+	pw_log_debug("%p: sender %p: error for invalid global %u", client, sender, id);
+	pw_resource_errorf(resource, -ENOENT, "no global %u", id);
+	return -ENOENT;
+error_stale_id:
+	pw_log_debug("%p: sender %p: error for stale global %u generation:%"PRIu64" recv-generation:%"PRIu64,
+			client, sender, id, global->generation, sender->recv_generation);
+	pw_resource_errorf(resource, -ESTALE, "no global %u any more", id);
+	return -ESTALE;
 }
 
 static bool has_key(const char * const keys[], const char *key)
@@ -228,6 +234,18 @@ static int finish_register(struct pw_impl_client *client)
 	pw_global_update_keys(client->global, client->info.props, keys);
 	pw_global_register(client->global);
 
+#ifdef OLD_MEDIA_SESSION_WORKAROUND
+	/*
+	 * XXX: temporary workaround for pipewire-media-session, see #2159
+	 */
+	if (spa_streq(spa_dict_lookup(client->info.props, PW_KEY_APP_NAME),
+					"pipewire-media-session")) {
+		client->recv_generation = UINT64_MAX;
+		pw_log_info("impl-client %p: enable old pipewire-media-session workaround",
+				client);
+	}
+#endif
+
 	return 0;
 }
 
@@ -291,10 +309,10 @@ static const struct pw_resource_events resource_events = {
 };
 
 static int
-global_bind(void *_data, struct pw_impl_client *client, uint32_t permissions,
+global_bind(void *object, struct pw_impl_client *client, uint32_t permissions,
 		 uint32_t version, uint32_t id)
 {
-	struct pw_impl_client *this = _data;
+	struct pw_impl_client *this = object;
 	struct pw_global *global = this->global;
 	struct pw_resource *resource;
 	struct resource_data *data;
@@ -403,6 +421,7 @@ struct pw_impl_client *pw_context_create_client(struct pw_impl_core *core,
 	this = &impl->this;
 	pw_log_debug("%p: new", this);
 
+	this->refcount = 1;
 	this->context = core->context;
 	this->core = core;
 	this->protocol = protocol;
@@ -457,9 +476,9 @@ error_cleanup:
 	return NULL;
 }
 
-static void global_destroy(void *object)
+static void global_destroy(void *data)
 {
-	struct pw_impl_client *client = object;
+	struct pw_impl_client *client = data;
 	spa_hook_remove(&client->global_listener);
 	client->global = NULL;
 	pw_impl_client_destroy(client);
@@ -475,6 +494,7 @@ int pw_impl_client_register(struct pw_impl_client *client,
 		       struct pw_properties *properties)
 {
 	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
 		PW_KEY_MODULE_ID,
 		PW_KEY_PROTOCOL,
 		PW_KEY_SEC_PID,
@@ -505,6 +525,8 @@ int pw_impl_client_register(struct pw_impl_client *client,
 
 	client->info.id = client->global->id;
 	pw_properties_setf(client->properties, PW_KEY_OBJECT_ID, "%d", client->info.id);
+	pw_properties_setf(client->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
+			pw_global_get_serial(client->global));
 	client->info.props = &client->properties->dict;
 	pw_global_add_listener(client->global, &client->global_listener, &global_events, client);
 
@@ -550,6 +572,12 @@ struct pw_global *pw_impl_client_get_global(struct pw_impl_client *client)
 }
 
 SPA_EXPORT
+struct pw_mempool *pw_impl_client_get_mempool(struct pw_impl_client *client)
+{
+	return client->pool;
+}
+
+SPA_EXPORT
 const struct pw_properties *pw_impl_client_get_properties(struct pw_impl_client *client)
 {
 	return client->properties;
@@ -569,6 +597,33 @@ static int destroy_resource(void *object, void *data)
 }
 
 
+SPA_EXPORT
+void pw_impl_client_unref(struct pw_impl_client *client)
+{
+	struct impl *impl = SPA_CONTAINER_OF(client, struct impl, this);
+
+	assert(client->refcount > 0);
+	if (--client->refcount > 0)
+		return;
+
+	pw_log_debug("%p: free", impl);
+	assert(client->destroyed);
+
+	pw_impl_client_emit_free(client);
+
+	spa_hook_list_clean(&client->listener_list);
+
+	pw_map_clear(&client->objects);
+	pw_array_clear(&impl->permissions);
+
+	spa_hook_remove(&impl->pool_listener);
+	pw_mempool_destroy(client->pool);
+
+	pw_properties_free(client->properties);
+
+	free(impl);
+}
+
 /** Destroy a client object
  *
  * \param client the client to destroy
@@ -580,6 +635,10 @@ void pw_impl_client_destroy(struct pw_impl_client *client)
 	struct impl *impl = SPA_CONTAINER_OF(client, struct impl, this);
 
 	pw_log_debug("%p: destroy", client);
+
+	assert(!client->destroyed);
+	client->destroyed = true;
+
 	pw_impl_client_emit_destroy(client);
 
 	spa_hook_remove(&impl->context_listener);
@@ -594,20 +653,7 @@ void pw_impl_client_destroy(struct pw_impl_client *client)
 		pw_global_destroy(client->global);
 	}
 
-	pw_log_debug("%p: free", impl);
-	pw_impl_client_emit_free(client);
-
-	spa_hook_list_clean(&client->listener_list);
-
-	pw_map_clear(&client->objects);
-	pw_array_clear(&impl->permissions);
-
-	spa_hook_remove(&impl->pool_listener);
-	pw_mempool_destroy(client->pool);
-
-	pw_properties_free(client->properties);
-
-	free(impl);
+	pw_impl_client_unref(client);
 }
 
 SPA_EXPORT
@@ -733,6 +779,9 @@ int pw_impl_client_check_permissions(struct pw_impl_client *client,
 
 	if ((global = pw_context_find_global(context, global_id)) == NULL)
 		return -ENOENT;
+
+	if (client->recv_generation != 0 && global->generation > client->recv_generation)
+		return -ESTALE;
 
 	perms = pw_global_get_permissions(global, client);
 	if ((perms & permissions) != permissions)

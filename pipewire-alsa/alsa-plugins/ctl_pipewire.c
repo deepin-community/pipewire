@@ -1,26 +1,6 @@
-/* CTL - PipeWire plugin
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* CTL - PipeWire plugin */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <alsa/asoundlib.h>
 #include <alsa/control_external.h>
@@ -37,7 +17,10 @@
 PW_LOG_TOPIC_STATIC(alsa_log_topic, "alsa.ctl");
 #define PW_LOG_TOPIC_DEFAULT alsa_log_topic
 
-#define VOLUME_MAX 65536
+#define DEFAULT_VOLUME_METHOD	"cubic"
+
+#define VOLUME_MIN ((uint32_t) 0U)
+#define VOLUME_MAX ((uint32_t) 0x10000U)
 
 struct volume {
 	uint32_t channels;
@@ -46,6 +29,8 @@ struct volume {
 
 typedef struct {
 	snd_ctl_ext_t ext;
+
+	struct pw_properties *props;
 
 	struct spa_system *system;
 	struct pw_thread_loop *mainloop;
@@ -74,6 +59,9 @@ typedef struct {
 	struct volume source_volume;
 
 	int subscribed;
+#define VOLUME_METHOD_LINEAR	(0)
+#define VOLUME_METHOD_CUBIC	(1)
+	int volume_method;
 
 #define UPDATE_SINK_VOL     (1<<0)
 #define UPDATE_SINK_MUTE    (1<<1)
@@ -83,6 +71,32 @@ typedef struct {
 
 	struct spa_list globals;
 } snd_ctl_pipewire_t;
+
+static inline uint32_t volume_from_linear(float vol, int method)
+{
+	if (vol <= 0.0f)
+		vol = 0.0f;
+
+	switch (method) {
+	case VOLUME_METHOD_CUBIC:
+		vol = cbrtf(vol);
+		break;
+	}
+	return SPA_CLAMP((uint64_t)lroundf(vol * VOLUME_MAX),
+			VOLUME_MIN, VOLUME_MAX);
+}
+
+static inline float volume_to_linear(uint32_t vol, int method)
+{
+	float v = ((float)vol) / VOLUME_MAX;
+
+	switch (method) {
+	case VOLUME_METHOD_CUBIC:
+		v = v * v * v;
+		break;
+	}
+	return v;
+}
 
 struct global;
 
@@ -416,7 +430,7 @@ static int pipewire_get_integer_info(snd_ctl_ext_t * ext,
 				  long *imax, long *istep)
 {
 	*istep = 1;
-	*imin = 0;
+	*imin = VOLUME_MIN;
 	*imax = VOLUME_MAX;
 
 	return 0;
@@ -476,7 +490,8 @@ finish:
 	return err;
 }
 
-static struct spa_pod *build_volume_mute(struct spa_pod_builder *b, struct volume *volume, int *mute)
+static struct spa_pod *build_volume_mute(struct spa_pod_builder *b, struct volume *volume,
+		int *mute, int volume_method)
 {
 	struct spa_pod_frame f[1];
 
@@ -488,7 +503,7 @@ static struct spa_pod *build_volume_mute(struct spa_pod_builder *b, struct volum
 
 		n_volumes = volume->channels;
 		for (i = 0; i < n_volumes; i++)
-			volumes[i] = volume->values[i] / (float) VOLUME_MAX;
+			volumes[i] = volume_to_linear(volume->values[i], volume_method);
 
 		spa_pod_builder_prop(b, SPA_PROP_channelVolumes, 0);
 		spa_pod_builder_array(b, sizeof(float),
@@ -532,10 +547,11 @@ static int set_volume_mute(snd_ctl_pipewire_t *ctl, const char *name, struct vol
 		spa_pod_builder_add(&b,
 			SPA_PARAM_ROUTE_index, SPA_POD_Int(id),
 			SPA_PARAM_ROUTE_device, SPA_POD_Int(device_id),
+			SPA_PARAM_ROUTE_save, SPA_POD_Bool(true),
 			0);
 
 		spa_pod_builder_prop(&b, SPA_PARAM_ROUTE_props, 0);
-		build_volume_mute(&b, volume, mute);
+		build_volume_mute(&b, volume, mute, ctl->volume_method);
 		param = spa_pod_builder_pop(&b, &f[0]);
 
 		pw_log_debug("set device %d mute/volume for node %d", dg->id, g->id);
@@ -545,7 +561,7 @@ static int set_volume_mute(snd_ctl_pipewire_t *ctl, const char *name, struct vol
 		if (!SPA_FLAG_IS_SET(g->permissions, PW_PERM_W | PW_PERM_X))
 			return -EPERM;
 
-		param = build_volume_mute(&b, volume, mute);
+		param = build_volume_mute(&b, volume, mute, ctl->volume_method);
 
 		pw_log_debug("set node %d mute/volume", g->id);
 		pw_node_set_param((struct pw_node*)g->proxy,
@@ -760,6 +776,7 @@ static void snd_ctl_pipewire_free(snd_ctl_pipewire_t *ctl)
 		spa_system_close(ctl->system, ctl->fd);
 	if (ctl->mainloop)
 		pw_thread_loop_destroy(ctl->mainloop);
+	pw_properties_free(ctl->props);
 	free(ctl);
 }
 
@@ -784,9 +801,9 @@ static const snd_ctl_ext_callback_t pipewire_ext_callback = {
 };
 
 /** device */
-static void device_event_info(void *object, const struct pw_device_info *info)
+static void device_event_info(void *data, const struct pw_device_info *info)
 {
-	struct global *g = object;
+	struct global *g = data;
 	snd_ctl_pipewire_t *ctl = g->ctl;
 	uint32_t n;
 
@@ -815,6 +832,7 @@ static void parse_props(struct global *g, const struct spa_pod *param, bool devi
 {
 	struct spa_pod_prop *prop;
 	struct spa_pod_object *obj = (struct spa_pod_object *) param;
+	snd_ctl_pipewire_t *ctl = g->ctl;
 
 	SPA_POD_OBJECT_FOREACH(obj, prop) {
 		switch (prop->key) {
@@ -840,7 +858,8 @@ static void parse_props(struct global *g, const struct spa_pod *param, bool devi
 
 			g->node.channel_volume.channels = n_volumes;
 			for (i = 0; i < n_volumes; i++)
-				g->node.channel_volume.values[i] = volumes[i] * VOLUME_MAX;
+				g->node.channel_volume.values[i] =
+					volume_from_linear(volumes[i], ctl->volume_method);
 
 			SPA_FLAG_UPDATE(g->node.flags, NODE_FLAG_DEVICE_VOLUME, device);
 			pw_log_debug("update node %d channelVolumes", g->id);
@@ -864,11 +883,11 @@ static struct global *find_node_for_route(snd_ctl_pipewire_t *ctl, uint32_t card
 	return NULL;
 }
 
-static void device_event_param(void *object, int seq,
+static void device_event_param(void *data, int seq,
                 uint32_t id, uint32_t index, uint32_t next,
                 const struct spa_pod *param)
 {
-	struct global *g = object;
+	struct global *g = data;
 	snd_ctl_pipewire_t *ctl = g->ctl;
 
 	pw_log_debug("param %d", id);
@@ -922,9 +941,9 @@ static const struct global_info device_info = {
 };
 
 /** node */
-static void node_event_info(void *object, const struct pw_node_info *info)
+static void node_event_info(void *data, const struct pw_node_info *info)
 {
-	struct global *g = object;
+	struct global *g = data;
 	snd_ctl_pipewire_t *ctl = g->ctl;
 	const char *str;
 	uint32_t i;
@@ -970,11 +989,11 @@ static void node_event_info(void *object, const struct pw_node_info *info)
 }
 
 
-static void node_event_param(void *object, int seq,
+static void node_event_param(void *data, int seq,
                 uint32_t id, uint32_t index, uint32_t next,
                 const struct spa_pod *param)
 {
-	struct global *g = object;
+	struct global *g = data;
 	pw_log_debug("update param %d %d", g->id, id);
 
 	switch (id) {
@@ -1010,7 +1029,7 @@ static int json_object_find(const char *obj, const char *key, char *value, size_
 	if (spa_json_enter_object(&it[0], &it[1]) <= 0)
 		return -EINVAL;
 
-	while (spa_json_get_string(&it[1], k, sizeof(k)-1) > 0) {
+	while (spa_json_get_string(&it[1], k, sizeof(k)) > 0) {
 		if (spa_streq(k, key)) {
 			if (spa_json_get_string(&it[1], value, len) <= 0)
 				continue;
@@ -1023,13 +1042,13 @@ static int json_object_find(const char *obj, const char *key, char *value, size_
 	return -ENOENT;
 }
 
-static int metadata_property(void *object,
+static int metadata_property(void *data,
                         uint32_t subject,
                         const char *key,
                         const char *type,
                         const char *value)
 {
-	struct global *g = object;
+	struct global *g = data;
 	snd_ctl_pipewire_t *ctl = g->ctl;
 
 	if (subject == PW_ID_CORE) {
@@ -1082,6 +1101,7 @@ static void proxy_destroy(void *data)
 	struct global *g = data;
 	spa_list_remove(&g->link);
 	g->proxy = NULL;
+	pw_properties_free(g->props);
 }
 
 static const struct pw_proxy_events proxy_events = {
@@ -1228,6 +1248,14 @@ static const struct pw_core_events core_events = {
         .done = on_core_done,
 };
 
+static int execute_match(void *data, const char *location, const char *action,
+                const char *val, size_t len)
+{
+	snd_ctl_pipewire_t *ctl = data;
+	if (spa_streq(action, "update-props"))
+		pw_properties_update_string(ctl->props, val, len);
+	return 1;
+}
 
 SPA_EXPORT
 SND_CTL_PLUGIN_DEFINE_FUNC(pipewire)
@@ -1240,7 +1268,6 @@ SND_CTL_PLUGIN_DEFINE_FUNC(pipewire)
 	const char *fallback_name = NULL;
 	int err;
 	const char *str;
-	struct pw_properties *props = NULL;
 	snd_ctl_pipewire_t *ctl;
 	struct pw_loop *loop;
 
@@ -1303,10 +1330,6 @@ SND_CTL_PLUGIN_DEFINE_FUNC(pipewire)
 		return -EINVAL;
 	}
 
-	str = getenv("PIPEWIRE_REMOTE");
-	if (str != NULL && str[0] != '\0')
-		server = str;
-
 	if (fallback_name && name && spa_streq(name, fallback_name))
 		fallback_name = NULL; /* no fallback for the same name */
 
@@ -1341,30 +1364,57 @@ SND_CTL_PLUGIN_DEFINE_FUNC(pipewire)
 		goto error;
 	}
 
-	ctl->context = pw_context_new(loop, NULL, 0);
+	ctl->context = pw_context_new(loop,
+					pw_properties_new(
+						PW_KEY_CLIENT_API, "alsa",
+						PW_KEY_CONFIG_NAME, "client-rt.conf",
+						NULL),
+					0);
 	if (ctl->context == NULL) {
 		err = -errno;
 		goto error;
 	}
 
-	props = pw_properties_new(NULL, NULL);
-	if (props == NULL) {
+	ctl->props = pw_properties_new(NULL, NULL);
+	if (ctl->props == NULL) {
 		err = -errno;
 		goto error;
 	}
 
-	pw_properties_setf(props, PW_KEY_APP_NAME, "PipeWire ALSA [%s]",
-			pw_get_prgname());
-
 	if (server)
-		pw_properties_set(props, PW_KEY_REMOTE_NAME, server);
+		pw_properties_set(ctl->props, PW_KEY_REMOTE_NAME, server);
+
+	pw_context_conf_update_props(ctl->context, "alsa.properties", ctl->props);
+
+	pw_context_conf_section_match_rules(ctl->context, "alsa.rules",
+			&pw_context_get_properties(ctl->context)->dict,
+			execute_match, ctl);
+
+	if (pw_properties_get(ctl->props, PW_KEY_APP_NAME) == NULL)
+		pw_properties_setf(ctl->props, PW_KEY_APP_NAME, "PipeWire ALSA [%s]",
+				pw_get_prgname());
+
+	str = getenv("PIPEWIRE_ALSA");
+	if (str != NULL)
+		pw_properties_update_string(ctl->props, str, strlen(str));
+
+	if ((str = pw_properties_get(ctl->props, "alsa.volume-method")) == NULL)
+		str = DEFAULT_VOLUME_METHOD;
+
+	if (spa_streq(str, "cubic"))
+		ctl->volume_method = VOLUME_METHOD_CUBIC;
+	else if (spa_streq(str, "linear"))
+		ctl->volume_method = VOLUME_METHOD_LINEAR;
+	else {
+		ctl->volume_method = VOLUME_METHOD_CUBIC;
+		SNDERR("unknown alsa.volume-method %s, using cubic", str);
+	}
 
 	if ((err = pw_thread_loop_start(ctl->mainloop)) < 0)
 		goto error;
 
 	pw_thread_loop_lock(ctl->mainloop);
-	ctl->core = pw_context_connect(ctl->context, props, 0);
-	props = NULL;
+	ctl->core = pw_context_connect(ctl->context, pw_properties_copy(ctl->props), 0);
 	if (ctl->core == NULL) {
 		err = -errno;
 		goto error_unlock;

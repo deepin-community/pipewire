@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #define EXT_DEVICE_RESTORE_VERSION	1
 
@@ -30,10 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <spa/pod/builder.h>
 #include <spa/utils/defs.h>
 #include <spa/utils/dict.h>
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
+#include <spa/param/audio/format.h>
+#include <spa/param/props.h>
+
 #include <pipewire/log.h>
 #include <pipewire/properties.h>
 
@@ -43,7 +27,6 @@
 #include "../extension.h"
 #include "../format.h"
 #include "../manager.h"
-#include "../media-roles.h"
 #include "../message.h"
 #include "../reply.h"
 #include "../volume.h"
@@ -108,7 +91,7 @@ static int do_sink_read_format(void *data, struct pw_manager_object *o)
 	}
 	message_put(d->reply,
 		TAG_U32, DEVICE_TYPE_SINK,
-		TAG_U32, o->id,
+		TAG_U32, o->index,			/* sink index */
 		TAG_U8, n_info,				/* n_formats */
 		TAG_INVALID);
 	for (i = 0; i < n_info; i++) {
@@ -157,7 +140,7 @@ static int do_extension_device_restore_read_formats(struct client *client,
 	}
 
 	spa_zero(sel);
-	sel.id = sink_index;
+	sel.index = sink_index;
 	sel.type = pw_manager_object_is_sink;
 
 	o = select_object(manager, &sel);
@@ -173,7 +156,7 @@ static int do_extension_device_restore_read_formats(struct client *client,
 	return client_queue_message(client, data.reply);
 }
 
-static int set_card_codecs(struct pw_manager_object *o, uint32_t id,
+static int set_card_codecs(struct pw_manager_object *o, uint32_t port_index,
 		uint32_t device_id, uint32_t n_codecs, uint32_t *codecs)
 {
 	char buf[1024];
@@ -190,7 +173,7 @@ static int set_card_codecs(struct pw_manager_object *o, uint32_t id,
 	spa_pod_builder_push_object(&b, &f[0],
 			SPA_TYPE_OBJECT_ParamRoute, SPA_PARAM_Route);
 	spa_pod_builder_add(&b,
-			SPA_PARAM_ROUTE_index, SPA_POD_Int(id),
+			SPA_PARAM_ROUTE_index, SPA_POD_Int(port_index),
 			SPA_PARAM_ROUTE_device, SPA_POD_Int(device_id),
 			0);
 	spa_pod_builder_prop(&b, SPA_PARAM_ROUTE_props, 0);
@@ -279,7 +262,7 @@ static int do_extension_device_restore_save_formats(struct client *client,
 		return -ENOTSUP;
 
 	spa_zero(sel);
-	sel.id = sink_index;
+	sel.index = sink_index;
 	sel.type = pw_manager_object_is_sink;
 
 	o = select_object(manager, &sel);

@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_NODE_H
 #define SPA_NODE_H
@@ -85,7 +65,7 @@ struct spa_node_info {
 	uint32_t n_params;			/**< number of items in \a params */
 };
 
-#define SPA_NODE_INFO_INIT()	(struct spa_node_info) { 0, }
+#define SPA_NODE_INFO_INIT()	((struct spa_node_info) { 0, })
 
 /**
  * Port information structure
@@ -124,7 +104,7 @@ struct spa_port_info {
 	uint32_t n_params;			/**< number of items in \a params */
 };
 
-#define SPA_PORT_INFO_INIT()	(struct spa_port_info) { 0, }
+#define SPA_PORT_INFO_INIT()	((struct spa_port_info) { 0, })
 
 #define SPA_RESULT_TYPE_NODE_ERROR	1
 #define SPA_RESULT_TYPE_NODE_PARAMS	2
@@ -632,6 +612,12 @@ struct spa_node_methods {
 	 *
 	 * When the node can accept new input in the next cycle, the
 	 * SPA_STATUS_NEED_DATA bit will be set.
+	 *
+	 * Note that the node might return SPA_STATUS_NEED_DATA even when
+	 * no input ports have this status. This means that the amount of
+	 * data still available on the input ports is likely not going to
+	 * be enough for the next cycle and the host might need to prefetch
+	 * data for the next cycle.
 	 */
 	int (*process) (void *object);
 };
@@ -641,6 +627,16 @@ struct spa_node_methods {
 	int _res = -ENOTSUP;						\
 	struct spa_node *_n = o;					\
 	spa_interface_call_res(&_n->iface,				\
+			struct spa_node_methods, _res,			\
+			method, version, ##__VA_ARGS__);		\
+	_res;								\
+})
+
+#define spa_node_method_fast(o,method,version,...)			\
+({									\
+	int _res;							\
+	struct spa_node *_n = o;					\
+	spa_interface_call_fast_res(&_n->iface,				\
 			struct spa_node_methods, _res,			\
 			method, version, ##__VA_ARGS__);		\
 	_res;								\
@@ -661,7 +657,9 @@ struct spa_node_methods {
 #define spa_node_port_set_io(n,...)		spa_node_method(n, port_set_io, 0, __VA_ARGS__)
 
 #define spa_node_port_reuse_buffer(n,...)	spa_node_method(n, port_reuse_buffer, 0, __VA_ARGS__)
+#define spa_node_port_reuse_buffer_fast(n,...)	spa_node_method_fast(n, port_reuse_buffer, 0, __VA_ARGS__)
 #define spa_node_process(n)			spa_node_method(n, process, 0)
+#define spa_node_process_fast(n)		spa_node_method_fast(n, process, 0)
 
 /**
  * \}

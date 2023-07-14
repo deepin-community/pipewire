@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PULSE_SERVER_DEFS_H
 #define PULSE_SERVER_DEFS_H
@@ -49,17 +29,16 @@
 #define NATIVE_COOKIE_LENGTH 256
 #define MAX_TAG_SIZE (64*1024)
 
-#define MIN_BUFFERS     8u
-#define MAX_BUFFERS     64u
+#define MIN_BUFFERS     1u
+#define MAX_BUFFERS     4u
 
-#define MAXLENGTH		(4*1024*1024) /* 4MB */
+#define MAXLENGTH		(4u*1024*1024) /* 4MB */
 
 #define SCACHE_ENTRY_SIZE_MAX	(1024*1024*16)
 
-#define INDEX_MASK		0xffffu
-#define MONITOR_FLAG		(1u << 16)
-#define EXTENSION_FLAG		(1u << 17)
-#define MODULE_FLAG		(1u << 18)
+#define MODULE_INDEX_MASK	0xfffffffu
+#define MODULE_EXTENSION_FLAG	(1u << 28)
+#define MODULE_FLAG		(1u << 29)
 
 #define DEFAULT_SINK		"@DEFAULT_SINK@"
 #define DEFAULT_SOURCE		"@DEFAULT_SOURCE@"
@@ -135,6 +114,44 @@ static inline int res_to_err(int res)
 	case -ENFILE: case -EMFILE: return ERR_INTERNAL;
 	}
 	return ERR_UNKNOWN;
+}
+
+static inline int err_to_res(int err)
+{
+	switch (err) {
+	case ERR_OK: return 0;
+	case ERR_ACCESS: return -EACCES;
+	case ERR_COMMAND: return -ENOTTY;
+	case ERR_INVALID: return -EINVAL;
+	case ERR_EXIST: return -EEXIST;
+	case ERR_NOENTITY: return -ENOENT;
+	case ERR_CONNECTIONREFUSED: return -ECONNREFUSED;
+	case ERR_PROTOCOL: return -EPROTO;
+	case ERR_TIMEOUT: return -ETIMEDOUT;
+#ifdef ENOKEY
+	case ERR_AUTHKEY: return -ENOKEY;
+#endif
+	case ERR_INTERNAL: return -ENFILE;
+	case ERR_CONNECTIONTERMINATED: return -ECONNRESET;
+	case ERR_KILLED: return -EFAULT;
+	case ERR_INVALIDSERVER: return -EINVAL;
+	case ERR_MODINITFAILED: return -EIO;
+#ifdef EBADFD
+	case ERR_BADSTATE: return -EBADFD;
+#endif
+	case ERR_NODATA: return -ENODATA;
+	case ERR_VERSION: return -EPROTO;
+	case ERR_TOOLARGE: return -E2BIG;
+	case ERR_NOTSUPPORTED: return -ENOTSUP;
+	case ERR_UNKNOWN: return -EIO;
+	case ERR_NOEXTENSION: return -ENOTTY;
+	case ERR_OBSOLETE: return -ENOTSUP;
+	case ERR_NOTIMPLEMENTED: return -ENOSYS;
+	case ERR_FORKED: return -EIO;
+	case ERR_IO: return -EIO;
+	case ERR_BUSY: return -EBUSY;
+	}
+	return -EIO;
 }
 
 enum {
@@ -261,5 +278,6 @@ static inline uint32_t port_type_value(const char *port_type)
 #define METADATA_CONFIG_DEFAULT_SINK    "default.configured.audio.sink"
 #define METADATA_CONFIG_DEFAULT_SOURCE  "default.configured.audio.source"
 #define METADATA_TARGET_NODE            "target.node"
+#define METADATA_TARGET_OBJECT          "target.object"
 
 #endif /* PULSE_SERVER_DEFS_H */

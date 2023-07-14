@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2019 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdbool.h>
 #include <string.h>
@@ -30,6 +10,7 @@
 #include <pipewire/extensions/session-manager.h>
 
 #include <spa/pod/filter.h>
+#include <spa/pod/dynamic.h>
 
 #include "endpoint.h"
 #include "client-endpoint.h"
@@ -59,8 +40,8 @@ static int endpoint_enum_params (void *object, int seq,
 	struct endpoint *this = data->endpoint;
 	struct spa_pod *result;
 	struct spa_pod *param;
-	uint8_t buffer[1024];
-	struct spa_pod_builder b = { 0 };
+	uint8_t buffer[2048];
+	struct spa_pod_dynamic_builder b = { 0 };
 	uint32_t index;
 	uint32_t next = start;
 	uint32_t count = 0;
@@ -77,15 +58,15 @@ static int endpoint_enum_params (void *object, int seq,
 		if (param == NULL || !spa_pod_is_object_id(param, id))
 			continue;
 
-		spa_pod_builder_init(&b, buffer, sizeof(buffer));
-		if (spa_pod_filter(&b, &result, param, filter) != 0)
-			continue;
+		spa_pod_dynamic_builder_init(&b, buffer, sizeof(buffer), 4096);
+		if (spa_pod_filter(&b.b, &result, param, filter) == 0) {
+			pw_log_debug(NAME" %p: %d param %u", this, seq, index);
+			pw_endpoint_resource_param(resource, seq, id, index, next, result);
+			count++;
+		}
+		spa_pod_dynamic_builder_clean(&b);
 
-		pw_log_debug(NAME" %p: %d param %u", this, seq, index);
-
-		pw_endpoint_resource_param(resource, seq, id, index, next, result);
-
-		if (++count == num)
+		if (count == num)
 			break;
 	}
 	return 0;
@@ -202,19 +183,26 @@ int endpoint_update(struct endpoint *this,
 {
 	if (change_mask & PW_CLIENT_ENDPOINT_UPDATE_PARAMS) {
 		uint32_t i;
-		size_t size = n_params * sizeof(struct spa_pod *);
 
 		pw_log_debug(NAME" %p: update %d params", this, n_params);
 
 		for (i = 0; i < this->n_params; i++)
 			free(this->params[i]);
-		this->params = realloc(this->params, size);
-		if (size > 0 && !this->params) {
-			this->n_params = 0;
-			goto no_mem;
-		}
 		this->n_params = n_params;
-
+		if (this->n_params == 0) {
+			free(this->params);
+			this->params = NULL;
+		} else {
+			void *p;
+			p = pw_reallocarray(this->params, n_params, sizeof(struct spa_pod*));
+			if (p == NULL) {
+				free(this->params);
+				this->params = NULL;
+				this->n_params = 0;
+				goto no_mem;
+			}
+			this->params = p;
+		}
 		for (i = 0; i < this->n_params; i++) {
 			this->params[i] = params[i] ? spa_pod_copy(params[i]) : NULL;
 			endpoint_notify_subscribed(this, i, i+1);
@@ -232,16 +220,22 @@ int endpoint_update(struct endpoint *this,
 			pw_properties_update(this->props, info->props);
 
 		if (info->change_mask & PW_ENDPOINT_CHANGE_MASK_PARAMS) {
-			size_t size = info->n_params * sizeof(struct spa_param_info);
-
-			this->info.params = realloc(this->info.params, size);
-			if (size > 0 && !this->info.params) {
-				this->info.n_params = 0;
-				goto no_mem;
-			}
 			this->info.n_params = info->n_params;
-
-			memcpy(this->info.params, info->params, size);
+			if (info->n_params == 0) {
+				free(this->info.params);
+				this->info.params = NULL;
+			} else {
+				void *p;
+				p = pw_reallocarray(this->info.params, info->n_params, sizeof(struct spa_param_info));
+				if (p == NULL) {
+					free(this->info.params);
+					this->info.params = NULL;
+					this->info.n_params = 0;
+					goto no_mem;
+				}
+				this->info.params = p;
+				memcpy(this->info.params, info->params, info->n_params * sizeof(struct spa_param_info));
+			}
 		}
 
 		if (!this->info.name) {
@@ -305,6 +299,7 @@ int endpoint_init(struct endpoint *this,
 		struct pw_properties *properties)
 {
 	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
 		PW_KEY_FACTORY_ID,
 		PW_KEY_CLIENT_ID,
 		PW_KEY_DEVICE_ID,
@@ -333,6 +328,8 @@ int endpoint_init(struct endpoint *this,
 
 	pw_properties_setf(this->props, PW_KEY_OBJECT_ID, "%u",
 			pw_global_get_id(this->global));
+	pw_properties_setf(this->props, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
+			pw_global_get_serial(this->global));
 
 	this->info.version = PW_VERSION_ENDPOINT_INFO;
 	this->info.id = pw_global_get_id(this->global);

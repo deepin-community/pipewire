@@ -18,9 +18,9 @@ conf_config.set('pulse_comment', '#')
 
 conf_config_uninstalled = conf_config
 conf_config_uninstalled.set('pipewire_path',
-  meson.build_root() / 'src' / 'daemon' / 'pipewire')
+  meson.project_build_root() / 'src' / 'daemon' / 'pipewire')
 conf_config_uninstalled.set('pipewire_pulse_path',
-  meson.build_root() / 'src' / 'daemon' / 'pipewire-pulse')
+  meson.project_build_root() / 'src' / 'daemon' / 'pipewire-pulse')
 conf_config_uninstalled.set('pulse_comment', '')
 
 build_ms = 'media-session' in get_option('session-managers')
@@ -67,8 +67,12 @@ conf_files = [
  'pipewire.conf',
  'client.conf',
  'client-rt.conf',
+ 'filter-chain.conf',
  'jack.conf',
+ 'minimal.conf',
  'pipewire-pulse.conf',
+ 'pipewire-avb.conf',
+ 'pipewire-aes67.conf',
 ]
 
 foreach c : conf_files
@@ -82,30 +86,49 @@ configure_file(input : 'pipewire.conf.in',
                output : 'pipewire-uninstalled.conf',
                configuration : conf_config_uninstalled)
 
+conf_avail_folders = [
+  'pipewire.conf.avail',
+  'client.conf.avail',
+  'client-rt.conf.avail',
+  'pipewire-pulse.conf.avail',
+]
+
+foreach c : conf_avail_folders
+  subdir(c)
+endforeach
+
 pipewire_exec = executable('pipewire',
   pipewire_daemon_sources,
   install: true,
   c_args : pipewire_c_args,
-  include_directories : [configinc, spa_inc],
-  dependencies : [pipewire_dep, ],
-)
-
-executable('pipewire-pulse',
-  pipewire_daemon_sources,
-  install: true,
-  c_args : pipewire_c_args,
-  include_directories : [configinc, spa_inc],
-  dependencies : [pipewire_dep, ],
+  include_directories : [ configinc ],
+  dependencies : [ spa_dep, pipewire_dep, ],
 )
 
 ln = find_program('ln')
+
+foreach alias : ['pipewire-pulse', 'pipewire-avb', 'pipewire-aes67']
+  custom_target(
+    alias,
+    build_by_default: true,
+    install: false,
+    command: [ln, '-sf', meson.project_build_root() + '/@INPUT@', '@OUTPUT@'],
+    input: pipewire_exec,
+    output: alias,
+  )
+  install_symlink(
+    alias,
+    pointing_to: pipewire_exec.name(),
+    install_dir: pipewire_bindir,
+  )
+endforeach
 
 custom_target('pipewire-uninstalled',
   build_by_default: true,
   install: false,
   input: pipewire_exec,
   output: 'pipewire-uninstalled',
-  command: [ln, '-fs', meson.build_root() + '/@INPUT@', '@OUTPUT@'],
+  command: [ln, '-fs', meson.project_build_root() + '/@INPUT@', '@OUTPUT@'],
 )
 
 #desktop_file = i18n.merge_file(

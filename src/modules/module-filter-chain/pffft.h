@@ -161,17 +161,16 @@ extern "C" {
 
   void pffft_zconvolve(PFFFT_Setup *setup, const float *dft_a, const float *dft_b, float *dft_ab, float scaling);
 
-  void pffft_sum(const float *a, const float *b, float *ab, int len);
   /*
     the float buffers must have the correct alignment (16-byte boundary
     on intel and powerpc). This function may be used to obtain such
-    correctly aligned buffers. 
+    correctly aligned buffers.
   */
   void *pffft_aligned_malloc(size_t nb_bytes);
   void pffft_aligned_free(void *);
 
   /* return 4 or 1 depending on whether support for SSE/Altivec instructions was enabled when building pffft.c */
-  int pffft_simd_size();
+  int pffft_simd_size(void);
 
   void pffft_select_cpu(int flags);
 

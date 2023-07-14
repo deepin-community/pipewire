@@ -107,13 +107,15 @@ ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1011", ENV{ACP_PROFILE_SET}="native-
 
 
 ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1001", ENV{ACP_PROFILE_SET}="native-instruments-komplete-audio6.conf"
+# This entry is for the Komplete Audio 6 MK2, which has a different ID, but is functionally identical to the Komplete Audio 6.
+ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1870", ENV{ACP_PROFILE_SET}="native-instruments-komplete-audio6.conf"
 ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1021", ENV{ACP_PROFILE_SET}="native-instruments-traktor-audio10.conf"
 ATTRS{idVendor}=="0763", ATTRS{idProduct}=="2012", ENV{ACP_PROFILE_SET}="maudio-fasttrack-pro.conf"
 ATTRS{idVendor}=="045e", ATTRS{idProduct}=="02bb", ENV{ACP_PROFILE_SET}="kinect-audio.conf"
 ATTRS{idVendor}=="041e", ATTRS{idProduct}=="322c", ENV{ACP_PROFILE_SET}="sb-omni-surround-5.1.conf"
 ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="4014", ENV{ACP_PROFILE_SET}="dell-dock-tb16-usb-audio.conf"
 ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="402e", ENV{ACP_PROFILE_SET}="dell-dock-tb16-usb-audio.conf"
-ATTRS{idVendor}=="1397", ATTRS{idProduct}=="0507", ENV{ACP_PROFILE_SET}="behringer-umc22.conf"
+ATTRS{idVendor}=="08bb", ATTRS{idProduct}=="2902", ENV{ACP_PROFILE_SET}="texas-instruments-pcm2902.conf"
 ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="0269", ENV{ACP_PROFILE_SET}="hp-tbt-dock-120w-g2.conf"
 ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="0567", ENV{ACP_PROFILE_SET}="hp-tbt-dock-audio-module.conf"
 
@@ -131,6 +133,8 @@ ATTRS{idVendor}=="1038", ATTRS{idProduct}=="12c4", ENV{ACP_PROFILE_SET}="usb-gam
 ATTRS{idVendor}=="2f12", ATTRS{idProduct}=="0109", ENV{ACP_PROFILE_SET}="usb-gaming-headset.conf"
 # ID 9886:002c is for the Astro A50 Gen4
 ATTRS{idVendor}=="9886", ATTRS{idProduct}=="002c", ENV{ACP_PROFILE_SET}="usb-gaming-headset.conf"
+# ID 9886:0045 is for the Astro A20 Gen2
+ATTRS{idVendor}=="9886", ATTRS{idProduct}=="0045", ENV{ACP_PROFILE_SET}="usb-gaming-headset.conf"
 # ID 1532:0520 is for the Razer Kraken Tournament Edition
 ATTRS{idVendor}=="1532", ATTRS{idProduct}=="0520", ENV{ACP_PROFILE_SET}="usb-gaming-headset.conf"
 
@@ -159,10 +163,12 @@ ATTRS{idVendor}=="2a70", ATTRS{idProduct}=="1881", ENV{ACP_PROFILE_SET}="simple-
 
 # ID 1395:005e is for Sennheiser GSX 1000
 # ID 1395:00a0 is for Sennheiser GSX 1000
+# ID 1395:00b1 is for Sennheiser GSX 1000 v2
 # ID 1395:005f is for Sennheiser GSX 1200
 # ID 1395:00a1 is for Sennheiser GSX 1200
 ATTRS{idVendor}=="1395", ATTRS{idProduct}=="005e", ENV{ACP_PROFILE_SET}="sennheiser-gsx.conf"
 ATTRS{idVendor}=="1395", ATTRS{idProduct}=="00a0", ENV{ACP_PROFILE_SET}="sennheiser-gsx.conf"
+ATTRS{idVendor}=="1395", ATTRS{idProduct}=="00b1", ENV{ACP_PROFILE_SET}="sennheiser-gsx.conf"
 ATTRS{idVendor}=="1395", ATTRS{idProduct}=="005f", ENV{ACP_PROFILE_SET}="sennheiser-gsx.conf"
 ATTRS{idVendor}=="1395", ATTRS{idProduct}=="00a1", ENV{ACP_PROFILE_SET}="sennheiser-gsx.conf"
 
@@ -172,6 +178,13 @@ ATTRS{idVendor}=="1395", ATTRS{idProduct}=="0089", ENV{ACP_PROFILE_SET}="usb-gam
 ATTRS{idVendor}=="1395", ATTRS{idProduct}=="0300", ENV{ACP_PROFILE_SET}="usb-gaming-headset.conf"
 # Sennheiser GSP 670 USB headset
 ATTRS{idVendor}=="1395", ATTRS{idProduct}=="008a", ENV{ACP_PROFILE_SET}="usb-gaming-headset.conf"
+
+# Audioengine HD3 powered speakers support IEC958 but don't actually
+# have any digital outputs.
+ATTRS{idVendor}=="0a12", ATTRS{idProduct}=="4007", ENV{ACP_PROFILE_SET}="analog-only.conf"
+
+# Asus Xonar SE
+ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="189d", ENV{ACP_PROFILE_SET}="asus-xonar-se.conf"
 
 GOTO="pipewire_end"
 

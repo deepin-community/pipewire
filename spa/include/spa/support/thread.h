@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_THREAD_H
 #define SPA_THREAD_H
@@ -61,17 +41,19 @@ struct spa_thread_utils_methods {
 	uint32_t version;
 
 	/** create a new thread that runs \a start with \a arg */
-	struct spa_thread * (*create) (void *data, const struct spa_dict *props,
+	struct spa_thread * (*create) (void *object, const struct spa_dict *props,
 			void *(*start)(void*), void *arg);
 	/** stop and join a thread */
-	int (*join)(void *data, struct spa_thread *thread, void **retval);
+	int (*join)(void *object, struct spa_thread *thread, void **retval);
 
 	/** get realtime priority range for threads created with \a props */
-	int (*get_rt_range) (void *data, const struct spa_dict *props, int *min, int *max);
-	/** acquire realtime priority */
-	int (*acquire_rt) (void *data, struct spa_thread *thread, int priority);
+	int (*get_rt_range) (void *object, const struct spa_dict *props, int *min, int *max);
+	/** acquire realtime priority, a priority of -1 refers to the priority
+	 * configured in the realtime module
+	 */
+	int (*acquire_rt) (void *object, struct spa_thread *thread, int priority);
 	/** drop realtime priority */
-	int (*drop_rt) (void *data, struct spa_thread *thread);
+	int (*drop_rt) (void *object, struct spa_thread *thread);
 };
 
 /** \copydoc spa_thread_utils_methods.create
@@ -132,6 +114,9 @@ static inline int spa_thread_utils_drop_rt(struct spa_thread_utils *o,
 			struct spa_thread_utils_methods, res, drop_rt, 0, thread);
 	return res;
 }
+
+#define SPA_KEY_THREAD_NAME		"thread.name"		/* the thread name */
+#define SPA_KEY_THREAD_STACK_SIZE	"thread.stack-size"	/* the stack size of the thread */
 
 /**
  * \}

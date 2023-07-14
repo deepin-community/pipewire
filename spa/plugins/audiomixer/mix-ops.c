@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -98,13 +78,11 @@ static struct mix_info mix_table[] =
 static const struct mix_info *find_mix_info(uint32_t fmt,
 		uint32_t n_channels, uint32_t cpu_flags)
 {
-	size_t i;
-
-	for (i = 0; i < SPA_N_ELEMENTS(mix_table); i++) {
-		if (mix_table[i].fmt == fmt &&
-		    MATCH_CHAN(mix_table[i].n_channels, n_channels) &&
-		    MATCH_CPU_FLAGS(mix_table[i].cpu_flags, cpu_flags))
-			return &mix_table[i];
+	SPA_FOR_EACH_ELEMENT_VAR(mix_table, t) {
+		if (t->fmt == fmt &&
+		    MATCH_CHAN(t->n_channels, n_channels) &&
+		    MATCH_CPU_FLAGS(t->cpu_flags, cpu_flags))
+			return t;
 	}
 	return NULL;
 }

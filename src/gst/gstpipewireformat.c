@@ -1,30 +1,11 @@
-/* GStreamer
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* GStreamer */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 
 #include <gst/gst.h>
+#include <gst/allocators/gstdmabuf.h>
 #include <gst/video/video.h>
 #include <gst/audio/audio.h>
 
@@ -35,6 +16,14 @@
 #include <spa/pod/builder.h>
 
 #include "gstpipewireformat.h"
+
+#ifndef DRM_FORMAT_MOD_INVALID
+#define DRM_FORMAT_MOD_INVALID ((1ULL << 56) - 1)
+#endif
+
+#ifndef DRM_FORMAT_MOD_LINEAR
+#define DRM_FORMAT_MOD_LINEAR 0
+#endif
 
 struct media_type {
   const char *name;
@@ -50,6 +39,8 @@ static const struct media_type media_type_map[] = {
   { "video/x-h264", SPA_MEDIA_TYPE_video, SPA_MEDIA_SUBTYPE_h264 },
   { "audio/x-mulaw", SPA_MEDIA_TYPE_audio, SPA_MEDIA_SUBTYPE_raw },
   { "audio/x-alaw", SPA_MEDIA_TYPE_audio, SPA_MEDIA_SUBTYPE_raw },
+  { "audio/mpeg", SPA_MEDIA_TYPE_audio, SPA_MEDIA_SUBTYPE_mp3 },
+  { "audio/x-flac", SPA_MEDIA_TYPE_audio, SPA_MEDIA_SUBTYPE_flac },
   { NULL, }
 };
 
@@ -302,6 +293,13 @@ get_nth_rectangle (const GValue *width, const GValue *height, int idx, struct sp
       r->width = gst_value_get_int_range_max (width);
       r->height = gst_value_get_int_range_max (height);
       return true;
+    } else if (idx == 3) {
+      r->width = gst_value_get_int_range_step (width);
+      r->height = gst_value_get_int_range_step (height);
+      if (r->width > 1 || r->height > 1)
+        return true;
+      else
+        return false;
     }
   } else if (wt == GST_TYPE_LIST && ht == GST_TYPE_LIST) {
     GArray *wa = g_value_peek_pointer (width);
@@ -445,6 +443,44 @@ handle_video_fields (ConvertData *d)
   return TRUE;
 }
 
+static void
+set_default_channels (struct spa_pod_builder *b, uint32_t channels)
+{
+  uint32_t position[SPA_AUDIO_MAX_CHANNELS] = {0};
+  gboolean ok = TRUE;
+
+  switch (channels) {
+  case 8:
+    position[6] = SPA_AUDIO_CHANNEL_SL;
+    position[7] = SPA_AUDIO_CHANNEL_SR;
+    SPA_FALLTHROUGH
+  case 6:
+    position[5] = SPA_AUDIO_CHANNEL_LFE;
+    SPA_FALLTHROUGH
+  case 5:
+    position[4] = SPA_AUDIO_CHANNEL_FC;
+    SPA_FALLTHROUGH
+  case 4:
+    position[2] = SPA_AUDIO_CHANNEL_RL;
+    position[3] = SPA_AUDIO_CHANNEL_RR;
+    SPA_FALLTHROUGH
+  case 2:
+    position[0] = SPA_AUDIO_CHANNEL_FL;
+    position[1] = SPA_AUDIO_CHANNEL_FR;
+    break;
+  case 1:
+    position[0] = SPA_AUDIO_CHANNEL_MONO;
+    break;
+  default:
+    ok = FALSE;
+    break;
+  }
+
+  if (ok)
+    spa_pod_builder_add (b, SPA_FORMAT_AUDIO_position,
+        SPA_POD_Array(sizeof(uint32_t), SPA_TYPE_Id, channels, position), 0);
+}
+
 static gboolean
 handle_audio_fields (ConvertData *d)
 {
@@ -478,6 +514,12 @@ handle_audio_fields (ConvertData *d)
   } else if (strcmp(d->type->name, "audio/x-alaw") == 0) {
         spa_pod_builder_prop (&d->b, SPA_FORMAT_AUDIO_format, 0);
         spa_pod_builder_id (&d->b, SPA_AUDIO_FORMAT_ALAW);
+  } else if (strcmp(d->type->name, "audio/mpeg") == 0) {
+        spa_pod_builder_prop (&d->b, SPA_FORMAT_AUDIO_format, 0);
+        spa_pod_builder_id (&d->b, SPA_AUDIO_FORMAT_ENCODED);
+  } else if (strcmp(d->type->name, "audio/x-flac") == 0) {
+        spa_pod_builder_prop (&d->b, SPA_FORMAT_AUDIO_format, 0);
+        spa_pod_builder_id (&d->b, SPA_AUDIO_FORMAT_ENCODED);
   }
 
 #if 0
@@ -538,8 +580,10 @@ handle_audio_fields (ConvertData *d)
     }
     if (i > 0) {
       choice = spa_pod_builder_pop(&d->b, &f);
-      if (i == 1)
+      if (i == 1) {
         choice->body.type = SPA_CHOICE_None;
+        set_default_channels (&d->b, v);
+      }
     }
   }
   return TRUE;
@@ -579,6 +623,18 @@ convert_1 (ConvertData *d)
   spa_pod_builder_prop (&d->b, SPA_FORMAT_mediaSubtype, 0);
   spa_pod_builder_id(&d->b, d->type->media_subtype);
 
+  if (d->cf && gst_caps_features_contains (d->cf, GST_CAPS_FEATURE_MEMORY_DMABUF)) {
+    struct spa_pod_frame f2;
+
+    spa_pod_builder_prop (&d->b, SPA_FORMAT_VIDEO_modifier,
+                          (SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE));
+    spa_pod_builder_push_choice (&d->b, &f2, SPA_CHOICE_Enum, 0);
+    spa_pod_builder_long (&d->b, DRM_FORMAT_MOD_INVALID);
+    spa_pod_builder_long (&d->b, DRM_FORMAT_MOD_INVALID);
+    spa_pod_builder_long (&d->b, DRM_FORMAT_MOD_LINEAR);
+    spa_pod_builder_pop (&d->b, &f2);
+  }
+
   if (d->type->media_type == SPA_MEDIA_TYPE_video)
     handle_video_fields (d);
   else if (d->type->media_type == SPA_MEDIA_TYPE_audio)
@@ -614,13 +670,19 @@ foreach_func (GstCapsFeatures *features,
               ConvertData     *d)
 {
   struct spa_pod *fmt;
+  int idx;
 
   spa_zero(d->b);
   d->cf = features;
   d->cs = structure;
 
+  if (d->cf && gst_caps_features_contains (d->cf, GST_CAPS_FEATURE_MEMORY_DMABUF))
+    idx = 0;
+  else
+    idx = -1;
+
   if ((fmt = convert_1 (d)))
-    g_ptr_array_insert (d->array, -1, fmt);
+    g_ptr_array_insert (d->array, idx, fmt);
 
   return TRUE;
 }

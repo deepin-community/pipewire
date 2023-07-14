@@ -1,26 +1,6 @@
-/* Spa SCO I/O
- *
- * Copyright © 2019 Collabora Ltd.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa SCO I/O */
+/* SPDX-FileCopyrightText: Copyright © 2019 Collabora Ltd. */
+/* SPDX-License-Identifier: MIT */
 
 #include <unistd.h>
 #include <stddef.h>
@@ -55,16 +35,12 @@
  * since kernel might not report it as the socket MTU, see
  * https://lore.kernel.org/linux-bluetooth/20201210003528.3pmaxvubiwegxmhl@pali/T/
  *
- * Since 24 is the packet size for the smallest setting (ALT1), we'll stop
- * reading when rx packet of at least this size is seen, and use its size as the
- * heuristic maximum write MTU. Of course, if we have a source connected, we'll
- * continue reading without stopping.
+ * We continue reading also when there's no source connected, to keep socket
+ * flushed.
  *
  * XXX: when the kernel/backends start giving the right values, the heuristic
  * XXX: can be removed
  */
-#define HEURISTIC_MIN_MTU 24
-
 #define MAX_MTU 1024
 
 
@@ -94,12 +70,6 @@ static void update_source(struct spa_bt_sco_io *io)
 	int enabled;
 	int changed = 0;
 
-	enabled = io->source_cb != NULL || io->read_size < HEURISTIC_MIN_MTU;
-	if (SPA_FLAG_IS_SET(io->source.mask, SPA_IO_IN) != enabled) {
-		SPA_FLAG_UPDATE(io->source.mask, SPA_IO_IN, enabled);
-		changed = 1;
-	}
-
 	enabled = io->sink_cb != NULL;
 	if (SPA_FLAG_IS_SET(io->source.mask, SPA_IO_OUT) != enabled) {
 		SPA_FLAG_UPDATE(io->source.mask, SPA_IO_OUT, enabled);
@@ -118,13 +88,8 @@ static void sco_io_on_ready(struct spa_source *source)
 	if (SPA_FLAG_IS_SET(source->rmask, SPA_IO_IN)) {
 		int res;
 
-		/*
-		 * Note that we will read from the socket for a few times even
-		 * when there is no source callback, to autodetect packet size.
-		 */
-
 	read_again:
-		res = read(io->fd, io->read_buffer, SPA_MIN(io->read_mtu, MAX_MTU));
+		res = recv(io->fd, io->read_buffer, SPA_MIN(io->read_mtu, MAX_MTU), MSG_DONTWAIT);
 		if (res <= 0) {
 			if (errno == EINTR) {
 				/* retry if interrupted */
@@ -200,7 +165,7 @@ int spa_bt_sco_io_write(struct spa_bt_sco_io *io, uint8_t *buf, int size)
 	do {
 		int written;
 
-		written = write(io->fd, buf, packet_size);
+		written = send(io->fd, buf, packet_size, MSG_DONTWAIT | MSG_NOSIGNAL);
 		if (written < 0) {
 			if (errno == EINTR) {
 				/* retry if interrupted */

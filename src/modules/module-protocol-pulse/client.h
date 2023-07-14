@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PULSER_SERVER_CLIENT_H
 #define PULSER_SERVER_CLIENT_H
@@ -56,7 +36,7 @@ struct client {
 	struct server *server;
 
 	int ref;
-	const char *name;
+	const char *name; /* owned by `client::props` */
 
 	struct spa_source *source;
 
@@ -75,6 +55,8 @@ struct client {
 	struct pw_manager_object *metadata_default;
 	char *default_sink;
 	char *default_source;
+	char *temporary_default_sink;		/**< pending value, for MOVE_* commands */
+	char *temporary_default_source;		/**< pending value, for MOVE_* commands */
 	struct pw_manager_object *metadata_routes;
 	struct pw_properties *routes;
 
@@ -95,13 +77,23 @@ struct client {
 	struct spa_list pending_streams;
 
 	unsigned int disconnect:1;
-	unsigned int disconnecting:1;
-	unsigned int need_flush:1;
+	unsigned int new_msg_since_last_flush:1;
+	unsigned int authenticated:1;
 
 	struct pw_manager_object *prev_default_sink;
 	struct pw_manager_object *prev_default_source;
+
+	struct spa_hook_list listener_list;
 };
 
+struct client_events {
+#define VERSION_CLIENT_EVENTS	0
+	uint32_t version;
+
+	void (*disconnect) (void *data);
+};
+
+struct client *client_new(struct server *server);
 bool client_detach(struct client *client);
 void client_disconnect(struct client *client);
 void client_free(struct client *client);
@@ -113,6 +105,12 @@ static inline void client_unref(struct client *client)
 {
 	if (--client->ref == 0)
 		client_free(client);
+}
+
+static inline void client_add_listener(struct client *client, struct spa_hook *listener,
+				       const struct client_events *events, void *data)
+{
+	spa_hook_list_append(&client->listener_list, listener, events, data);
 }
 
 #endif /* PULSER_SERVER_CLIENT_H */
