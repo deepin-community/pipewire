@@ -1,31 +1,11 @@
-/* PCM - PipeWire plugin
- *
- * Copyright © 2017 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PCM - PipeWire plugin */
+/* SPDX-FileCopyrightText: Copyright © 2017 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #define __USE_GNU
 
 #include <limits.h>
-#ifndef __FreeBSD__
+#if !defined(__FreeBSD__) && !defined(__MidnightBSD__)
 #include <byteswap.h>
 #endif
 #include <sys/shm.h>
@@ -44,6 +24,15 @@
 
 #include <pipewire/pipewire.h>
 
+#define ATOMIC_INC(s)                   __atomic_add_fetch(&(s), 1, __ATOMIC_SEQ_CST)
+#define ATOMIC_LOAD(s)                  __atomic_load_n(&(s), __ATOMIC_SEQ_CST)
+
+#define SEQ_WRITE(s)                    ATOMIC_INC(s)
+#define SEQ_WRITE_SUCCESS(s1,s2)        ((s1) + 1 == (s2) && ((s2) & 1) == 0)
+
+#define SEQ_READ(s)                     ATOMIC_LOAD(s)
+#define SEQ_READ_SUCCESS(s1,s2)         ((s1) == (s2) && ((s2) & 1) == 0)
+
 PW_LOG_TOPIC_STATIC(alsa_log_topic, "alsa.pcm");
 #define PW_LOG_TOPIC_DEFAULT alsa_log_topic
 
@@ -55,12 +44,17 @@ PW_LOG_TOPIC_STATIC(alsa_log_topic, "alsa.pcm");
 
 #define MIN_PERIOD	64
 
+#define MIN_PERIOD_BYTES	(128)
+#define MAX_PERIOD_BYTES	(2*1024*1024)
+
+#define MIN_BUFFER_BYTES	(2*MIN_PERIOD_BYTES)
+#define MAX_BUFFER_BYTES	(2*MAX_PERIOD_BYTES)
+
 typedef struct {
 	snd_pcm_ioplug_t io;
 
-	char *node_name;
-	char *target;
-	char *role;
+	snd_output_t *output;
+	FILE *log_file;
 
 	int fd;
 	int error;
@@ -69,6 +63,8 @@ typedef struct {
 	unsigned int draining:1;
 	unsigned int xrun_detected:1;
 	unsigned int hw_params_changed:1;
+	unsigned int active:1;
+	unsigned int negotiated:1;
 
 	snd_pcm_uframes_t hw_ptr;
 	snd_pcm_uframes_t boundary;
@@ -80,63 +76,67 @@ typedef struct {
 	struct spa_system *system;
 	struct pw_thread_loop *main_loop;
 
+	struct pw_properties *props;
 	struct pw_context *context;
 
 	struct pw_core *core;
 	struct spa_hook core_listener;
 
-	uint32_t flags;
 	struct pw_stream *stream;
 	struct spa_hook stream_listener;
 
-	struct pw_time time;
-	struct spa_io_rate_match *rate_match;
+	int64_t delay;
+	uint64_t transfered;
+	uint64_t buffered;
+	int64_t now;
+	uintptr_t seq;
 
 	struct spa_audio_info_raw format;
 } snd_pcm_pipewire_t;
 
 static int snd_pcm_pipewire_stop(snd_pcm_ioplug_t *io);
 
-static int block_check(snd_pcm_ioplug_t *io)
+static int check_active(snd_pcm_ioplug_t *io)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
 	snd_pcm_sframes_t avail;
-	uint64_t val;
+	bool active;
 
 	avail = snd_pcm_ioplug_avail(io, pw->hw_ptr, io->appl_ptr);
-	if (avail >= 0 && avail < (snd_pcm_sframes_t)pw->min_avail) {
-		spa_system_eventfd_read(pw->system, io->poll_fd, &val);
-		return 1;
-	}
-	return 0;
-}
-
-static int pcm_poll_block_check(snd_pcm_ioplug_t *io)
-{
-	snd_pcm_pipewire_t *pw = io->private_data;
 
 	if (io->state == SND_PCM_STATE_DRAINING) {
-		uint64_t val;
-		spa_system_eventfd_read(pw->system, io->poll_fd, &val);
-		return 0;
-	} else if (io->state == SND_PCM_STATE_RUNNING ||
-			   (io->state == SND_PCM_STATE_PREPARED && io->stream == SND_PCM_STREAM_CAPTURE)) {
-		return block_check(io);
+		active = pw->drained;
 	}
-	return 0;
+	else if (avail >= 0 && avail < (snd_pcm_sframes_t)pw->min_avail) {
+		active = false;
+	}
+	else if (avail >= (snd_pcm_sframes_t)pw->min_avail) {
+		active = true;
+	} else {
+		active = false;
+	}
+	if (pw->active != active) {
+		pw_log_trace("%p: avail:%lu min-avail:%lu state:%s hw:%lu appl:%lu active:%d->%d state:%s",
+			pw, avail, pw->min_avail, snd_pcm_state_name(io->state),
+			pw->hw_ptr, io->appl_ptr, pw->active, active,
+			snd_pcm_state_name(io->state));
+	}
+	return active;
 }
 
-static inline int pcm_poll_unblock_check(snd_pcm_ioplug_t *io)
+
+static int update_active(snd_pcm_ioplug_t *io)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
-	snd_pcm_uframes_t avail;
+	pw->active = check_active(io);
+	uint64_t val;
 
-	avail = snd_pcm_ioplug_avail(io, pw->hw_ptr, io->appl_ptr);
-	if (avail >= pw->min_avail || io->state == SND_PCM_STATE_DRAINING) {
-		spa_system_eventfd_write(pw->system, pw->fd, 1);
-		return 1;
-	}
-	return 0;
+	if (pw->active || pw->error < 0)
+		spa_system_eventfd_write(pw->system, io->poll_fd, 1);
+	else
+		spa_system_eventfd_read(pw->system, io->poll_fd, &val);
+
+	return pw->active;
 }
 
 static void snd_pcm_pipewire_free(snd_pcm_pipewire_t *pw)
@@ -144,7 +144,7 @@ static void snd_pcm_pipewire_free(snd_pcm_pipewire_t *pw)
 	if (pw == NULL)
 		return;
 
-	pw_log_debug("%p:", pw);
+	pw_log_debug("%p: free", pw);
 	if (pw->main_loop)
 		pw_thread_loop_stop(pw->main_loop);
 	if (pw->stream)
@@ -155,15 +155,16 @@ static void snd_pcm_pipewire_free(snd_pcm_pipewire_t *pw)
 		spa_system_close(pw->system, pw->fd);
 	if (pw->main_loop)
 		pw_thread_loop_destroy(pw->main_loop);
-	free(pw->node_name);
-	free(pw->target);
+	pw_properties_free(pw->props);
+	snd_output_close(pw->output);
+	fclose(pw->log_file);
 	free(pw);
 }
 
 static int snd_pcm_pipewire_close(snd_pcm_ioplug_t *io)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
-	pw_log_debug("%p:", pw);
+	pw_log_debug("%p: close", pw);
 	snd_pcm_pipewire_free(pw);
 	return 0;
 }
@@ -171,7 +172,7 @@ static int snd_pcm_pipewire_close(snd_pcm_ioplug_t *io)
 static int snd_pcm_pipewire_poll_descriptors(snd_pcm_ioplug_t *io, struct pollfd *pfds, unsigned int space)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
-	pcm_poll_unblock_check(io); /* unblock socket for polling if needed */
+	update_active(io);
 	pfds->fd = pw->fd;
 	pfds->events = POLLIN | POLLERR | POLLNVAL;
 	return 1;
@@ -189,8 +190,10 @@ static int snd_pcm_pipewire_poll_revents(snd_pcm_ioplug_t *io,
 		return pw->error;
 
 	*revents = pfds[0].revents & ~(POLLIN | POLLOUT);
-	if (pfds[0].revents & POLLIN && !pcm_poll_block_check(io))
+	if (pfds[0].revents & POLLIN && check_active(io)) {
 		*revents |= (io->stream == SND_PCM_STREAM_PLAYBACK) ? POLLOUT : POLLIN;
+		update_active(io);
+	}
 
 	return 0;
 }
@@ -214,23 +217,40 @@ static snd_pcm_sframes_t snd_pcm_pipewire_pointer(snd_pcm_ioplug_t *io)
 static int snd_pcm_pipewire_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
-	int64_t elapsed = 0, filled;
+	uintptr_t seq1, seq2;
+	int64_t elapsed = 0, delay, now, avail;
+	struct timespec ts;
+	int64_t diff;
 
-	if (pw->time.rate.num != 0) {
-		struct timespec ts;
-		int64_t diff;
+	do {
+		seq1 = SEQ_READ(pw->seq);
+
+		delay = pw->delay + pw->transfered;
+		now = pw->now;
+		if (io->stream == SND_PCM_STREAM_PLAYBACK)
+			avail = snd_pcm_ioplug_hw_avail(io, pw->hw_ptr, io->appl_ptr);
+		else
+			avail = snd_pcm_ioplug_avail(io, pw->hw_ptr, io->appl_ptr);
+
+		seq2 = SEQ_READ(pw->seq);
+	} while (!SEQ_READ_SUCCESS(seq1, seq2));
+
+	if (now != 0 && (io->state == SND_PCM_STATE_RUNNING ||
+	    io->state == SND_PCM_STATE_DRAINING)) {
 		clock_gettime(CLOCK_MONOTONIC, &ts);
-		diff = SPA_TIMESPEC_TO_NSEC(&ts) - pw->time.now;
-	        elapsed = (pw->time.rate.denom * diff) / (pw->time.rate.num * SPA_NSEC_PER_SEC);
-		if (elapsed > pw->time.delay)
-			elapsed = pw->time.delay;
-	}
-	filled = pw->time.delay + snd_pcm_ioplug_hw_avail(io, pw->hw_ptr, io->appl_ptr);
+		diff = SPA_TIMESPEC_TO_NSEC(&ts) - now;
+		elapsed = (io->rate * diff) / SPA_NSEC_PER_SEC;
 
-	if (io->stream == SND_PCM_STREAM_PLAYBACK)
-		*delayp = filled - SPA_MIN(elapsed, filled);
-	else
-		*delayp = filled + elapsed;
+		if (io->stream == SND_PCM_STREAM_PLAYBACK)
+			delay -= SPA_MIN(elapsed, delay);
+		else
+			delay += SPA_MIN(elapsed, (int64_t)io->buffer_size);
+	}
+
+	*delayp = delay + avail;
+
+	pw_log_trace("avail:%"PRIi64" filled %"PRIi64" elapsed:%"PRIi64" delay:%ld hw:%lu appl:%lu",
+			avail, delay, elapsed, *delayp, pw->hw_ptr, io->appl_ptr);
 
 	return 0;
 }
@@ -246,26 +266,30 @@ snd_pcm_pipewire_process(snd_pcm_pipewire_t *pw, struct pw_buffer *b,
 	unsigned int channel;
 	struct spa_data *d;
 	void *ptr;
+	uint32_t bl, offset, size;
 
 	d = b->buffer->datas;
 	pwareas = alloca(io->channels * sizeof(snd_pcm_channel_area_t));
 
-	if (io->stream == SND_PCM_STREAM_PLAYBACK) {
-		nframes = d[0].maxsize - SPA_MIN(d[0].maxsize, d[0].chunk->offset);
-		nframes /= pw->stride;
-		nframes = SPA_MIN(nframes, pw->min_avail);
-	} else {
-		nframes = d[0].chunk->size / pw->stride;
+	for (bl = 0; bl < pw->blocks; bl++) {
+		if (io->stream == SND_PCM_STREAM_PLAYBACK) {
+			size = SPA_MIN(d[bl].maxsize, pw->min_avail * pw->stride);
+		} else {
+			offset = SPA_MIN(d[bl].chunk->offset, d[bl].maxsize);
+			size = SPA_MIN(d[bl].chunk->size, d[bl].maxsize - offset);
+		}
+		want = SPA_MIN(want, size / pw->stride);
 	}
-	want = SPA_MIN(nframes, want);
 	nframes = SPA_MIN(want, *hw_avail);
 
 	if (pw->blocks == 1) {
 		if (io->stream == SND_PCM_STREAM_PLAYBACK) {
 			d[0].chunk->size = want * pw->stride;
-			d[0].chunk->offset = 0;
+			d[0].chunk->offset = offset = 0;
+		} else {
+			offset = SPA_MIN(d[0].chunk->offset, d[0].maxsize);
 		}
-		ptr = SPA_PTROFF(d[0].data, d[0].chunk->offset, void);
+		ptr = SPA_PTROFF(d[0].data, offset, void);
 		for (channel = 0; channel < io->channels; channel++) {
 			pwareas[channel].addr = ptr;
 			pwareas[channel].first = channel * pw->sample_bits;
@@ -275,9 +299,11 @@ snd_pcm_pipewire_process(snd_pcm_pipewire_t *pw, struct pw_buffer *b,
 		for (channel = 0; channel < io->channels; channel++) {
 			if (io->stream == SND_PCM_STREAM_PLAYBACK) {
 				d[channel].chunk->size = want * pw->stride;
-				d[channel].chunk->offset = 0;
+				d[channel].chunk->offset = offset = 0;
+			} else {
+				offset = SPA_MIN(d[channel].chunk->offset, d[channel].maxsize);
 			}
-			ptr = SPA_PTROFF(d[channel].data, d[channel].chunk->offset, void);
+			ptr = SPA_PTROFF(d[channel].data, offset, void);
 			pwareas[channel].addr = ptr;
 			pwareas[channel].first = 0;
 			pwareas[channel].step = pw->sample_bits;
@@ -306,7 +332,7 @@ snd_pcm_pipewire_process(snd_pcm_pipewire_t *pw, struct pw_buffer *b,
 						io->format);
 
 			hw_ptr += xfer;
-			if (hw_ptr > pw->boundary)
+			if (hw_ptr >= pw->boundary)
 				hw_ptr -= pw->boundary;
 			pw->hw_ptr = hw_ptr;
 			*hw_avail -= xfer;
@@ -357,21 +383,22 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(buffers, MIN_BUFFERS, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(pw->blocks),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(size, size, INT_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(pw->stride),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(pw->stride));
 
 	pw_stream_update_params(pw->stream, params, n_params);
+
+	pw->negotiated = true;
+	pw_thread_loop_signal(pw->main_loop, false);
 }
 
-static void on_stream_io_changed(void *data, uint32_t id, void *area, uint32_t size)
+static void on_stream_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state, const char *error)
 {
 	snd_pcm_pipewire_t *pw = data;
-	switch (id) {
-	case SPA_IO_RateMatch:
-		pw->rate_match = area;
-		break;
-	default:
-		break;
+
+	if (state == PW_STREAM_STATE_ERROR) {
+		pw_log_warn("%s", error);
+		pw->error = -EIO;
+		update_active(&pw->io);
 	}
 }
 
@@ -389,36 +416,49 @@ static void on_stream_process(void *data)
 	snd_pcm_pipewire_t *pw = data;
 	snd_pcm_ioplug_t *io = &pw->io;
 	struct pw_buffer *b;
-	snd_pcm_uframes_t hw_avail, want, xfer;
+	snd_pcm_uframes_t hw_avail, before, want, xfer;
+	struct pw_time pwt;
+	int64_t delay;
 
-	pw_stream_get_time(pw->stream, &pw->time);
+	pw_stream_get_time_n(pw->stream, &pwt, sizeof(pwt));
 
-	if (pw->time.rate.num != 0) {
-		pw->time.delay = pw->time.delay * io->rate * pw->time.rate.num / pw->time.rate.denom;
-		pw->time.rate.denom = io->rate;
-		pw->time.rate.num = 1;
-	}
+	delay = pwt.delay;
+	if (pwt.rate.num != 0)
+		delay = delay * io->rate * pwt.rate.num / pwt.rate.denom;
 
-	hw_avail = snd_pcm_ioplug_hw_avail(io, pw->hw_ptr, io->appl_ptr);
+	before = hw_avail = snd_pcm_ioplug_hw_avail(io, pw->hw_ptr, io->appl_ptr);
 
-	if (pw->drained) {
-		pcm_poll_unblock_check(io); /* unblock socket for polling if needed */
-		return;
-	}
+	if (pw->drained)
+		goto done;
 
 	b = pw_stream_dequeue_buffer(pw->stream);
 	if (b == NULL)
 		return;
 
-	want = pw->rate_match ? pw->rate_match->size : hw_avail;
-	pw_log_trace("%p: avail:%lu want:%lu", pw, hw_avail, want);
+	want = b->requested ? b->requested : hw_avail;
+
+	SEQ_WRITE(pw->seq);
+
+	if (pw->now != pwt.now) {
+		pw->transfered = pw->buffered;
+		pw->buffered = 0;
+	}
 
 	xfer = snd_pcm_pipewire_process(pw, b, &hw_avail, want);
 
+	pw->delay = delay;
+	/* the buffer is now queued in the stream and consumed */
 	if (io->stream == SND_PCM_STREAM_PLAYBACK)
-		pw->time.delay += xfer;
-	else
-		pw->time.delay -= SPA_MIN(pw->time.delay, (int64_t)xfer);
+		pw->transfered += xfer;
+
+	/* more then requested data transfered, use them in next iteration */
+	pw->buffered = (want == 0 || pw->transfered < want) ?  0 : (pw->transfered % want);
+
+	pw->now = pwt.now;
+	SEQ_WRITE(pw->seq);
+
+	pw_log_trace("%p: avail-before:%lu avail:%lu want:%lu xfer:%lu hw:%lu appl:%lu",
+			pw, before, hw_avail, want, xfer, pw->hw_ptr, io->appl_ptr);
 
 	pw_stream_queue_buffer(pw->stream, b);
 
@@ -431,13 +471,14 @@ static void on_stream_process(void *data)
 			pw->drained = false;
 		}
 	}
-	pcm_poll_unblock_check(io); /* unblock socket for polling if needed */
+done:
+	update_active(io);
 }
 
 static const struct pw_stream_events stream_events = {
 	PW_VERSION_STREAM_EVENTS,
 	.param_changed = on_stream_param_changed,
-	.io_changed = on_stream_io_changed,
+	.state_changed = on_stream_state_changed,
 	.process = on_stream_process,
 	.drained = on_stream_drained,
 };
@@ -474,10 +515,8 @@ static int snd_pcm_pipewire_prepare(snd_pcm_ioplug_t *io)
 	snd_pcm_pipewire_t *pw = io->private_data;
 	snd_pcm_sw_params_t *swparams;
 	const struct spa_pod *params[1];
-	const char *str;
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-	struct pw_properties *props;
 	uint32_t min_period;
 
 	pw_thread_loop_lock(pw->main_loop);
@@ -486,6 +525,8 @@ static int snd_pcm_pipewire_prepare(snd_pcm_ioplug_t *io)
 	if (snd_pcm_sw_params_current(io->pcm, swparams) == 0) {
 		snd_pcm_sw_params_get_avail_min(swparams, &pw->min_avail);
 		snd_pcm_sw_params_get_boundary(swparams, &pw->boundary);
+		snd_pcm_sw_params_dump(swparams, pw->output);
+		fflush(pw->log_file);
 	} else {
 		pw->min_avail = io->period_size;
 		pw->boundary = io->buffer_size;
@@ -494,61 +535,39 @@ static int snd_pcm_pipewire_prepare(snd_pcm_ioplug_t *io)
 	min_period = (MIN_PERIOD * io->rate / 48000);
 	pw->min_avail = SPA_MAX(pw->min_avail, min_period);
 
-	pw_log_debug("%p: prepare %d %p %lu %ld", pw,
-			pw->error, pw->stream, io->period_size, pw->min_avail);
+	pw_log_debug("%p: prepare error:%d stream:%p buffer-size:%lu "
+			"period-size:%lu min-avail:%ld", pw, pw->error,
+			pw->stream, io->buffer_size, io->period_size, pw->min_avail);
+
 	if (pw->error >= 0 && pw->stream != NULL && !pw->hw_params_changed)
 		goto done;
 	pw->hw_params_changed = false;
 
+	pw_properties_setf(pw->props, PW_KEY_NODE_LATENCY, "%lu/%u", pw->min_avail, io->rate);
+	pw_properties_setf(pw->props, PW_KEY_NODE_RATE, "1/%u", io->rate);
+
+	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &pw->format);
+
 	if (pw->stream != NULL) {
-		pw_stream_destroy(pw->stream);
-		pw->stream = NULL;
+		pw_stream_update_properties(pw->stream, &pw->props->dict);
+		pw_stream_update_params(pw->stream, params, 1);
+		goto done;
 	}
 
-	props = NULL;
-	if ((str = getenv("PIPEWIRE_PROPS")) != NULL)
-		props = pw_properties_new_string(str);
-	if (props == NULL)
-		props = pw_properties_new(NULL, NULL);
-	if (props == NULL)
-		goto error;
-
-	pw_properties_set(props, PW_KEY_CLIENT_API, "alsa");
-	pw_properties_setf(props, PW_KEY_APP_NAME, "%s", pw_get_prgname());
-
-	if (pw_properties_get(props, PW_KEY_NODE_LATENCY) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%lu/%u", pw->min_avail, io->rate);
-	if (pw_properties_get(props, PW_KEY_NODE_RATE) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", io->rate);
-	if (pw->target != NULL &&
-		pw_properties_get(props, PW_KEY_NODE_TARGET) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_TARGET, "%s", pw->target);
-
-	if (pw_properties_get(props, PW_KEY_MEDIA_TYPE) == NULL)
-		pw_properties_set(props, PW_KEY_MEDIA_TYPE, "Audio");
-	if (pw_properties_get(props, PW_KEY_MEDIA_CATEGORY) == NULL)
-		pw_properties_set(props, PW_KEY_MEDIA_CATEGORY,
-				io->stream == SND_PCM_STREAM_PLAYBACK ?
-				"Playback" : "Capture");
-	if (pw->role != NULL &&
-		pw_properties_get(props, PW_KEY_MEDIA_ROLE) == NULL)
-		pw_properties_setf(props, PW_KEY_MEDIA_ROLE, "%s", pw->role);
-
-	pw->stream = pw_stream_new(pw->core, pw->node_name, props);
+	pw->stream = pw_stream_new(pw->core, NULL, pw_properties_copy(pw->props));
 	if (pw->stream == NULL)
 		goto error;
 
 	pw_stream_add_listener(pw->stream, &pw->stream_listener, &stream_events, pw);
 
-	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &pw->format);
 	pw->error = 0;
 
+	pw->negotiated = false;
 	pw_stream_connect(pw->stream,
 				io->stream == SND_PCM_STREAM_PLAYBACK ?
 				PW_DIRECTION_OUTPUT :
 				PW_DIRECTION_INPUT,
 				PW_ID_ANY,
-				pw->flags |
 				PW_STREAM_FLAG_AUTOCONNECT |
 				PW_STREAM_FLAG_MAP_BUFFERS |
 				PW_STREAM_FLAG_RT_PROCESS,
@@ -556,9 +575,15 @@ static int snd_pcm_pipewire_prepare(snd_pcm_ioplug_t *io)
 
 done:
 	pw->hw_ptr = 0;
+	pw->now = 0;
 	pw->xrun_detected = false;
 	pw->drained = false;
 	pw->draining = false;
+
+	while (!pw->negotiated && pw->error >= 0)
+		pw_thread_loop_wait(pw->main_loop);
+	if (pw->error < 0)
+		goto error;
 
 	pw_thread_loop_unlock(pw->main_loop);
 
@@ -566,7 +591,7 @@ done:
 
 error:
 	pw_thread_loop_unlock(pw->main_loop);
-	return -ENOMEM;
+	return pw->error < 0 ? pw->error : -ENOMEM;
 }
 
 static int snd_pcm_pipewire_start(snd_pcm_ioplug_t *io)
@@ -574,9 +599,8 @@ static int snd_pcm_pipewire_start(snd_pcm_ioplug_t *io)
 	snd_pcm_pipewire_t *pw = io->private_data;
 
 	pw_thread_loop_lock(pw->main_loop);
-	pw_log_debug("%p:", pw);
+	pw_log_debug("%p: start", pw);
 	pipewire_start(pw);
-	block_check(io); /* unblock socket for polling if needed */
 	pw_thread_loop_unlock(pw->main_loop);
 	return 0;
 }
@@ -585,8 +609,8 @@ static int snd_pcm_pipewire_stop(snd_pcm_ioplug_t *io)
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
 
-	pw_log_debug("%p:", pw);
-	pcm_poll_unblock_check(io);
+	pw_log_debug("%p: stop", pw);
+	update_active(io);
 
 	pw_thread_loop_lock(pw->main_loop);
 	if (pw->activated && pw->stream != NULL) {
@@ -599,7 +623,7 @@ static int snd_pcm_pipewire_stop(snd_pcm_ioplug_t *io)
 
 static int snd_pcm_pipewire_pause(snd_pcm_ioplug_t * io, int enable)
 {
-	pw_log_debug("%p:", io);
+	pw_log_debug("%p: pause", io);
 
 	if (enable)
 		snd_pcm_pipewire_stop(io);
@@ -651,6 +675,9 @@ static int snd_pcm_pipewire_hw_params(snd_pcm_ioplug_t * io,
 {
 	snd_pcm_pipewire_t *pw = io->private_data;
 	bool planar;
+
+	snd_pcm_hw_params_dump(params, pw->output);
+	fflush(pw->log_file);
 
 	pw_log_debug("%p: hw_params buffer_size:%lu period_size:%lu", pw, io->buffer_size, io->period_size);
 
@@ -727,6 +754,37 @@ static int snd_pcm_pipewire_hw_params(snd_pcm_ioplug_t * io,
 	return 0;
 }
 
+static int snd_pcm_pipewire_sw_params(snd_pcm_ioplug_t * io,
+				snd_pcm_sw_params_t * sw_params)
+{
+	snd_pcm_pipewire_t *pw = io->private_data;
+
+	pw_thread_loop_lock(pw->main_loop);
+	if (pw->stream) {
+		snd_pcm_uframes_t min_avail;
+		snd_pcm_sw_params_get_avail_min( sw_params, &min_avail);
+		snd_pcm_sw_params_get_boundary(sw_params, &pw->boundary);
+		if (min_avail != pw->min_avail) {
+			char latency[64];
+			struct spa_dict_item item[1];
+			uint32_t min_period = (MIN_PERIOD * io->rate / 48000);
+
+			pw->min_avail = SPA_MAX(min_avail, min_period);
+
+			spa_scnprintf(latency, sizeof(latency), "%lu/%u", pw->min_avail, io->rate);
+			item[0] = SPA_DICT_ITEM_INIT(PW_KEY_NODE_LATENCY, latency);
+
+			pw_log_debug("%p: sw_params update props %p %ld", pw, pw->stream, pw->min_avail);
+			pw_stream_update_properties(pw->stream, &SPA_DICT_INIT(item, 1));
+		}
+	} else {
+		pw_log_debug("%p: sw_params pre-prepare noop", pw);
+	}
+	pw_thread_loop_unlock(pw->main_loop);
+
+	return 0;
+}
+
 struct chmap_info {
 	enum snd_pcm_chmap_position pos;
 	enum spa_audio_channel channel;
@@ -774,10 +832,9 @@ static const struct chmap_info chmap_info[] = {
 
 static enum snd_pcm_chmap_position channel_to_chmap(enum spa_audio_channel channel)
 {
-	uint32_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(chmap_info); i++)
-		if (chmap_info[i].channel == channel)
-			return chmap_info[i].pos;
+	SPA_FOR_EACH_ELEMENT_VAR(chmap_info, info)
+		if (info->channel == channel)
+			return info->pos;
 	return SND_CHMAP_UNKNOWN;
 }
 
@@ -797,7 +854,10 @@ static int snd_pcm_pipewire_set_chmap(snd_pcm_ioplug_t * io,
 	pw->format.channels = map->channels;
 	for (i = 0; i < map->channels; i++) {
 		pw->format.position[i] = chmap_to_channel(map->pos[i]);
-		pw_log_debug("map %d: %d %d", i, map->pos[i], pw->format.position[i]);
+		pw_log_debug("map %d: %s / %s", i,
+				snd_pcm_chmap_name(map->pos[i]),
+				spa_debug_type_find_short_name(spa_type_audio_channel,
+					pw->format.position[i]));
 	}
 	return 1;
 }
@@ -861,13 +921,13 @@ static snd_pcm_ioplug_callback_t pipewire_pcm_callback = {
 	.poll_descriptors = snd_pcm_pipewire_poll_descriptors,
 	.poll_revents = snd_pcm_pipewire_poll_revents,
 	.hw_params = snd_pcm_pipewire_hw_params,
+	.sw_params = snd_pcm_pipewire_sw_params,
 	.set_chmap = snd_pcm_pipewire_set_chmap,
 	.get_chmap = snd_pcm_pipewire_get_chmap,
 	.query_chmaps = snd_pcm_pipewire_query_chmaps,
 };
 
-static int pipewire_set_hw_constraint(snd_pcm_pipewire_t *pw, int rate,
-		snd_pcm_format_t format, int channels, int period_bytes)
+static int pipewire_set_hw_constraint(snd_pcm_pipewire_t *pw)
 {
 	unsigned int access_list[] = {
 		SND_PCM_ACCESS_MMAP_INTERLEAVED,
@@ -893,32 +953,51 @@ static int pipewire_set_hw_constraint(snd_pcm_pipewire_t *pw, int rate,
 #endif
 		SND_PCM_FORMAT_U8,
 	};
+	int val;
 	int min_rate;
 	int max_rate;
 	int min_channels;
 	int max_channels;
 	int min_period_bytes;
 	int max_period_bytes;
+	int min_buffer_bytes;
+	int max_buffer_bytes;
+	const char *str;
+	snd_pcm_format_t format;
 	int err;
 
-	if (rate > 0) {
-		min_rate = max_rate = rate;
+	val = pw_properties_get_uint32(pw->props, "alsa.rate", 0);
+	if (val > 0) {
+		min_rate = max_rate = SPA_CLAMP(val, 1, MAX_RATE);
 	} else {
 		min_rate = 1;
 		max_rate = MAX_RATE;
 	}
-	if (channels > 0) {
-		min_channels = max_channels = channels;
+	val = pw_properties_get_uint32(pw->props, "alsa.channels", 0);
+	if (val > 0) {
+		min_channels = max_channels = SPA_CLAMP(val, 1, MAX_CHANNELS);
 	} else {
 		min_channels = 1;
 		max_channels = MAX_CHANNELS;
 	}
-	if (period_bytes > 0) {
-		min_period_bytes = max_period_bytes = period_bytes;
+	val = pw_properties_get_uint32(pw->props, "alsa.period-bytes", 0);
+	if (val > 0) {
+		min_period_bytes = max_period_bytes = SPA_CLAMP(val,
+				MIN_PERIOD_BYTES, MAX_PERIOD_BYTES);
 	} else {
-		min_period_bytes = 128;
-		max_period_bytes = 2*1024*1024;
+		min_period_bytes = MIN_PERIOD_BYTES;
+		max_period_bytes = MAX_PERIOD_BYTES;
 	}
+	val = pw_properties_get_uint32(pw->props, "alsa.buffer-bytes", 0);
+	if (val > 0) {
+		min_buffer_bytes = max_buffer_bytes = SPA_CLAMP(val,
+				MIN_BUFFER_BYTES, MAX_BUFFER_BYTES);
+	} else {
+		min_buffer_bytes = MIN_BUFFER_BYTES;
+		max_buffer_bytes = MAX_BUFFER_BYTES;
+	}
+	if (min_period_bytes * 2 > max_buffer_bytes)
+		min_period_bytes = max_period_bytes = max_buffer_bytes / 2;
 
 	if ((err = snd_pcm_ioplug_set_param_list(&pw->io, SND_PCM_IOPLUG_HW_ACCESS,
 						   SPA_N_ELEMENTS(access_list), access_list)) < 0 ||
@@ -927,17 +1006,20 @@ static int pipewire_set_hw_constraint(snd_pcm_pipewire_t *pw, int rate,
 		(err = snd_pcm_ioplug_set_param_minmax(&pw->io, SND_PCM_IOPLUG_HW_RATE,
 						   min_rate, max_rate)) < 0 ||
 		(err = snd_pcm_ioplug_set_param_minmax(&pw->io, SND_PCM_IOPLUG_HW_BUFFER_BYTES,
-						   MIN_BUFFERS*min_period_bytes,
-						   MIN_BUFFERS*max_period_bytes)) < 0 ||
+						   min_buffer_bytes,
+						   max_buffer_bytes)) < 0 ||
 		(err = snd_pcm_ioplug_set_param_minmax(&pw->io,
 						   SND_PCM_IOPLUG_HW_PERIOD_BYTES,
 						   min_period_bytes,
 						   max_period_bytes)) < 0 ||
 		(err = snd_pcm_ioplug_set_param_minmax(&pw->io, SND_PCM_IOPLUG_HW_PERIODS,
-						   MIN_BUFFERS, MAX_BUFFERS)) < 0) {
+						   MIN_BUFFERS, 1024)) < 0) {
 		pw_log_warn("Can't set param list: %s", snd_strerror(err));
 		return err;
 	}
+	format = SND_PCM_FORMAT_UNKNOWN;
+	if ((str = pw_properties_get(pw->props, "alsa.format")))
+		format = snd_pcm_format_value(str);
 
 	if (format != SND_PCM_FORMAT_UNKNOWN) {
 		err = snd_pcm_ioplug_set_param_list(&pw->io,
@@ -970,7 +1052,7 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char 
 	if (id == PW_ID_CORE) {
 		pw->error = res;
 		if (pw->fd != -1)
-			pcm_poll_unblock_check(&pw->io);
+			update_active(&pw->io);
 	}
 	pw_thread_loop_signal(pw->main_loop, false);
 }
@@ -980,24 +1062,40 @@ static const struct pw_core_events core_events = {
 	.error = on_core_error,
 };
 
-static int snd_pcm_pipewire_open(snd_pcm_t **pcmp, const char *name,
-				const char *node_name,
-				const char *server_name,
-				const char *playback_node,
-				const char *capture_node,
-				const char *role,
-				snd_pcm_stream_t stream,
-				int mode,
-				uint32_t flags,
-				int rate,
-				snd_pcm_format_t format,
-				int channels,
-				int period_bytes)
+
+static ssize_t log_write(void *cookie, const char *buf, size_t size)
+{
+	int len;
+
+	while (size > 0) {
+		len = strcspn(buf, "\n");
+		if (len > 0)
+			pw_log_debug("%.*s", (int)len, buf);
+		buf += len + 1;
+		size -= len + 1;
+	}
+	return size;
+}
+
+static cookie_io_functions_t io_funcs = {
+	.write = log_write,
+};
+
+static int execute_match(void *data, const char *location, const char *action,
+                const char *val, size_t len)
+{
+	snd_pcm_pipewire_t *pw = data;
+	if (spa_streq(action, "update-props"))
+		pw_properties_update_string(pw->props, val, len);
+	return 1;
+}
+
+static int snd_pcm_pipewire_open(snd_pcm_t **pcmp,
+		struct pw_properties *props, snd_pcm_stream_t stream, int mode)
 {
 	snd_pcm_pipewire_t *pw;
 	int err;
-	const char *str;
-	struct pw_properties *props = NULL;
+	const char *str, *node_name = NULL;
 	struct pw_loop *loop;
 
 	assert(pcmp);
@@ -1005,43 +1103,19 @@ static int snd_pcm_pipewire_open(snd_pcm_t **pcmp, const char *name,
 	if (!pw)
 		return -ENOMEM;
 
-	str = getenv("PIPEWIRE_REMOTE");
-	if (str != NULL && str[0] != '\0')
-		server_name = str;
-
-	str = getenv("PIPEWIRE_NODE");
-
-	pw_log_debug("%p: open %s %d %d %08x %d %s %d %d '%s'", pw, name,
-			stream, mode, flags, rate,
-			format != SND_PCM_FORMAT_UNKNOWN ? snd_pcm_format_name(format) : "none",
-			channels, period_bytes, str);
-
+	pw->props = props;
 	pw->fd = -1;
 	pw->io.poll_fd = -1;
-	pw->flags = flags;
-
-	if (node_name == NULL)
-		pw->node_name = spa_aprintf("ALSA %s",
-			       stream == SND_PCM_STREAM_PLAYBACK ? "Playback" : "Capture");
-	else
-		pw->node_name = strdup(node_name);
-
-	if (pw->node_name == NULL) {
+	pw->log_file = fopencookie(pw, "w", io_funcs);
+	if (pw->log_file == NULL) {
+		pw_log_error("can't create log file: %m");
 		err = -errno;
 		goto error;
 	}
-
-	pw->target = NULL;
-	if (str != NULL)
-		pw->target = strdup(str);
-	else {
-		if (stream == SND_PCM_STREAM_PLAYBACK)
-			pw->target = playback_node ? strdup(playback_node) : NULL;
-		else
-			pw->target = capture_node ? strdup(capture_node) : NULL;
+	if ((err = snd_output_stdio_attach(&pw->output, pw->log_file, 0)) < 0) {
+		pw_log_error("can't attach log file: %s", snd_strerror(err));
+		goto error;
 	}
-
-	pw->role = (role && *role) ? strdup(role) : NULL;
 
 	pw->main_loop = pw_thread_loop_new("alsa-pipewire", NULL);
 	if (pw->main_loop == NULL) {
@@ -1053,26 +1127,56 @@ static int snd_pcm_pipewire_open(snd_pcm_t **pcmp, const char *name,
 	if ((pw->context = pw_context_new(loop,
 					pw_properties_new(
 						PW_KEY_CONFIG_NAME, "client-rt.conf",
+						PW_KEY_CLIENT_API, "alsa",
 						NULL),
 					0)) == NULL) {
 		err = -errno;
 		goto error;
 	}
 
-	props = pw_properties_new(NULL, NULL);
+	pw_context_conf_update_props(pw->context, "alsa.properties", pw->props);
 
-	pw_properties_setf(props, PW_KEY_APP_NAME, "PipeWire ALSA [%s]",
-			pw_get_prgname());
+	pw_context_conf_section_match_rules(pw->context, "alsa.rules",
+			&pw_context_get_properties(pw->context)->dict, execute_match, pw);
 
-	if (server_name)
-		pw_properties_set(props, PW_KEY_REMOTE_NAME, server_name);
+	if (pw_properties_get(pw->props, PW_KEY_APP_NAME) == NULL)
+		pw_properties_setf(pw->props, PW_KEY_APP_NAME, "PipeWire ALSA [%s]",
+				pw_get_prgname());
+	if (pw_properties_get(pw->props, PW_KEY_NODE_NAME) == NULL)
+		pw_properties_setf(pw->props, PW_KEY_NODE_NAME, "alsa_%s.%s",
+			       stream == SND_PCM_STREAM_PLAYBACK ? "playback" : "capture",
+			       pw_get_prgname());
+	if (pw_properties_get(pw->props, PW_KEY_NODE_DESCRIPTION) == NULL)
+		pw_properties_setf(pw->props, PW_KEY_NODE_DESCRIPTION, "ALSA %s [%s]",
+			       stream == SND_PCM_STREAM_PLAYBACK ? "Playback" : "Capture",
+			       pw_get_prgname());
+	if (pw_properties_get(pw->props, PW_KEY_MEDIA_NAME) == NULL)
+		pw_properties_setf(pw->props, PW_KEY_MEDIA_NAME, "ALSA %s",
+			       stream == SND_PCM_STREAM_PLAYBACK ? "Playback" : "Capture");
+	if (pw_properties_get(pw->props, PW_KEY_MEDIA_TYPE) == NULL)
+		pw_properties_set(pw->props, PW_KEY_MEDIA_TYPE, "Audio");
+	if (pw_properties_get(pw->props, PW_KEY_MEDIA_CATEGORY) == NULL)
+		pw_properties_set(pw->props, PW_KEY_MEDIA_CATEGORY,
+				stream == SND_PCM_STREAM_PLAYBACK ?
+				"Playback" : "Capture");
+
+	str = getenv("PIPEWIRE_ALSA");
+	if (str != NULL)
+		pw_properties_update_string(pw->props, str, strlen(str));
+
+	str = getenv("PIPEWIRE_NODE");
+	if (str != NULL && str[0])
+		pw_properties_set(pw->props, PW_KEY_TARGET_OBJECT, str);
+
+	node_name = pw_properties_get(pw->props, PW_KEY_NODE_NAME);
+	if (pw_properties_get(pw->props, PW_KEY_MEDIA_NAME) == NULL)
+		pw_properties_set(pw->props, PW_KEY_MEDIA_NAME, node_name);
 
 	if ((err = pw_thread_loop_start(pw->main_loop)) < 0)
 		goto error;
 
 	pw_thread_loop_lock(pw->main_loop);
-	pw->core = pw_context_connect(pw->context, props, 0);
-	props = NULL;
+	pw->core = pw_context_connect(pw->context, pw_properties_copy(pw->props), 0);
 	if (pw->core == NULL) {
 		err = -errno;
 		pw_thread_loop_unlock(pw->main_loop);
@@ -1097,21 +1201,21 @@ static int snd_pcm_pipewire_open(snd_pcm_t **pcmp, const char *name,
 #endif
 	pw->io.flags |= SND_PCM_IOPLUG_FLAG_MONOTONIC;
 
-	if ((err = snd_pcm_ioplug_create(&pw->io, name, stream, mode)) < 0)
+	if ((err = snd_pcm_ioplug_create(&pw->io, node_name, stream, mode)) < 0)
 		goto error;
 
-	pw_log_debug("%p: open %s %d %d", pw, name, pw->io.stream, mode);
-
-	if ((err = pipewire_set_hw_constraint(pw, rate, format, channels,
-					period_bytes)) < 0)
+	if ((err = pipewire_set_hw_constraint(pw)) < 0)
 		goto error;
+
+	pw_log_debug("%p: opened name:%s stream:%s mode:%d", pw, node_name,
+			snd_pcm_stream_name(pw->io.stream), mode);
 
 	*pcmp = pw->io.pcm;
 
 	return 0;
 
 error:
-	pw_properties_free(props);
+	pw_log_debug("%p: failed to open %s :%s", pw, node_name, spa_strerror(err));
 	snd_pcm_pipewire_free(pw);
 	return err;
 }
@@ -1121,21 +1225,18 @@ SPA_EXPORT
 SND_PCM_PLUGIN_DEFINE_FUNC(pipewire)
 {
 	snd_config_iterator_t i, next;
-	const char *node_name = NULL;
-	const char *server_name = NULL;
-	const char *playback_node = NULL;
-	const char *capture_node = NULL;
-	const char *role = NULL;
-	snd_pcm_format_t format = SND_PCM_FORMAT_UNKNOWN;
-	int rate = 0;
-	int channels = 0;
-	int period_bytes = 0;
-	uint32_t flags = 0;
+	struct pw_properties *props;
+	const char *str;
+	long val;
 	int err;
 
 	pw_init(NULL, NULL);
 	if (strstr(pw_get_library_version(), "0.2") != NULL)
 		return -ENOTSUP;
+
+	props = pw_properties_new(NULL, NULL);
+	if (props == NULL)
+		return -errno;
 
 	PW_LOG_TOPIC_INIT(alsa_log_topic);
 
@@ -1147,76 +1248,93 @@ SND_PCM_PLUGIN_DEFINE_FUNC(pipewire)
 		if (spa_streq(id, "comment") || spa_streq(id, "type") || spa_streq(id, "hint"))
 			continue;
 		if (spa_streq(id, "name")) {
-			snd_config_get_string(n, &node_name);
+			if (snd_config_get_string(n, &str) == 0)
+				pw_properties_set(props, PW_KEY_NODE_NAME, str);
 			continue;
 		}
 		if (spa_streq(id, "server")) {
-			snd_config_get_string(n, &server_name);
+			if (snd_config_get_string(n, &str) == 0)
+				pw_properties_set(props, PW_KEY_REMOTE_NAME, str);
 			continue;
 		}
 		if (spa_streq(id, "playback_node")) {
-			snd_config_get_string(n, &playback_node);
+			if (stream == SND_PCM_STREAM_PLAYBACK &&
+			    snd_config_get_string(n, &str) == 0)
+				if (str != NULL && !spa_streq(str, "-1"))
+					pw_properties_set(props, PW_KEY_TARGET_OBJECT, str);
 			continue;
 		}
 		if (spa_streq(id, "capture_node")) {
-			snd_config_get_string(n, &capture_node);
+			if (stream == SND_PCM_STREAM_CAPTURE &&
+			    snd_config_get_string(n, &str) == 0)
+				if (str != NULL && !spa_streq(str, "-1"))
+					pw_properties_set(props, PW_KEY_TARGET_OBJECT, str);
 			continue;
 		}
 		if (spa_streq(id, "role")) {
-			snd_config_get_string(n, &role);
+			if (snd_config_get_string(n, &str) == 0)
+				if (str != NULL && *str)
+					pw_properties_set(props, PW_KEY_MEDIA_ROLE, str);
 			continue;
 		}
 		if (spa_streq(id, "exclusive")) {
 			if (snd_config_get_bool(n))
-				flags |= PW_STREAM_FLAG_EXCLUSIVE;
+				pw_properties_set(props, PW_KEY_NODE_EXCLUSIVE, "true");
 			continue;
 		}
 		if (spa_streq(id, "rate")) {
-			long val;
-
-			if (snd_config_get_integer(n, &val) == 0)
-				rate = val;
-			else
+			if (snd_config_get_integer(n, &val) == 0) {
+				if (val != 0)
+					pw_properties_setf(props, "alsa.rate", "%ld", val);
+			} else {
 				SNDERR("%s: invalid type", id);
+			}
 			continue;
 		}
 		if (spa_streq(id, "format")) {
-			const char *str;
-
 			if (snd_config_get_string(n, &str) == 0) {
-				format = snd_pcm_format_value(str);
-				if (format == SND_PCM_FORMAT_UNKNOWN)
-					SNDERR("%s: invalid value %s", id, str);
+				if (str != NULL && *str)
+					pw_properties_set(props, "alsa.format", str);
 			} else {
 				SNDERR("%s: invalid type", id);
 			}
 			continue;
 		}
 		if (spa_streq(id, "channels")) {
-			long val;
-
-			if (snd_config_get_integer(n, &val) == 0)
-				channels = val;
-			else
+			if (snd_config_get_integer(n, &val) == 0) {
+				if (val != 0)
+					pw_properties_setf(props, "alsa.channels", "%ld", val);
+			} else {
 				SNDERR("%s: invalid type", id);
+			}
 			continue;
 		}
 		if (spa_streq(id, "period_bytes")) {
+			if (snd_config_get_integer(n, &val) == 0) {
+				if (val != 0)
+					pw_properties_setf(props, "alsa.period-bytes", "%ld", val);
+			} else {
+				SNDERR("%s: invalid type", id);
+			}
+			continue;
+		}
+		if (spa_streq(id, "buffer_bytes")) {
 			long val;
 
-			if (snd_config_get_integer(n, &val) == 0)
-				period_bytes = val;
-			else
+			if (snd_config_get_integer(n, &val) == 0) {
+				if (val != 0)
+					pw_properties_setf(props, "alsa.buffer-bytes", "%ld", val);
+			} else {
 				SNDERR("%s: invalid type", id);
+			}
 			continue;
 		}
 		SNDERR("Unknown field %s", id);
+		pw_properties_free(props);
 		return -EINVAL;
 	}
 
-	err = snd_pcm_pipewire_open(pcmp, name, node_name, server_name, playback_node,
-			capture_node, role, stream, mode, flags, rate, format,
-			channels, period_bytes);
+	err = snd_pcm_pipewire_open(pcmp, props, stream, mode);
 
 	return err;
 }

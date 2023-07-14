@@ -1,26 +1,6 @@
-/* ALSA Card Profile
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* ALSA Card Profile */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "acp.h"
 #include "alsa-mixer.h"
@@ -33,6 +13,8 @@ acp_log_func _acp_log_func;
 void *_acp_log_data;
 
 struct spa_i18n *acp_i18n;
+
+#define DEFAULT_RATE	48000
 
 #define VOLUME_ACCURACY (PA_VOLUME_NORM/100)  /* don't require volume adjustments to be perfectly correct. don't necessarily extend granularity in software unless the differences get greater than this level */
 
@@ -255,10 +237,10 @@ static void init_device(pa_card *impl, pa_alsa_device *dev, pa_alsa_direction_t 
 			pa_idxset_string_compare_func);
 	if (m->ucm_context.ucm) {
 		dev->ucm_context = &m->ucm_context;
-		if (impl->ucm.alibpref != NULL) {
+		if (impl->ucm.alib_prefix != NULL) {
 			for (d = m->device_strings; *d; d++) {
-				if (pa_startswith(*d, impl->ucm.alibpref)) {
-					size_t plen = strlen(impl->ucm.alibpref);
+				if (pa_startswith(*d, impl->ucm.alib_prefix)) {
+					size_t plen = strlen(impl->ucm.alib_prefix);
 					size_t len = strlen(*d);
 					memmove(*d, (*d) + plen, len - plen + 1);
 					dev->device.flags |= ACP_DEVICE_UCM_DEVICE;
@@ -312,14 +294,15 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 	snd_pcm_uframes_t try_period_size, try_buffer_size;
 
 	ss.format = PA_SAMPLE_S32LE;
-	ss.rate = 48000;
-	ss.channels = 64;
+	ss.rate = impl->rate;
+	ss.channels = impl->pro_channels;
 
 	ap = pa_xnew0(pa_alsa_profile, 1);
 	ap->profile_set = ps;
 	ap->profile.name = ap->name = pa_xstrdup("pro-audio");
 	ap->profile.description = ap->description = pa_xstrdup(_("Pro Audio"));
 	ap->profile.available = ACP_AVAILABLE_YES;
+	ap->profile.flags = ACP_PROFILE_PRO;
 	ap->output_mappings = pa_idxset_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
 	ap->input_mappings = pa_idxset_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
 	pa_hashmap_put(ps->profiles, ap->name, ap);
@@ -381,8 +364,8 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 							&try_period_size, &try_buffer_size,
 							0, NULL, NULL, false))) {
 				pa_alsa_init_proplist_pcm(NULL, m->output_proplist, m->output_pcm);
-				snd_pcm_close(m->output_pcm);
-				m->output_pcm = NULL;
+				pa_proplist_setf(m->output_proplist, "clock.name", "api.alsa.%u", index);
+				pa_alsa_close(&m->output_pcm);
 				m->supported = true;
 				pa_channel_map_init_auto(&m->channel_map, m->sample_spec.channels, PA_CHANNEL_MAP_AUX);
 			}
@@ -411,8 +394,8 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 							&try_period_size, &try_buffer_size,
 							0, NULL, NULL, false))) {
 				pa_alsa_init_proplist_pcm(NULL, m->input_proplist, m->input_pcm);
-				snd_pcm_close(m->input_pcm);
-				m->input_pcm = NULL;
+				pa_proplist_setf(m->input_proplist, "clock.name", "api.alsa.%u", index);
+				pa_alsa_close(&m->input_pcm);
 				m->supported = true;
 				pa_channel_map_init_auto(&m->channel_map, m->sample_spec.channels, PA_CHANNEL_MAP_AUX);
 			}
@@ -446,8 +429,7 @@ static void add_profiles(pa_card *impl)
 	ap->profile.flags = ACP_PROFILE_OFF;
 	pa_hashmap_put(impl->profiles, ap->name, ap);
 
-	if (!impl->use_ucm)
-		add_pro_profile(impl, impl->card.index);
+	add_pro_profile(impl, impl->card.index);
 
 	PA_HASHMAP_FOREACH(ap, impl->profile_set->profiles, state) {
 		pa_alsa_mapping *m;
@@ -467,10 +449,12 @@ static void add_profiles(pa_card *impl)
 					pa_dynarray_append(&impl->out.devices, dev);
 				}
 				if (impl->use_ucm) {
-					pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
-						true, impl->ports, ap, NULL);
-					pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
-						true, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					if (m->ucm_context.ucm_devices) {
+						pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
+							true, impl->ports, ap, NULL);
+						pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
+							true, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					}
 				}
 				else
 					pa_alsa_path_set_add_ports(m->output_path_set, ap, impl->ports,
@@ -489,10 +473,12 @@ static void add_profiles(pa_card *impl)
 				}
 
 				if (impl->use_ucm) {
-					pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
-						false, impl->ports, ap, NULL);
-					pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
-						false, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					if (m->ucm_context.ucm_devices) {
+						pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context,
+							false, impl->ports, ap, NULL);
+						pa_alsa_ucm_add_ports(&dev->ports, m->proplist, &m->ucm_context,
+							false, impl, dev->pcm_handle, impl->profile_set->ignore_dB);
+					}
 				} else
 					pa_alsa_path_set_add_ports(m->input_path_set, ap, impl->ports,
 							dev->ports, NULL);
@@ -624,7 +610,7 @@ static int report_jack_state(snd_mixer_elem_t *melem, unsigned int mask)
 	pa_card *impl = snd_mixer_elem_get_callback_private(melem);
 	snd_hctl_elem_t *elem = snd_mixer_elem_get_private(melem);
 	snd_ctl_elem_value_t *elem_value;
-	bool plugged_in;
+	bool plugged_in, any_input_port_available;
 	void *state;
 	pa_alsa_jack *jack;
 	struct temp_port_avail *tp, *tports;
@@ -735,6 +721,31 @@ static int report_jack_state(snd_mixer_elem_t *melem, unsigned int mask)
 	if (impl->card.active_profile_index != ACP_INVALID_INDEX)
 		active_available = impl->card.profiles[impl->card.active_profile_index]->available;
 
+	/* First round - detect, if we have any input port available.
+	   If the hardware can report the state for all I/O jacks, only speakers
+	   may be plugged in. */
+	any_input_port_available = false;
+	PA_HASHMAP_FOREACH(profile, impl->profiles, state) {
+		pa_device_port *port;
+		void *state2;
+
+		if (profile->profile.flags & ACP_PROFILE_OFF)
+			continue;
+
+		PA_HASHMAP_FOREACH(port, impl->ports, state2) {
+			if (!pa_hashmap_get(port->profiles, profile->profile.name))
+				continue;
+
+			if (port->port.direction == ACP_DIRECTION_CAPTURE &&
+			    port->port.available != ACP_AVAILABLE_NO) {
+				any_input_port_available = true;
+				goto input_port_found;
+			}
+		}
+	}
+input_port_found:
+
+	/* Second round */
 	PA_HASHMAP_FOREACH(profile, impl->profiles, state) {
 		pa_device_port *port;
 		void *state2;
@@ -768,7 +779,7 @@ static int report_jack_state(snd_mixer_elem_t *melem, unsigned int mask)
 
 		if (has_input_port && !has_output_port && found_available_input_port)
 			available = ACP_AVAILABLE_YES;
-		if (has_output_port && !has_input_port && found_available_output_port)
+		if (has_output_port && (!has_input_port || !any_input_port_available) && found_available_output_port)
 			available = ACP_AVAILABLE_YES;
 		if (has_output_port && has_input_port && found_available_output_port && found_available_input_port)
 			available = ACP_AVAILABLE_YES;
@@ -1056,6 +1067,9 @@ static int read_volume(pa_alsa_device *dev)
 	uint32_t i;
 	int res;
 
+	if (!dev->mixer_handle)
+		return 0;
+
 	if ((res = pa_alsa_path_get_volume(dev->mixer_path, dev->mixer_handle, &dev->mapping->channel_map, &r)) < 0)
 		return res;
 
@@ -1086,6 +1100,9 @@ static void set_volume(pa_alsa_device *dev, const pa_cvolume *v)
 	pa_cvolume r;
 
 	dev->real_volume = *v;
+
+	if (!dev->mixer_handle)
+		return;
 
 	/* Shift up by the base volume */
 	pa_sw_cvolume_divide_scalar(&r, &dev->real_volume, dev->base_volume);
@@ -1137,6 +1154,9 @@ static int read_mute(pa_alsa_device *dev)
 	bool mute;
 	int res;
 
+	if (!dev->mixer_handle)
+		return 0;
+
 	if ((res = pa_alsa_path_get_mute(dev->mixer_path, dev->mixer_handle, &mute)) < 0)
 		return res;
 
@@ -1155,6 +1175,10 @@ static int read_mute(pa_alsa_device *dev)
 static void set_mute(pa_alsa_device *dev, bool mute)
 {
 	dev->muted = mute;
+
+	if (!dev->mixer_handle)
+		return;
+
 	pa_alsa_path_set_mute(dev->mixer_path, dev->mixer_handle, mute);
 }
 
@@ -1308,7 +1332,6 @@ static int device_disable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_devic
 static int device_enable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_device *dev)
 {
 	const char *mod_name;
-	bool ignore_dB = false;
 	uint32_t i, port_index;
 	int res;
 
@@ -1325,7 +1348,7 @@ static int device_enable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_device
 
 	dev->device.flags |= ACP_DEVICE_ACTIVE;
 
-	find_mixer(impl, dev, NULL, ignore_dB);
+	find_mixer(impl, dev, NULL, impl->ignore_dB);
 
 	/* Synchronize priority values, as it may have changed when setting the profile */
 	for (i = 0; i < impl->card.n_ports; i++) {
@@ -1346,7 +1369,7 @@ static int device_enable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_device
 	if (dev->active_port)
 		dev->active_port->port.flags |= ACP_PORT_ACTIVE;
 
-	if ((res = setup_mixer(impl, dev, ignore_dB)) < 0)
+	if ((res = setup_mixer(impl, dev, impl->ignore_dB)) < 0)
 		return res;
 
 	if (dev->read_volume)
@@ -1404,7 +1427,7 @@ int acp_card_set_profile(struct acp_card *card, uint32_t new_index, uint32_t fla
 	}
 
 	/* if UCM is available for this card then update the verb */
-	if (impl->use_ucm) {
+	if (impl->use_ucm && !(np->profile.flags & ACP_PROFILE_PRO)) {
 		if ((res = pa_alsa_ucm_set_profile(&impl->ucm, impl,
 		    np->profile.flags & ACP_PROFILE_OFF ? NULL : np->profile.name,
 		    op ? op->profile.name : NULL)) < 0) {
@@ -1414,20 +1437,26 @@ int acp_card_set_profile(struct acp_card *card, uint32_t new_index, uint32_t fla
 
 	if (np->output_mappings) {
 		PA_IDXSET_FOREACH(am, np->output_mappings, idx) {
-			if (impl->use_ucm)
+			if (impl->use_ucm) {
 				/* Update ports priorities */
-				pa_alsa_ucm_add_ports_combination(am->output.ports, &am->ucm_context,
-					true, impl->ports, np, NULL);
+				if (am->ucm_context.ucm_devices) {
+					pa_alsa_ucm_add_ports_combination(am->output.ports, &am->ucm_context,
+						true, impl->ports, np, NULL);
+				}
+			}
 			device_enable(impl, am, &am->output);
 		}
 	}
 
 	if (np->input_mappings) {
 		PA_IDXSET_FOREACH(am, np->input_mappings, idx) {
-			if (impl->use_ucm)
+			if (impl->use_ucm) {
 				/* Update ports priorities */
-				pa_alsa_ucm_add_ports_combination(am->input.ports, &am->ucm_context,
-					false, impl->ports, np, NULL);
+				if (am->ucm_context.ucm_devices) {
+					pa_alsa_ucm_add_ports_combination(am->input.ports, &am->ucm_context,
+						false, impl->ports, np, NULL);
+				}
+			}
 			device_enable(impl, am, &am->input);
 		}
 	}
@@ -1493,7 +1522,6 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 	struct acp_card *card;
 	const char *s, *profile_set = NULL, *profile = NULL;
 	char device_id[16];
-	bool ignore_dB = false;
 	uint32_t profile_index;
 	int res;
 
@@ -1514,6 +1542,9 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 	impl->use_ucm = true;
 	impl->auto_profile = true;
 	impl->auto_port = true;
+	impl->ignore_dB = false;
+	impl->rate = DEFAULT_RATE;
+	impl->pro_channels = 64;
 
 	if (props) {
 		if ((s = acp_dict_lookup(props, "api.alsa.use-ucm")) != NULL)
@@ -1521,7 +1552,7 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 		if ((s = acp_dict_lookup(props, "api.alsa.soft-mixer")) != NULL)
 			impl->soft_mixer = spa_atob(s);
 		if ((s = acp_dict_lookup(props, "api.alsa.ignore-dB")) != NULL)
-			ignore_dB = spa_atob(s);
+			impl->ignore_dB = spa_atob(s);
 		if ((s = acp_dict_lookup(props, "device.profile-set")) != NULL)
 			profile_set = s;
 		if ((s = acp_dict_lookup(props, "device.profile")) != NULL)
@@ -1530,10 +1561,14 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 			impl->auto_profile = spa_atob(s);
 		if ((s = acp_dict_lookup(props, "api.acp.auto-port")) != NULL)
 			impl->auto_port = spa_atob(s);
+		if ((s = acp_dict_lookup(props, "api.acp.probe-rate")) != NULL)
+			impl->rate = atoi(s);
+		if ((s = acp_dict_lookup(props, "api.acp.pro-channels")) != NULL)
+			impl->pro_channels = atoi(s);
 	}
 
 	impl->ucm.default_sample_spec.format = PA_SAMPLE_S16NE;
-	impl->ucm.default_sample_spec.rate = 44100;
+	impl->ucm.default_sample_spec.rate = impl->rate;
 	impl->ucm.default_sample_spec.channels = 2;
 	pa_channel_map_init_extend(&impl->ucm.default_channel_map,
 			impl->ucm.default_sample_spec.channels, PA_CHANNEL_MAP_ALSA);
@@ -1554,7 +1589,7 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 
 	res = impl->use_ucm ? pa_alsa_ucm_query_profiles(&impl->ucm, card->index) : -1;
 	if (res == -PA_ALSA_ERR_UCM_LINKED) {
-		res = -ENOENT;
+		res = -EEXIST;
 		goto error;
 	}
 	if (res == 0) {
@@ -1569,7 +1604,7 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 		goto error;
 	}
 
-	impl->profile_set->ignore_dB = ignore_dB;
+	impl->profile_set->ignore_dB = impl->ignore_dB;
 
 	pa_alsa_profile_set_probe(impl->profile_set, impl->ucm.mixers,
 			device_id,
@@ -1733,7 +1768,8 @@ static void sync_mixer(pa_alsa_device *d, pa_device_port *port)
 		setting = data->setting;
 	}
 
-	pa_alsa_path_select(d->mixer_path, setting, d->mixer_handle, d->muted);
+	if (d->mixer_handle)
+		pa_alsa_path_select(d->mixer_path, setting, d->mixer_handle, d->muted);
 
 	if (d->set_mute)
 		d->set_mute(d, d->muted);

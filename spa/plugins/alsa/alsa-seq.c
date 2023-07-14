@@ -1,26 +1,6 @@
-/* Spa ALSA Sequencer
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa ALSA Sequencer */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +19,6 @@
 
 #include "alsa.h"
 
-#include "dll.h"
 #include "alsa-seq.h"
 
 #define CHECK(s,msg,...) if ((res = (s)) < 0) { spa_log_error(state->log, msg ": %s", ##__VA_ARGS__, snd_strerror(res)); return res; }
@@ -132,13 +111,19 @@ static int seq_close(struct seq_state *state, struct seq_conn *conn)
 static int init_stream(struct seq_state *state, enum spa_direction direction)
 {
 	struct seq_stream *stream = &state->streams[direction];
+	int res;
 	stream->direction = direction;
 	if (direction == SPA_DIRECTION_INPUT) {
 		stream->caps = SND_SEQ_PORT_CAP_SUBS_WRITE;
 	} else {
 		stream->caps = SND_SEQ_PORT_CAP_SUBS_READ;
 	}
-	snd_midi_event_new(MAX_EVENT_SIZE, &stream->codec);
+	if ((res = snd_midi_event_new(MAX_EVENT_SIZE, &stream->codec)) < 0) {
+		spa_log_error(state->log, "can make event decoder: %s",
+				snd_strerror(res));
+		return res;
+	}
+	snd_midi_event_no_status(stream->codec, 1);
 	memset(stream->ports, 0, sizeof(stream->ports));
 	return 0;
 }
@@ -146,7 +131,9 @@ static int init_stream(struct seq_state *state, enum spa_direction direction)
 static int uninit_stream(struct seq_state *state, enum spa_direction direction)
 {
 	struct seq_stream *stream = &state->streams[direction];
-	snd_midi_event_free(stream->codec);
+	if (stream->codec)
+		snd_midi_event_free(stream->codec);
+	stream->codec = NULL;
 	return 0;
 }
 
@@ -179,7 +166,7 @@ static void init_ports(struct seq_state *state)
 
 static void debug_event(struct seq_state *state, snd_seq_event_t *ev)
 {
-	if (SPA_LIKELY(!spa_log_level_enabled(state->log, SPA_LOG_LEVEL_TRACE)))
+	if (SPA_LIKELY(!spa_log_level_topic_enabled(state->log, SPA_LOG_TOPIC_DEFAULT, SPA_LOG_LEVEL_TRACE)))
 		return;
 
 	spa_log_trace(state->log, "event type:%d flags:0x%x", ev->type, ev->flags);
@@ -544,12 +531,6 @@ static int process_read(struct seq_state *state)
 			continue;
 		}
 
-		/* fixup NoteOn with vel 0 */
-		if ((data[0] & 0xF0) == 0x90 && data[2] == 0x00) {
-			data[0] = 0x80 + (data[0] & 0x0F);
-			data[2] = 0x40;
-		}
-
 		/* queue_time is the estimated current time of the queue as calculated by
 		 * the DLL. Calculate the age of the event. */
 		ev_time = SPA_TIMESPEC_TO_NSEC(&ev->time.time);
@@ -585,10 +566,10 @@ static int process_read(struct seq_state *state)
 			continue;
 
 		if (prepare_buffer(state, port) >= 0) {
-			port->buffer->buf->datas[0].chunk->offset = 0;
-			port->buffer->buf->datas[0].chunk->size = port->builder.state.offset,
-
 			spa_pod_builder_pop(&port->builder, &port->frame);
+
+			port->buffer->buf->datas[0].chunk->offset = 0;
+			port->buffer->buf->datas[0].chunk->size = port->builder.state.offset;
 
 			/* move buffer to ready queue */
 			spa_list_remove(&port->buffer->link);
@@ -701,6 +682,21 @@ static int process_write(struct seq_state *state)
 	return res;
 }
 
+static void update_position(struct seq_state *state)
+{
+	if (SPA_LIKELY(state->position)) {
+		struct spa_io_clock *clock = &state->position->clock;
+		state->rate = clock->rate;
+		if (state->rate.num == 0 || state->rate.denom == 0)
+			state->rate = SPA_FRACTION(1, 48000);
+		state->duration = clock->duration;
+	} else {
+		state->rate = SPA_FRACTION(1, 48000);
+		state->duration = 1024;
+	}
+	state->threshold = state->duration;
+}
+
 static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
 {
 	snd_seq_queue_status_t *status;
@@ -708,16 +704,6 @@ static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
 	uint64_t queue_real;
 	double err, corr;
 	uint64_t queue_elapsed;
-
-	if (state->position) {
-		struct spa_io_clock *clock = &state->position->clock;
-		state->rate = clock->rate;
-		state->duration = clock->duration;
-	} else {
-		state->rate = SPA_FRACTION(1, 48000);
-		state->duration = 1024;
-	}
-	state->threshold = state->duration;
 
 	corr = 1.0 - (state->dll.z2 + state->dll.z3);
 
@@ -758,7 +744,8 @@ static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
 
 	if (!follower && state->clock) {
 		state->clock->nsec = nsec;
-		state->clock->position += state->duration;
+		state->clock->rate = state->rate;
+		state->clock->position += state->clock->duration;
 		state->clock->duration = state->duration;
 		state->clock->delay = state->duration * corr;
 		state->clock->rate_diff = corr;
@@ -774,6 +761,8 @@ static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
 int spa_alsa_seq_process(struct seq_state *state)
 {
 	int res;
+
+	update_position(state);
 
 	res = process_recycle(state);
 
@@ -792,18 +781,36 @@ static void alsa_on_timeout_event(struct spa_source *source)
 	uint64_t expire;
 	int res;
 
-	if (state->started && spa_system_timerfd_read(state->data_system, state->timerfd, &expire) < 0)
-		spa_log_warn(state->log, "error reading timerfd: %m");
+	if (state->started) {
+		if ((res = spa_system_timerfd_read(state->data_system, state->timerfd, &expire)) < 0) {
+			if (res != -EAGAIN)
+				spa_log_warn(state->log, "%p: error reading timerfd: %s",
+						state, spa_strerror(res));
+			return;
+		}
+	}
 
 	state->current_time = state->next_time;
 
 	spa_log_trace(state->log, "timeout %"PRIu64, state->current_time);
 
+	if (SPA_LIKELY(state->position)) {
+		struct spa_io_clock *clock = &state->position->clock;
+		state->rate = clock->target_rate;
+		if (state->rate.num == 0 || state->rate.denom == 0)
+			state->rate = SPA_FRACTION(1, 48000);
+		state->duration = clock->target_duration;
+	} else {
+		state->rate = SPA_FRACTION(1, 48000);
+		state->duration = 1024;
+	}
+	state->threshold = state->duration;
+
 	update_time(state, state->current_time, false);
 
 	res = process_read(state);
-	if (res > 0)
-		spa_node_call_ready(&state->callbacks, res);
+	if (res >= 0)
+		spa_node_call_ready(&state->callbacks, res | SPA_STATUS_NEED_DATA);
 
 	set_timeout(state, state->next_time);
 }
@@ -877,15 +884,7 @@ int spa_alsa_seq_start(struct seq_state *state)
 	while (snd_seq_drain_output(state->event.hndl) > 0)
 		sleep(1);
 
-	if (state->position) {
-		struct spa_io_clock *clock = &state->position->clock;
-		state->rate = clock->rate;
-		state->duration = clock->duration;
-	} else {
-		state->rate = SPA_FRACTION(1, 48000);
-		state->duration = 1024;
-	}
-	state->threshold = state->duration;
+	update_position(state);
 
 	state->started = true;
 

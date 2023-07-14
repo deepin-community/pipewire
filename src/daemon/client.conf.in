@@ -2,6 +2,11 @@
 #
 # Copy and edit this file in @PIPEWIRE_CONFIG_DIR@ for system-wide changes
 # or in ~/.config/pipewire for local changes.
+#
+# It is also possible to place a file with an updated section in
+# @PIPEWIRE_CONFIG_DIR@/client.conf.d/ for system-wide changes or in
+# ~/.config/pipewire/client.conf.d/ for local changes.
+#
 
 context.properties = {
     ## Configure properties in the system.
@@ -9,6 +14,8 @@ context.properties = {
     #mem.allow-mlock = true
     #mem.mlock-all   = false
     log.level        = 0
+
+    #default.clock.quantum-limit = 8192
 }
 
 context.spa-libs = {
@@ -24,8 +31,9 @@ context.spa-libs = {
 
 context.modules = [
     #{ name = <module-name>
-    #    [ args  = { <key> = <value> ... } ]
-    #    [ flags = [ [ ifexists ] [ nofail ] ]
+    #    ( args  = { <key> = <value> ... } )
+    #    ( flags = [ ( ifexists ) ( nofail ) ] )
+    #    ( condition = [ { <key> = <value> ... } ... ] )
     #}
     #
     # Loads a module with the given parameters.
@@ -66,7 +74,13 @@ stream.properties = {
     #node.autoconnect      = true
     #resample.quality      = 4
     #channelmix.normalize  = false
-    #channelmix.mix-lfe    = false
-    #channelmix.upmix      = false
-    #channelmix.lfe-cutoff = 0
+    #channelmix.mix-lfe    = true
+    #channelmix.upmix      = true
+    #channelmix.upmix-method = psd  # none, simple
+    #channelmix.lfe-cutoff = 150
+    #channelmix.fc-cutoff  = 12000
+    #channelmix.rear-delay = 12.0
+    #channelmix.stereo-widen = 0.0
+    #channelmix.hilbert-taps = 0
+    #dither.noise = 0
 }

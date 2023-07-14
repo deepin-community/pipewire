@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdint.h>
 #include <stddef.h>
@@ -45,6 +25,7 @@ PW_LOG_TOPIC_EXTERN(mod_topic_connection);
 #include <spa/debug/pod.h>
 
 #include "connection.h"
+#include "defs.h"
 
 #define MAX_BUFFER_SIZE (1024 * 32)
 #define MAX_FDS 1024u
@@ -139,8 +120,13 @@ uint32_t pw_protocol_native_connection_add_fd(struct pw_protocol_native_connecti
 	}
 
 	buf->msg.fds[index] = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+	if (buf->msg.fds[index] == -1) {
+		pw_log_error("connection %p: can't DUP fd:%d %m", conn, fd);
+		return SPA_IDX_INVALID;
+	}
 	buf->msg.n_fds++;
-	pw_log_debug("connection %p: add fd %d at index %d", conn, fd, index);
+	pw_log_debug("connection %p: add fd %d (new fd:%d) at index %d",
+			conn, fd, buf->msg.fds[index], index);
 
 	return index;
 }
@@ -150,31 +136,76 @@ static void *connection_ensure_size(struct pw_protocol_native_connection *conn, 
 	int res;
 
 	if (buf->buffer_size + size > buf->buffer_maxsize) {
-		buf->buffer_maxsize = SPA_ROUND_UP_N(buf->buffer_size + size, MAX_BUFFER_SIZE);
-		buf->buffer_data = realloc(buf->buffer_data, buf->buffer_maxsize);
-		if (buf->buffer_data == NULL) {
+		void *np;
+		size_t ns;
+
+		ns = SPA_ROUND_UP_N(buf->buffer_size + size, MAX_BUFFER_SIZE);
+		np = realloc(buf->buffer_data, ns);
+		if (np == NULL) {
 			res = -errno;
+			free(buf->buffer_data);
 			buf->buffer_maxsize = 0;
 			spa_hook_list_call(&conn->listener_list,
 					struct pw_protocol_native_connection_events,
-					error, 0, -res);
+					error, 0, res);
 			errno = -res;
 			return NULL;
 		}
+		buf->buffer_maxsize = ns;
+		buf->buffer_data = np;
 		pw_log_debug("connection %p: resize buffer to %zd %zd %zd",
 			    conn, buf->buffer_size, size, buf->buffer_maxsize);
 	}
 	return (uint8_t *) buf->buffer_data + buf->buffer_size;
 }
 
+static void handle_connection_error(struct pw_protocol_native_connection *conn, int res)
+{
+	if (res == EPIPE || res == ECONNRESET)
+		pw_log_info("connection %p: could not recvmsg on fd:%d: %s", conn, conn->fd, strerror(res));
+	else
+		pw_log_error("connection %p: could not recvmsg on fd:%d: %s", conn, conn->fd, strerror(res));
+}
+
+static size_t cmsg_data_length(const struct cmsghdr *cmsg)
+{
+	const void *begin = CMSG_DATA(cmsg);
+	const void *end = SPA_PTROFF(cmsg, cmsg->cmsg_len, void);
+
+	spa_assert(begin <= end);
+
+	return SPA_PTRDIFF(end, begin);
+}
+
+static void close_all_fds(struct msghdr *msg, struct cmsghdr *from)
+{
+	for (; from != NULL; from = CMSG_NXTHDR(msg, from)) {
+		if (from->cmsg_level != SOL_SOCKET || from->cmsg_type != SCM_RIGHTS)
+			continue;
+
+		size_t n_fds = cmsg_data_length(from) / sizeof(int);
+		for (size_t i = 0; i < n_fds; i++) {
+			const void *p = SPA_PTROFF(CMSG_DATA(from), sizeof(int) * i, void);
+			int fd;
+
+			memcpy(&fd, p, sizeof(fd));
+			pw_log_debug("%p: close fd:%d", msg, fd);
+			close(fd);
+		}
+	}
+}
+
 static int refill_buffer(struct pw_protocol_native_connection *conn, struct buffer *buf)
 {
 	ssize_t len;
-	struct cmsghdr *cmsg;
+	struct cmsghdr *cmsg = NULL;
 	struct msghdr msg = { 0 };
 	struct iovec iov[1];
-	char cmsgbuf[CMSG_SPACE(MAX_FDS_MSG * sizeof(int))];
-	int n_fds = 0;
+	union {
+		char cmsgbuf[CMSG_SPACE(MAX_FDS_MSG * sizeof(int))];
+		struct cmsghdr align;
+	} cmsgbuf;
+	int i, n_fds = 0, *fds;
 	size_t avail;
 
 	avail = buf->buffer_maxsize - buf->buffer_size;
@@ -183,14 +214,14 @@ static int refill_buffer(struct pw_protocol_native_connection *conn, struct buff
 	iov[0].iov_len = avail;
 	msg.msg_iov = iov;
 	msg.msg_iovlen = 1;
-	msg.msg_control = cmsgbuf;
+	msg.msg_control = &cmsgbuf;
 	msg.msg_controllen = sizeof(cmsgbuf);
 	msg.msg_flags = MSG_CMSG_CLOEXEC | MSG_DONTWAIT;
 
 	while (true) {
 		len = recvmsg(conn->fd, &msg, msg.msg_flags);
 		if (msg.msg_flags & MSG_CTRUNC)
-			return -EPROTO;
+			goto cmsgs_truncated;
 		if (len == 0 && avail != 0)
 			return -EPIPE;
 		else if (len < 0) {
@@ -210,12 +241,14 @@ static int refill_buffer(struct pw_protocol_native_connection *conn, struct buff
 		if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS)
 			continue;
 
-		n_fds =
-		    (cmsg->cmsg_len - ((char *) CMSG_DATA(cmsg) - (char *) cmsg)) / sizeof(int);
+		n_fds = cmsg_data_length(cmsg) / sizeof(int);
+		fds = (int*)CMSG_DATA(cmsg);
 		if (n_fds + buf->n_fds > MAX_FDS)
-			return -EPROTO;
-		memcpy(&buf->fds[buf->n_fds], CMSG_DATA(cmsg), n_fds * sizeof(int));
-		buf->n_fds += n_fds;
+			goto too_many_fds;
+		for (i = 0; i < n_fds; i++) {
+			pw_log_debug("connection %p: buffer:%p got fd:%d", conn, buf, fds[i]);
+			buf->fds[buf->n_fds++] = fds[i];
+		}
 	}
 	pw_log_trace("connection %p: %d read %zd bytes and %d fds", conn, conn->fd, len,
 		     n_fds);
@@ -224,21 +257,39 @@ static int refill_buffer(struct pw_protocol_native_connection *conn, struct buff
 
 	/* ERRORS */
 recv_error:
-	pw_log_error("connection %p: could not recvmsg on fd:%d: %m", conn, conn->fd);
+	handle_connection_error(conn, errno);
 	return -errno;
+
+cmsgs_truncated:
+	pw_log_debug("connection %p: cmsg truncated", conn);
+	close_all_fds(&msg, CMSG_FIRSTHDR(&msg));
+	return -EPROTO;
+
+too_many_fds:
+	pw_log_debug("connection %p: too many fds", conn);
+	close_all_fds(&msg, cmsg);
+	return -EPROTO;
 }
 
 static void clear_buffer(struct buffer *buf, bool fds)
 {
 	uint32_t i;
+
+	pw_log_debug("%p clear fds:%d n_fds:%d", buf, fds, buf->n_fds);
 	if (fds) {
-		for (i = 0; i < buf->n_fds; i++)
+		for (i = 0; i < buf->n_fds; i++) {
+			pw_log_debug("%p: close fd:%d", buf, buf->fds[i]);
 			close(buf->fds[i]);
+		}
+		buf->n_fds = 0;
+		buf->fds_offset = 0;
+	} else {
+		buf->n_fds -= SPA_MIN(buf->fds_offset, buf->n_fds);
+		memmove(buf->fds, &buf->fds[buf->fds_offset], buf->n_fds * sizeof(int));
+		buf->fds_offset = 0;
 	}
-	buf->n_fds = 0;
 	buf->buffer_size = 0;
 	buf->offset = 0;
-	buf->fds_offset = 0;
 }
 
 /** Prepare connection for calling from reentered context.
@@ -556,6 +607,38 @@ pw_protocol_native_connection_get_next(struct pw_protocol_native_connection *con
 	return 1;
 }
 
+/** Get footer data from the tail of the current packet.
+ *
+ * \param conn the connection
+ * \param msg current message
+ * \return footer POD, or NULL if no valid footer present
+ *
+ * \memberof pw_protocol_native_connection
+ */
+struct spa_pod *pw_protocol_native_connection_get_footer(struct pw_protocol_native_connection *conn,
+		const struct pw_protocol_native_message *msg)
+{
+	struct impl *impl = SPA_CONTAINER_OF(conn, struct impl, this);
+	struct spa_pod *pod;
+
+	if (impl->version != 3)
+		return NULL;
+
+	/*
+	 * Protocol version 3 footer: a single SPA POD
+	 */
+
+	/* Footer immediately follows the message POD, if it is present */
+	if ((pod = get_first_pod_from_data(msg->data, msg->size, 0)) == NULL)
+		return NULL;
+	pod = get_first_pod_from_data(msg->data, msg->size, SPA_POD_SIZE(pod));
+	if (pod == NULL)
+		return NULL;
+	pw_log_trace("connection %p: recv message footer, size:%zu",
+			conn, (size_t)SPA_POD_SIZE(pod));
+	return pod;
+}
+
 static inline void *begin_write(struct pw_protocol_native_connection *conn, uint32_t size)
 {
 	struct impl *impl = SPA_CONTAINER_OF(conn, struct impl, this);
@@ -636,9 +719,13 @@ pw_protocol_native_connection_end(struct pw_protocol_native_connection *conn,
 		buf->n_fds = buf->msg.n_fds;
 
 	if (mod_topic_connection->level >= SPA_LOG_LEVEL_DEBUG) {
-		pw_log_debug(">>>>>>>>> out: id:%d op:%d size:%d seq:%d",
-				buf->msg.id, buf->msg.opcode, size, buf->msg.seq);
+		pw_logt_debug(mod_topic_connection,
+			">>>>>>>>> out: id:%d op:%d size:%d seq:%d fds:%d",
+				buf->msg.id, buf->msg.opcode, size, buf->msg.seq,
+				buf->msg.n_fds);
 	        spa_debug_pod(0, NULL, SPA_PTROFF(p, impl->hdr_size, struct spa_pod));
+		pw_logt_debug(mod_topic_connection,
+			">>>>>>>>> out: done");
 	}
 
 	buf->seq = (buf->seq + 1) & SPA_ASYNC_SEQ_MASK;
@@ -666,7 +753,10 @@ int pw_protocol_native_connection_flush(struct pw_protocol_native_connection *co
 	struct msghdr msg = { 0 };
 	struct iovec iov[1];
 	struct cmsghdr *cmsg;
-	char cmsgbuf[CMSG_SPACE(MAX_FDS_MSG * sizeof(int))];
+	union {
+		char cmsgbuf[CMSG_SPACE(MAX_FDS_MSG * sizeof(int))];
+		struct cmsghdr align;
+	} cmsgbuf;
 	int res = 0, *fds;
 	uint32_t fds_len, to_close, n_fds, outfds, i;
 	struct buffer *buf;
@@ -697,7 +787,7 @@ int pw_protocol_native_connection_flush(struct pw_protocol_native_connection *co
 		msg.msg_iovlen = 1;
 
 		if (outfds > 0) {
-			msg.msg_control = cmsgbuf;
+			msg.msg_control = &cmsgbuf;
 			msg.msg_controllen = CMSG_SPACE(fds_len);
 			cmsg = CMSG_FIRSTHDR(&msg);
 			cmsg->cmsg_level = SOL_SOCKET;
@@ -738,8 +828,10 @@ exit:
 	if (size > 0)
 		memmove(buf->buffer_data, data, size);
 	buf->buffer_size = size;
-	for (i = 0; i < to_close; i++)
+	for (i = 0; i < to_close; i++) {
+		pw_log_debug("%p: close fd:%d", conn, buf->fds[i]);
 		close(buf->fds[i]);
+	}
 	if (n_fds > 0)
 		memmove(buf->fds, fds, n_fds * sizeof(int));
 	buf->n_fds = n_fds;
@@ -758,6 +850,8 @@ exit:
 int pw_protocol_native_connection_clear(struct pw_protocol_native_connection *conn)
 {
 	struct impl *impl = SPA_CONTAINER_OF(conn, struct impl, this);
+
+	pw_log_debug("%p: clear", conn);
 
 	clear_buffer(&impl->out, true);
 	clear_buffer(&impl->in, true);

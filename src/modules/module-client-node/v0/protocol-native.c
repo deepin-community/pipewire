@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2017 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2017 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 
@@ -47,12 +27,12 @@ extern uint32_t pw_protocol_native0_type_to_v2(struct pw_impl_client *client,
 		const struct spa_type_info *info, uint32_t type);
 
 static void
-client_node_marshal_add_mem(void *object,
+client_node_marshal_add_mem(void *data,
 			    uint32_t mem_id,
 			    uint32_t type,
 			    int memfd, uint32_t flags)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct pw_impl_client *client = pw_resource_get_client(resource);
 	struct spa_pod_builder *b;
 	const char *typename;
@@ -80,10 +60,10 @@ client_node_marshal_add_mem(void *object,
 	pw_protocol_native_end_resource(resource, b);
 }
 
-static void client_node_marshal_transport(void *object, uint32_t node_id, int readfd, int writefd,
+static void client_node_marshal_transport(void *data, uint32_t node_id, int readfd, int writefd,
 					  struct pw_client_node0_transport *transport)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 	struct pw_client_node0_transport_info info;
 
@@ -103,10 +83,10 @@ static void client_node_marshal_transport(void *object, uint32_t node_id, int re
 }
 
 static void
-client_node_marshal_set_param(void *object, uint32_t seq, uint32_t id, uint32_t flags,
+client_node_marshal_set_param(void *data, uint32_t seq, uint32_t id, uint32_t flags,
 			      const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource, PW_CLIENT_NODE0_EVENT_SET_PARAM, NULL);
@@ -120,9 +100,9 @@ client_node_marshal_set_param(void *object, uint32_t seq, uint32_t id, uint32_t 
 	pw_protocol_native_end_resource(resource, b);
 }
 
-static void client_node_marshal_event_event(void *object, const struct spa_event *event)
+static void client_node_marshal_event_event(void *data, const struct spa_event *event)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource, PW_CLIENT_NODE0_EVENT_EVENT, NULL);
@@ -133,9 +113,9 @@ static void client_node_marshal_event_event(void *object, const struct spa_event
 }
 
 static void
-client_node_marshal_command(void *object, uint32_t seq, const struct spa_command *command)
+client_node_marshal_command(void *data, uint32_t seq, const struct spa_command *command)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct pw_impl_client *client = pw_resource_get_client(resource);
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f;
@@ -154,10 +134,10 @@ client_node_marshal_command(void *object, uint32_t seq, const struct spa_command
 }
 
 static void
-client_node_marshal_add_port(void *object,
+client_node_marshal_add_port(void *data,
 			     uint32_t seq, enum spa_direction direction, uint32_t port_id)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource, PW_CLIENT_NODE0_EVENT_ADD_PORT, NULL);
@@ -171,10 +151,10 @@ client_node_marshal_add_port(void *object,
 }
 
 static void
-client_node_marshal_remove_port(void *object,
+client_node_marshal_remove_port(void *data,
 				uint32_t seq, enum spa_direction direction, uint32_t port_id)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource, PW_CLIENT_NODE0_EVENT_REMOVE_PORT, NULL);
@@ -188,7 +168,7 @@ client_node_marshal_remove_port(void *object,
 }
 
 static void
-client_node_marshal_port_set_param(void *object,
+client_node_marshal_port_set_param(void *data,
 				   uint32_t seq,
 				   enum spa_direction direction,
 				   uint32_t port_id,
@@ -196,7 +176,7 @@ client_node_marshal_port_set_param(void *object,
 				   uint32_t flags,
 				   const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct pw_impl_client *client = pw_resource_get_client(resource);
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f;
@@ -229,13 +209,13 @@ client_node_marshal_port_set_param(void *object,
 }
 
 static void
-client_node_marshal_port_use_buffers(void *object,
+client_node_marshal_port_use_buffers(void *data,
 				     uint32_t seq,
 				     enum spa_direction direction,
 				     uint32_t port_id,
 				     uint32_t n_buffers, struct pw_client_node0_buffer *buffers)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct pw_impl_client *client = pw_resource_get_client(resource);
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f;
@@ -283,12 +263,12 @@ client_node_marshal_port_use_buffers(void *object,
 }
 
 static void
-client_node_marshal_port_command(void *object,
+client_node_marshal_port_command(void *data,
 				 uint32_t direction,
 				 uint32_t port_id,
 				 const struct spa_command *command)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct pw_impl_client *client = pw_resource_get_client(resource);
 	struct spa_pod_builder *b;
 	struct spa_pod_frame f;
@@ -306,7 +286,7 @@ client_node_marshal_port_command(void *object,
 }
 
 static void
-client_node_marshal_port_set_io(void *object,
+client_node_marshal_port_set_io(void *data,
 				uint32_t seq,
 				uint32_t direction,
 				uint32_t port_id,
@@ -315,7 +295,7 @@ client_node_marshal_port_set_io(void *object,
 				uint32_t offset,
 				uint32_t size)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource, PW_CLIENT_NODE0_EVENT_PORT_SET_IO, NULL);

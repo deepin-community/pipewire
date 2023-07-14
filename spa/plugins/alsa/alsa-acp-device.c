@@ -1,26 +1,6 @@
-/* Spa ALSA Device
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa ALSA Device */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -31,11 +11,12 @@
 
 #include <alsa/asoundlib.h>
 
-#include <spa/utils/type.h>
 #include <spa/node/node.h>
+#include <spa/utils/type.h>
 #include <spa/utils/keys.h>
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
+#include <spa/support/log.h>
 #include <spa/support/loop.h>
 #include <spa/support/plugin.h>
 #include <spa/support/i18n.h>
@@ -46,6 +27,7 @@
 #include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
 #include <spa/debug/pod.h>
+#include <spa/debug/log.h>
 
 #include "alsa.h"
 
@@ -216,7 +198,7 @@ static int emit_info(struct impl *this, bool full)
 {
 	int err = 0;
 	struct spa_dict_item *items;
-	uint32_t i, n_items;
+	uint32_t n_items;
 	const struct acp_dict_item *it;
 	struct acp_card *card = this->card;
 	char path[128];
@@ -241,10 +223,10 @@ static int emit_info(struct impl *this, bool full)
 #undef ADD_ITEM
 
 		if (this->info.change_mask & SPA_DEVICE_CHANGE_MASK_PARAMS) {
-			for (i = 0; i < SPA_N_ELEMENTS(this->params); i++) {
-				if (this->params[i].user > 0) {
-					this->params[i].flags ^= SPA_PARAM_INFO_SERIAL;
-					this->params[i].user = 0;
+			SPA_FOR_EACH_ELEMENT_VAR(this->params, p) {
+				if (p->user > 0) {
+					p->flags ^= SPA_PARAM_INFO_SERIAL;
+					p->user = 0;
 				}
 			}
 		}
@@ -735,7 +717,7 @@ static int impl_set_param(void *object,
 				SPA_PARAM_PROFILE_index, SPA_POD_Int(&idx),
 				SPA_PARAM_PROFILE_save, SPA_POD_OPT_Bool(&save))) < 0) {
 			spa_log_warn(this->log, "can't parse profile");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 
@@ -760,7 +742,7 @@ static int impl_set_param(void *object,
 				SPA_PARAM_ROUTE_props, SPA_POD_OPT_Pod(&props),
 				SPA_PARAM_ROUTE_save, SPA_POD_OPT_Bool(&save))) < 0) {
 			spa_log_warn(this->log, "can't parse route");
-			spa_debug_pod(0, NULL, param);
+			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
 			return res;
 		}
 		if (device >= this->card->n_devices)

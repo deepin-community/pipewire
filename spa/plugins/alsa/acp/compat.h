@@ -34,6 +34,9 @@ extern "C" {
 #include <inttypes.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <math.h>
+
+#include <spa/utils/string.h>
 
 typedef struct pa_core pa_core;
 
@@ -345,6 +348,48 @@ static inline void pa_xstrfreev(char **a) {
     pa_xfreev((void**)a);
 }
 
+typedef struct {
+	size_t size;
+	char *ptr;
+	FILE *f;
+} pa_strbuf;
+
+static inline pa_strbuf *pa_strbuf_new(void)
+{
+	pa_strbuf *s = pa_xnew0(pa_strbuf,1);
+	s->f = open_memstream(&s->ptr, &s->size);
+	return s;
+}
+
+static PA_PRINTF_FUNC(2,3) inline size_t pa_strbuf_printf(pa_strbuf *sb, const char *format, ...)
+{
+	int ret;
+	va_list args;
+	va_start(args, format);
+	ret = vfprintf(sb->f, format, args);
+	va_end(args);
+	return ret > 0 ? ret : 0;
+}
+
+static inline void pa_strbuf_puts(pa_strbuf *sb, const char *t)
+{
+	fputs(t, sb->f);
+}
+
+static inline bool pa_strbuf_isempty(pa_strbuf *sb)
+{
+	fflush(sb->f);
+	return sb->size == 0;
+}
+
+static inline char *pa_strbuf_to_string_free(pa_strbuf *sb)
+{
+	char *ptr;
+	fclose(sb->f);
+	ptr = sb->ptr;
+	free(sb);
+	return ptr;
+}
 
 #define pa_cstrerror	strerror
 
@@ -545,25 +590,35 @@ static inline char *pa_strip(char *s)
 
 static inline int pa_atod(const char *s, double *ret_d)
 {
-	char *x;
-	*ret_d = strtod(s, &x);
-	return 0;
+	if (spa_atod(s, ret_d) && !isnan(*ret_d))
+		return 0;
+	errno = EINVAL;
+	return -1;
 }
 static inline int pa_atoi(const char *s, int32_t *ret_i)
 {
-	*ret_i = (int32_t) atoi(s);
-	return 0;
+	if (spa_atoi32(s, ret_i, 0))
+		return 0;
+	errno = EINVAL;
+	return -1;
 }
 static inline int pa_atou(const char *s, uint32_t *ret_u)
 {
-	*ret_u = (uint32_t) atoi(s);
-	return 0;
+	if (spa_atou32(s, ret_u, 0))
+		return 0;
+	errno = EINVAL;
+	return -1;
 }
 static inline int pa_atol(const char *s, long *ret_l)
 {
-	char *x;
-	*ret_l = strtol(s, &x, 0);
-	return 0;
+	int64_t res;
+	if (spa_atoi64(s, &res, 0)) {
+		*ret_l = res;
+		if (*ret_l == res)
+			return 0;
+	}
+	errno = EINVAL;
+	return -1;
 }
 
 static inline int pa_parse_boolean(const char *v)

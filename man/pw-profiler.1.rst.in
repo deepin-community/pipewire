@@ -1,5 +1,3 @@
-.. This file is part of PipeWire.
-
 pw-profiler
 ###########
 
@@ -29,6 +27,8 @@ When this program is stopped, a set of **gnuplot** files and a script to generat
 SVG files from the .plot files is generated, along with a .html file to
 visualize the profiling results in a browser.
 
+This function uses the same data used by *pw-top*.
+
 OPTIONS
 =======
 
@@ -54,3 +54,4 @@ SEE ALSO
 ========
 
 ``pipewire(1)``,
+``pw-top(1)``,

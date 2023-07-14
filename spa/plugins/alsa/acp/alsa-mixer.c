@@ -4734,31 +4734,29 @@ static int profile_verify(pa_alsa_profile *p) {
                                                        PA_ELEMENTSOF(well_known_descriptions)));
 
     if (!p->description) {
+        pa_strbuf *sb;
         uint32_t idx;
         pa_alsa_mapping *m;
-	char *ptr;
-	size_t size;
-	FILE *f;
-	int count = 0;
 
-	f = open_memstream(&ptr, &size);
+        sb = pa_strbuf_new();
 
         if (p->output_mappings)
             PA_IDXSET_FOREACH(m, p->output_mappings, idx) {
-                if (count++ > 0)
-                    fprintf(f, " + ");
-                fprintf(f, _("%s Output"), m->description);
+                if (!pa_strbuf_isempty(sb))
+                    pa_strbuf_puts(sb, " + ");
+
+                pa_strbuf_printf(sb, _("%s Output"), m->description);
             }
 
         if (p->input_mappings)
             PA_IDXSET_FOREACH(m, p->input_mappings, idx) {
-                if (count++ > 0)
-                    fprintf(f, " + ");
-                fprintf(f, _("%s Input"), m->description);
+                if (!pa_strbuf_isempty(sb))
+                    pa_strbuf_puts(sb, " + ");
+
+                pa_strbuf_printf(sb, _("%s Input"), m->description);
             }
 
-	fclose(f);
-        p->description = ptr;
+        p->description = pa_strbuf_to_string_free(sb);
     }
 
     return 0;
@@ -4810,21 +4808,17 @@ void pa_alsa_decibel_fix_dump(pa_alsa_decibel_fix *db_fix) {
     pa_assert(db_fix);
 
     if (db_fix->db_values) {
+        pa_strbuf *buf;
         unsigned long i, nsteps;
-	FILE *f;
-	char *ptr;
-	size_t size;
-
-	f = open_memstream(&ptr, &size);
 
         pa_assert(db_fix->min_step <= db_fix->max_step);
         nsteps = db_fix->max_step - db_fix->min_step + 1;
 
+        buf = pa_strbuf_new();
         for (i = 0; i < nsteps; ++i)
-            fprintf(f, "[%li]:%0.2f ", i + db_fix->min_step, db_fix->db_values[i] / 100.0);
+            pa_strbuf_printf(buf, "[%li]:%0.2f ", i + db_fix->min_step, db_fix->db_values[i] / 100.0);
 
-	fclose(f);
-        db_values = ptr;
+        db_values = pa_strbuf_to_string_free(buf);
     }
 
     pa_log_debug("Decibel fix %s, min_step=%li, max_step=%li, db_values=%s",
@@ -4960,8 +4954,7 @@ static void profile_finalize_probing(pa_alsa_profile *to_be_finalized, pa_alsa_p
                 continue;
 
             pa_alsa_init_proplist_pcm(NULL, m->output_proplist, m->output_pcm);
-            snd_pcm_close(m->output_pcm);
-            m->output_pcm = NULL;
+            pa_alsa_close(&m->output_pcm);
         }
 
     if (to_be_finalized->input_mappings)
@@ -4980,8 +4973,7 @@ static void profile_finalize_probing(pa_alsa_profile *to_be_finalized, pa_alsa_p
                 continue;
 
             pa_alsa_init_proplist_pcm(NULL, m->input_proplist, m->input_pcm);
-            snd_pcm_close(m->input_pcm);
-            m->input_pcm = NULL;
+            pa_alsa_close(&m->input_pcm);
         }
 }
 

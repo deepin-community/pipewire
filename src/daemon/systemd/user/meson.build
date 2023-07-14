@@ -1,4 +1,4 @@
-systemd_user_services_dir = systemd.get_pkgconfig_variable('systemduserunitdir', define_variable : [ 'prefix', prefix])
+systemd_user_services_dir = systemd.get_variable('systemduserunitdir', pkgconfig_define : [ 'prefix', prefix])
 if get_option('systemd-user-unit-dir') != ''
   systemd_user_services_dir = get_option('systemd-user-unit-dir')
 endif
@@ -18,5 +18,10 @@ configure_file(input : 'pipewire.service.in',
 
 configure_file(input : 'pipewire-pulse.service.in',
                output : 'pipewire-pulse.service',
+               configuration : systemd_config,
+               install_dir : systemd_user_services_dir)
+
+configure_file(input : 'filter-chain.service.in',
+               output : 'filter-chain.service',
                configuration : systemd_config,
                install_dir : systemd_user_services_dir)

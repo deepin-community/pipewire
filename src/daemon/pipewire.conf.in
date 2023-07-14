@@ -2,6 +2,11 @@
 #
 # Copy and edit this file in @PIPEWIRE_CONFIG_DIR@ for system-wide changes
 # or in ~/.config/pipewire for local changes.
+#
+# It is also possible to place a file with an updated section in
+# @PIPEWIRE_CONFIG_DIR@/pipewire.conf.d/ for system-wide changes or in
+# ~/.config/pipewire/pipewire.conf.d/ for local changes.
+#
 
 context.properties = {
     ## Configure properties in the system.
@@ -15,7 +20,7 @@ context.properties = {
     #mem.mlock-all                         = false
     #clock.power-of-two-quantum            = true
     #log.level                             = 2
-    #cpu.zero.denormals                    = true
+    #cpu.zero.denormals                    = false
 
     core.daemon = true              # listening for socket connections
     core.name   = pipewire-0        # core name and socket name
@@ -25,16 +30,26 @@ context.properties = {
     #default.clock.allowed-rates = [ 48000 ]
     #default.clock.quantum       = 1024
     #default.clock.min-quantum   = 32
-    #default.clock.max-quantum   = 8192
+    #default.clock.max-quantum   = 2048
+    #default.clock.quantum-limit = 8192
     #default.video.width         = 640
     #default.video.height        = 480
     #default.video.rate.num      = 25
     #default.video.rate.denom    = 1
     #
+    #settings.check-quantum      = false
+    #settings.check-rate         = false
+    #
     # These overrides are only applied when running in a vm.
     vm.overrides = {
         default.clock.min-quantum = 1024
     }
+
+    # keys checked below to disable module loading
+    module.x11.bell = true
+    # enables autoloading of access module, when disabled an alternative
+    # access module needs to be loaded.
+    module.access = true
 }
 
 context.spa-libs = {
@@ -45,6 +60,7 @@ context.spa-libs = {
     # that factory.
     #
     audio.convert.* = audioconvert/libspa-audioconvert
+    avb.*           = avb/libspa-avb
     api.alsa.*      = alsa/libspa-alsa
     api.v4l2.*      = v4l2/libspa-v4l2
     api.libcamera.* = libcamera/libspa-libcamera
@@ -58,36 +74,30 @@ context.spa-libs = {
 
 context.modules = [
     #{ name = <module-name>
-    #    [ args  = { <key> = <value> ... } ]
-    #    [ flags = [ [ ifexists ] [ nofail ] ]
+    #    ( args  = { <key> = <value> ... } )
+    #    ( flags = [ ( ifexists ) ( nofail ) ] )
+    #    ( condition = [ { <key> = <value> ... } ... ] )
     #}
     #
     # Loads a module with the given parameters.
     # If ifexists is given, the module is ignored when it is not found.
     # If nofail is given, module initialization failures are ignored.
+    # If condition is given, the module is loaded only when the context
+    # properties all match the match rules.
     #
 
-    # Uses RTKit to boost the data thread priority.
-    { name = libpipewire-module-rtkit
+    # Uses realtime scheduling to boost the audio thread priorities. This uses
+    # RTKit if the user doesn't have permission to use regular realtime
+    # scheduling.
+    { name = libpipewire-module-rt
         args = {
-            #nice.level   = -11
+            nice.level    = -11
             #rt.prio      = 88
-            #rt.time.soft = 2000000
-            #rt.time.hard = 2000000
+            #rt.time.soft = -1
+            #rt.time.hard = -1
         }
         flags = [ ifexists nofail ]
     }
-
-    # Set thread priorities without using RTKit.
-    #{ name = libpipewire-module-rt
-    #    args = {
-    #        nice.level   = -11
-    #        rt.prio      = 88
-    #        rt.time.soft = 2000000
-    #        rt.time.hard = 2000000
-    #    }
-    #    flags = [ ifexists nofail ]
-    #}
 
     # The native communication protocol.
     { name = libpipewire-module-protocol-native }
@@ -145,6 +155,7 @@ context.modules = [
             # access.force permission.
             #access.force = flatpak
         }
+        condition = [ { module.access = true } ]
     }
 
     # Makes a factory for wrapping nodes in an adapter with a
@@ -156,16 +167,31 @@ context.modules = [
 
     # Provides factories to make session manager objects.
     { name = libpipewire-module-session-manager }
+
+    # Use libcanberra to play X11 Bell
+    { name = libpipewire-module-x11-bell
+        args = {
+            #sink.name = "@DEFAULT_SINK@"
+            #sample.name = "bell-window-system"
+            #x11.display = null
+            #x11.xauthority = null
+        }
+        flags = [ ifexists nofail ]
+        condition = [ { module.x11.bell = true } ]
+    }
 ]
 
 context.objects = [
     #{ factory = <factory-name>
-    #    [ args  = { <key> = <value> ... } ]
-    #    [ flags = [ [ nofail ] ]
+    #    ( args  = { <key> = <value> ... } )
+    #    ( flags = [ ( nofail ) ] )
+    #    ( condition = [ { <key> = <value> ... } ... ] )
     #}
     #
     # Creates an object from a PipeWire factory with the given parameters.
     # If nofail is given, errors are ignored (and no object is created).
+    # If condition is given, the object is created only when the context properties
+    # all match the match rules.
     #
     #{ factory = spa-node-factory   args = { factory.name = videotestsrc node.name = videotestsrc Spa:Pod:Object:Param:Props:patternType = 1 } }
     #{ factory = spa-device-factory args = { factory.name = api.jack.device foo=bar } flags = [ nofail ] }
@@ -182,6 +208,8 @@ context.objects = [
             node.name       = Dummy-Driver
             node.group      = pipewire.dummy
             priority.driver = 20000
+            #clock.id       = monotonic # realtime | tai | monotonic-raw | boottime
+            #clock.name     = "clock.system.monotonic"
         }
     }
     { factory = spa-node-factory
@@ -193,6 +221,7 @@ context.objects = [
             node.freewheel  = true
         }
     }
+
     # This creates a new Source node. It will have input ports
     # that you can link, to provide audio for this source.
     #{ factory = adapter
@@ -225,23 +254,41 @@ context.objects = [
     #        audio.position         = "FL,FR"
     #    }
     #}
+
+    # Use the metadata factory to create metadata and some default values.
+    #{ factory = metadata
+    #    args = {
+    #        metadata.name = my-metadata
+    #        metadata.values = [
+    #            { key = default.audio.sink   value = { name = somesink } }
+    #            { key = default.audio.source value = { name = somesource } }
+    #        ]
+    #    }
+    #}
 ]
 
 context.exec = [
-    #{ path = <program-name> [ args = "<arguments>" ] }
+    #{   path = <program-name>
+    #    ( args = "<arguments>" )
+    #    ( condition = [ { <key> = <value> ... } ... ] )
+    #}
     #
     # Execute the given program with arguments.
+    # If condition is given, the program is executed only when the context
+    # properties all match the match rules.
     #
     # You can optionally start the session manager here,
     # but it is better to start it as a systemd service.
     # Run the session manager with -h for options.
     #
-    @sm_comment@{ path = "@session_manager_path@" args = "@session_manager_args@" }
+    @sm_comment@{ path = "@session_manager_path@" args = "@session_manager_args@"
+    @sm_comment@  condition = [ { exec.session-manager = null } { exec.session-manager = true } ] }
     #
     # You can optionally start the pulseaudio-server here as well
     # but it is better to start it as a systemd service.
     # It can be interesting to start another daemon here that listens
     # on another address with the -a option (eg. -a tcp:4713).
     #
-    @pulse_comment@{ path = "@pipewire_path@" args = "-c pipewire-pulse.conf" }
+    @pulse_comment@{ path = "@pipewire_path@" args = "-c pipewire-pulse.conf"
+    @pulse_comment@  condition = [ { exec.pipewire-pulse = null } { exec.pipewire-pulse = true } ] }
 ]

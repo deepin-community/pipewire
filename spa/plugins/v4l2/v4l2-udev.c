@@ -1,26 +1,6 @@
-/* Spa V4l2 udev monitor
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa V4l2 udev monitor */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -169,7 +149,7 @@ static void unescape(const char *src, char *dst)
 {
 	const char *s;
 	char *d;
-	int h1, h2;
+	int h1 = 0, h2 = 0;
 	enum { TEXT, BACKSLASH, EX, FIRST } state = TEXT;
 
 	for (s = src, d = dst; *s; s++) {
@@ -266,7 +246,7 @@ static int emit_object_info(struct impl *this, struct device *device)
 	if (str && *str) {
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_BUS_PATH, str);
 	}
-	if ((str = udev_device_get_syspath(dev)) && *str) {
+	if ((str = udev_device_get_devpath(dev)) && *str) {
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_SYSFS_PATH, str);
 	}
 	if ((str = udev_device_get_property_value(dev, "ID_ID")) && *str) {
@@ -279,11 +259,10 @@ static int emit_object_info(struct impl *this, struct device *device)
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_SUBSYSTEM, str);
 	}
 	if ((str = udev_device_get_property_value(dev, "ID_VENDOR_ID")) && *str) {
-		char *dec = alloca(6); /* 65535 is max */
 		int32_t val;
-
 		if (spa_atoi32(str, &val, 16)) {
-			snprintf(dec, 6, "%d", val);
+			char *dec = alloca(12); /* 0xffff is max */
+			snprintf(dec, 12, "0x%04x", val);
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_VENDOR_ID, dec);
 		}
 	}
@@ -302,27 +281,25 @@ static int emit_object_info(struct impl *this, struct device *device)
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_VENDOR_NAME, str);
 	}
 	if ((str = udev_device_get_property_value(dev, "ID_MODEL_ID")) && *str) {
-		char *dec = alloca(6); /* 65535 is max */
 		int32_t val;
-
 		if (spa_atoi32(str, &val, 16)) {
-			snprintf(dec, 6, "%d", val);
+			char *dec = alloca(12); /* 0xffff is max */
+			snprintf(dec, 12, "0x%04x", val);
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_PRODUCT_ID, dec);
 		}
 	}
 
-	str = udev_device_get_property_value(dev, "ID_V4L_PRODUCT");
+	str = udev_device_get_property_value(dev, "ID_MODEL_FROM_DATABASE");
 	if (!(str && *str)) {
-		str = udev_device_get_property_value(dev, "ID_MODEL_FROM_DATABASE");
+		str = udev_device_get_property_value(dev, "ID_MODEL_ENC");
 		if (!(str && *str)) {
-			str = udev_device_get_property_value(dev, "ID_MODEL_ENC");
-			if (!(str && *str)) {
-				str = udev_device_get_property_value(dev, "ID_MODEL");
-			} else {
-				char *t = alloca(strlen(str) + 1);
-				unescape(str, t);
-				str = t;
-			}
+			str = udev_device_get_property_value(dev, "ID_MODEL");
+			if (!(str && *str))
+				str = udev_device_get_property_value(dev, "ID_V4L_PRODUCT");
+		} else {
+			char *t = alloca(strlen(str) + 1);
+			unescape(str, t);
+			str = t;
 		}
 	}
 	if (str && *str)

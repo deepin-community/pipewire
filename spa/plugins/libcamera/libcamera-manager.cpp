@@ -1,26 +1,6 @@
-/* Spa libcamera manager
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa libcamera manager */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -29,7 +9,10 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
+#include <utility>
+#include <mutex>
+#include <optional>
+#include <queue>
 
 #include <libcamera/camera.h>
 #include <libcamera/camera_manager.h>
@@ -54,67 +37,72 @@ using namespace libcamera;
 
 #define MAX_DEVICES	64
 
-struct global {
-	int ref;
-	CameraManager *manager;
-};
-
-static struct global global;
+namespace {
 
 struct device {
 	uint32_t id;
 	std::shared_ptr<Camera> camera;
 };
 
-typedef struct impl {
+struct impl {
 	struct spa_handle handle;
-	struct spa_device device;
+	struct spa_device device = {};
 
 	struct spa_log *log;
-	struct spa_loop *main_loop;
+	struct spa_loop_utils *loop_utils;
 
 	struct spa_hook_list hooks;
 
-	uint64_t info_all;
-	struct spa_device_info info;
+	static constexpr uint64_t info_all = SPA_DEVICE_CHANGE_MASK_FLAGS | SPA_DEVICE_CHANGE_MASK_PROPS;
+	struct spa_device_info info = SPA_DEVICE_INFO_INIT();
 
-	CameraManager *manager;
+	std::shared_ptr<CameraManager> manager;
 	void addCamera(std::shared_ptr<libcamera::Camera> camera);
-        void removeCamera(std::shared_ptr<libcamera::Camera> camera);
+	void removeCamera(std::shared_ptr<libcamera::Camera> camera);
 
 	struct device devices[MAX_DEVICES];
-        uint32_t n_devices;
-} Impl;
+	uint32_t n_devices = 0;
 
-int libcamera_manager_release(CameraManager *manager)
-{
-	if (global.manager != manager)
-		return -EINVAL;
+	struct hotplug_event {
+		enum class type { add, remove } type;
+		std::shared_ptr<Camera> camera;
+	};
 
-	if (--global.ref == 0) {
-		global.manager->stop();
-		delete global.manager;
-		global.manager = NULL;
+	std::mutex hotplug_events_lock;
+	std::queue<hotplug_event> hotplug_events;
+	struct spa_source *hotplug_event_source;
+
+	impl(spa_log *log, spa_loop_utils *loop_utils, spa_source *hotplug_event_source);
+
+	~impl()
+	{
+		spa_loop_utils_destroy_source(loop_utils, hotplug_event_source);
 	}
-	return 0;
+};
+
 }
 
-CameraManager *libcamera_manager_acquire(void)
+static std::weak_ptr<CameraManager> global_manager;
+
+std::shared_ptr<CameraManager> libcamera_manager_acquire(int& res)
 {
-	int res;
+	if (auto manager = global_manager.lock())
+		return manager;
 
-	if (global.ref++ == 0) {
-		global.manager = new CameraManager();
-		if (global.manager == NULL)
-			return NULL;
+	auto manager = std::make_shared<CameraManager>();
+	if ((res = manager->start()) < 0)
+		return {};
 
-		if ((res = global.manager->start()) < 0) {
-			libcamera_manager_release(global.manager);
-			errno = -res;
-			return NULL;
-		}
-	}
-	return global.manager;
+	global_manager = manager;
+
+	return manager;
+}
+static uint32_t get_free_id(struct impl *impl)
+{
+	for (std::size_t i = 0; i < MAX_DEVICES; i++)
+		if (impl->devices[i].camera == nullptr)
+			return i;
+	return 0;
 }
 
 static struct device *add_device(struct impl *impl, std::shared_ptr<Camera> camera)
@@ -124,18 +112,19 @@ static struct device *add_device(struct impl *impl, std::shared_ptr<Camera> came
 
 	if (impl->n_devices >= MAX_DEVICES)
 		return NULL;
-	id = impl->n_devices++;
+	id = get_free_id(impl);;
 	device = &impl->devices[id];
-	device->id = id;
-	device->camera = camera;
+	device->id = get_free_id(impl);;
+	device->camera = std::move(camera);
+	impl->n_devices++;
 	return device;
 }
 
-static struct device *find_device(struct impl *impl, std::shared_ptr<Camera> camera)
+static struct device *find_device(struct impl *impl, const Camera *camera)
 {
 	uint32_t i;
 	for (i = 0; i < impl->n_devices; i++) {
-		if (impl->devices[i].camera == camera)
+		if (impl->devices[i].camera.get() == camera)
 			return &impl->devices[i];
 	}
 	return NULL;
@@ -143,12 +132,16 @@ static struct device *find_device(struct impl *impl, std::shared_ptr<Camera> cam
 
 static void remove_device(struct impl *impl, struct device *device)
 {
-	*device = impl->devices[--impl->n_devices];
+	uint32_t old = --impl->n_devices;
+	device->camera.reset();
+	*device = std::move(impl->devices[old]);
+	impl->devices[old].camera = nullptr;
 }
 
 static void clear_devices(struct impl *impl)
 {
-	impl->n_devices = 0;
+	while (impl->n_devices > 0)
+		impl->devices[--impl->n_devices].camera.reset();
 }
 
 static int emit_object_info(struct impl *impl, struct device *device)
@@ -176,66 +169,122 @@ static int emit_object_info(struct impl *impl, struct device *device)
 	ADD_ITEM(SPA_KEY_API_LIBCAMERA_PATH, path);
 #undef ADD_ITEM
 
-        dict = SPA_DICT_INIT(items, n_items);
-        info.props = &dict;
-        spa_device_emit_object_info(&impl->hooks, id, &info);
+	dict = SPA_DICT_INIT(items, n_items);
+	info.props = &dict;
+	spa_device_emit_object_info(&impl->hooks, id, &info);
 
 	return 1;
 }
 
-void Impl::addCamera(std::shared_ptr<Camera> camera)
+static void try_add_camera(struct impl *impl, std::shared_ptr<Camera> camera)
 {
-	struct impl *impl = this;
 	struct device *device;
 
-	spa_log_info(impl->log, "new camera");
-
-	if ((device = find_device(impl, camera)) != NULL)
+	if ((device = find_device(impl, camera.get())) != NULL)
 		return;
 
-	if ((device = add_device(impl, camera)) == NULL)
+	if ((device = add_device(impl, std::move(camera))) == NULL)
 		return;
 
+	spa_log_info(impl->log, "camera added: id:%d %s", device->id,
+			device->camera->id().c_str());
 	emit_object_info(impl, device);
 }
 
-void Impl::removeCamera(std::shared_ptr<Camera> camera)
+static void try_remove_camera(struct impl *impl, const Camera *camera)
 {
-	struct impl *impl = this;
 	struct device *device;
 
-	spa_log_info(impl->log, "camera removed");
 	if ((device = find_device(impl, camera)) == NULL)
 		return;
 
+	spa_log_info(impl->log, "camera removed: id:%d %s", device->id,
+			device->camera->id().c_str());
+	spa_device_emit_object_info(&impl->hooks, device->id, NULL);
 	remove_device(impl, device);
 }
 
-static int start_monitor(struct impl *impl)
+static void consume_hotplug_event(struct impl *impl, impl::hotplug_event& event)
 {
-	impl->manager->cameraAdded.connect(impl, &Impl::addCamera);
-        impl->manager->cameraRemoved.connect(impl, &Impl::removeCamera);
-	return 0;
+	auto& [ type, camera ] = event;
+
+	switch (type) {
+	case impl::hotplug_event::type::add:
+		spa_log_info(impl->log, "camera appeared: %s", camera->id().c_str());
+		try_add_camera(impl, std::move(camera));
+		break;
+	case impl::hotplug_event::type::remove:
+		spa_log_info(impl->log, "camera disappeared: %s", camera->id().c_str());
+		try_remove_camera(impl, camera.get());
+		break;
+	}
+}
+
+static void on_hotplug_event(void *data, std::uint64_t)
+{
+	auto impl = static_cast<struct impl *>(data);
+
+	for (;;) {
+		std::optional<impl::hotplug_event> event;
+
+		{
+			std::unique_lock guard(impl->hotplug_events_lock);
+
+			if (!impl->hotplug_events.empty()) {
+				event = std::move(impl->hotplug_events.front());
+				impl->hotplug_events.pop();
+			}
+		}
+
+		if (!event)
+			break;
+
+		consume_hotplug_event(impl, *event);
+	}
+}
+
+void impl::addCamera(std::shared_ptr<Camera> camera)
+{
+	{
+		std::unique_lock guard(hotplug_events_lock);
+		hotplug_events.push({ hotplug_event::type::add, std::move(camera) });
+	}
+
+	spa_loop_utils_signal_event(loop_utils, hotplug_event_source);
+}
+
+void impl::removeCamera(std::shared_ptr<Camera> camera)
+{
+	{
+		std::unique_lock guard(hotplug_events_lock);
+		hotplug_events.push({ hotplug_event::type::remove, std::move(camera) });
+	}
+
+	spa_loop_utils_signal_event(loop_utils, hotplug_event_source);
+}
+
+static void start_monitor(struct impl *impl)
+{
+	impl->manager->cameraAdded.connect(impl, &impl::addCamera);
+	impl->manager->cameraRemoved.connect(impl, &impl::removeCamera);
 }
 
 static int stop_monitor(struct impl *impl)
 {
-	if (impl->manager != NULL) {
-		impl->manager->cameraAdded.disconnect(impl, &Impl::addCamera);
-	        impl->manager->cameraRemoved.disconnect(impl, &Impl::removeCamera);
+	if (impl->manager) {
+		impl->manager->cameraAdded.disconnect(impl, &impl::addCamera);
+		impl->manager->cameraRemoved.disconnect(impl, &impl::removeCamera);
 	}
 	clear_devices (impl);
 	return 0;
 }
 
-static int enum_devices(struct impl *impl)
+static void collect_existing_devices(struct impl *impl)
 {
 	auto cameras = impl->manager->cameras();
 
-	for (const std::shared_ptr<Camera> &cam : cameras) {
-                impl->addCamera(cam);
-	}
-	return 0;
+	for (std::shared_ptr<Camera>& camera : cameras)
+		try_add_camera(impl, std::move(camera));
 }
 
 static const struct spa_dict_item device_info_items[] = {
@@ -262,9 +311,7 @@ static void impl_hook_removed(struct spa_hook *hook)
 	struct impl *impl = (struct impl*)hook->priv;
 	if (spa_hook_list_is_empty(&impl->hooks)) {
 		stop_monitor(impl);
-		if (impl->manager)
-			libcamera_manager_release(impl->manager);
-		impl->manager = NULL;
+		impl->manager.reset();
 	}
 }
 
@@ -274,26 +321,29 @@ impl_device_add_listener(void *object, struct spa_hook *listener,
 {
 	int res;
 	struct impl *impl = (struct impl*) object;
-        struct spa_hook_list save;
+	struct spa_hook_list save;
+	bool had_manager = !!impl->manager;
 
 	spa_return_val_if_fail(impl != NULL, -EINVAL);
 	spa_return_val_if_fail(events != NULL, -EINVAL);
 
-	impl->manager = libcamera_manager_acquire();
-	if (impl->manager == NULL)
-		return -errno;
+	if (!impl->manager && !(impl->manager = libcamera_manager_acquire(res)))
+		return res;
 
-        spa_hook_list_isolate(&impl->hooks, &save, listener, events, data);
+	spa_hook_list_isolate(&impl->hooks, &save, listener, events, data);
 
 	emit_device_info(impl, true);
 
-	if ((res = enum_devices(impl)) < 0)
-		return res;
+	if (had_manager) {
+		for (std::size_t i = 0; i < impl->n_devices; i++)
+			emit_object_info(impl, &impl->devices[i]);
+	}
+	else {
+		collect_existing_devices(impl);
+		start_monitor(impl);
+	}
 
-	if ((res = start_monitor(impl)) < 0)
-		return res;
-
-        spa_hook_list_join(&impl->hooks, &save);
+	spa_hook_list_join(&impl->hooks, &save);
 
 	listener->removed = impl_hook_removed;
 	listener->priv = impl;
@@ -325,12 +375,28 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 
 static int impl_clear(struct spa_handle *handle)
 {
-	struct impl *impl = (struct impl *) handle;
+	auto impl = reinterpret_cast<struct impl *>(handle);
+
 	stop_monitor(impl);
-	if (impl->manager)
-		libcamera_manager_release(impl->manager);
-	impl->manager = NULL;
+	std::destroy_at(impl);
+
 	return 0;
+}
+
+impl::impl(spa_log *log, spa_loop_utils *loop_utils, spa_source *hotplug_event_source)
+	: handle({ SPA_VERSION_HANDLE, impl_get_interface, impl_clear }),
+	  log(log),
+	  loop_utils(loop_utils),
+	  hotplug_event_source(hotplug_event_source)
+{
+	libcamera_log_topic_init(log);
+
+	spa_hook_list_init(&hooks);
+
+	device.iface = SPA_INTERFACE_INIT(
+			SPA_TYPE_INTERFACE_Device,
+			SPA_VERSION_DEVICE,
+			&impl_device, this);
 }
 
 static size_t
@@ -347,35 +413,25 @@ impl_init(const struct spa_handle_factory *factory,
 	  const struct spa_support *support,
 	  uint32_t n_support)
 {
-	struct impl *impl;
-
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
 
-	handle->get_interface = impl_get_interface;
-	handle->clear = impl_clear;
+	auto log = static_cast<spa_log *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log));
 
-	impl = (struct impl *) handle;
-
-	impl->log = (struct spa_log*)spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
-	libcamera_log_topic_init(impl->log);
-
-	impl->main_loop = (struct spa_loop*)spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Loop);
-	if (impl->main_loop == NULL) {
-		spa_log_error(impl->log, "a main-loop is needed");
+	auto loop_utils = static_cast<spa_loop_utils *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_LoopUtils));
+	if (!loop_utils) {
+		spa_log_error(log, "a " SPA_TYPE_INTERFACE_LoopUtils " is needed");
 		return -EINVAL;
 	}
-	spa_hook_list_init(&impl->hooks);
 
-	impl->device.iface = SPA_INTERFACE_INIT(
-			SPA_TYPE_INTERFACE_Device,
-			SPA_VERSION_DEVICE,
-			&impl_device, impl);
+	auto hotplug_event_source = spa_loop_utils_add_event(loop_utils, on_hotplug_event, handle);
+	if (!hotplug_event_source) {
+		int res = -errno;
+		spa_log_error(log, "failed to create hotplug event: %m");
+		return res;
+	}
 
-	impl->info = SPA_DEVICE_INFO_INIT();
-	impl->info_all = SPA_DEVICE_CHANGE_MASK_FLAGS |
-			SPA_DEVICE_CHANGE_MASK_PROPS;
-	impl->info.flags = 0;
+	new (handle) impl(log, loop_utils, hotplug_event_source);
 
 	return 0;
 }

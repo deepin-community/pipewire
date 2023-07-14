@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2019 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <pipewire/pipewire.h>
 
@@ -31,6 +11,10 @@
 
 #include <pipewire/extensions/session-manager.h>
 #include <pipewire/extensions/protocol-native.h>
+
+#define MAX_DICT	1024
+#define MAX_PARAMS	4096
+#define MAX_PARAM_INFO	128
 
 static void push_dict(struct spa_pod_builder *b, const struct spa_dict *dict)
 {
@@ -61,6 +45,8 @@ do { \
 		return -EINVAL; \
 	\
 	if ((dict)->n_items > 0) { \
+		if ((dict)->n_items > MAX_DICT) \
+			return -ENOSPC; \
 		(dict)->items = alloca((dict)->n_items * sizeof(struct spa_dict_item)); \
 		for (i = 0; i < (dict)->n_items; i++) { \
 			if (spa_pod_parser_get(p, \
@@ -100,6 +86,8 @@ do { \
 		return -EINVAL; \
 	\
 	if (*(n_params_p) > 0) { \
+		if (*(n_params_p) > MAX_PARAM_INFO) \
+			return -ENOSPC; \
 		*(params_p) = alloca(*(n_params_p) * sizeof(struct spa_param_info)); \
 		for (i = 0; i < *(n_params_p); i++) { \
 			if (spa_pod_parser_get(p, \
@@ -126,7 +114,7 @@ marshal_pw_session_info(struct spa_pod_builder *b,
 	spa_pod_builder_add(b,
 		SPA_POD_Int(info->version),
 		SPA_POD_Int(info->id),
-		SPA_POD_Int(info->change_mask),
+		SPA_POD_Long(info->change_mask),
 		NULL);
 	push_dict(b, info->props);
 	push_param_infos(b, info->n_params, info->params);
@@ -143,7 +131,7 @@ do { \
 	    spa_pod_parser_get(p, \
 			SPA_POD_Int(&version), \
 			SPA_POD_Int(&(info)->id), \
-			SPA_POD_Int(&(info)->change_mask), \
+			SPA_POD_Long(&(info)->change_mask), \
 			NULL) < 0) \
 		return -EINVAL; \
 	\
@@ -169,7 +157,7 @@ marshal_pw_endpoint_info(struct spa_pod_builder *b,
 		SPA_POD_String(info->media_class),
 		SPA_POD_Int(info->direction),
 		SPA_POD_Int(info->flags),
-		SPA_POD_Int(info->change_mask),
+		SPA_POD_Long(info->change_mask),
 		SPA_POD_Int(info->n_streams),
 		SPA_POD_Int(info->session_id),
 		NULL);
@@ -192,7 +180,7 @@ do { \
 			SPA_POD_String(&(info)->media_class), \
 			SPA_POD_Int(&(info)->direction), \
 			SPA_POD_Int(&(info)->flags), \
-			SPA_POD_Int(&(info)->change_mask), \
+			SPA_POD_Long(&(info)->change_mask), \
 			SPA_POD_Int(&(info)->n_streams), \
 			SPA_POD_Int(&(info)->session_id), \
 			NULL) < 0) \
@@ -218,7 +206,7 @@ marshal_pw_endpoint_stream_info(struct spa_pod_builder *b,
 		SPA_POD_Int(info->id),
 		SPA_POD_Int(info->endpoint_id),
 		SPA_POD_String(info->name),
-		SPA_POD_Int(info->change_mask),
+		SPA_POD_Long(info->change_mask),
 		SPA_POD_Pod(info->link_params),
 		NULL);
 	push_dict(b, info->props);
@@ -238,7 +226,7 @@ do { \
 			SPA_POD_Int(&(info)->id), \
 			SPA_POD_Int(&(info)->endpoint_id), \
 			SPA_POD_String(&(info)->name), \
-			SPA_POD_Int(&(info)->change_mask), \
+			SPA_POD_Long(&(info)->change_mask), \
 			SPA_POD_Pod(&(info)->link_params), \
 			NULL) < 0) \
 		return -EINVAL; \
@@ -266,7 +254,7 @@ marshal_pw_endpoint_link_info(struct spa_pod_builder *b,
 		SPA_POD_Int(info->output_stream_id),
 		SPA_POD_Int(info->input_endpoint_id),
 		SPA_POD_Int(info->input_stream_id),
-		SPA_POD_Int(info->change_mask),
+		SPA_POD_Long(info->change_mask),
 		SPA_POD_Int(info->state),
 		SPA_POD_String(info->error),
 		NULL);
@@ -290,7 +278,7 @@ do { \
 			SPA_POD_Int(&(info)->output_stream_id), \
 			SPA_POD_Int(&(info)->input_endpoint_id), \
 			SPA_POD_Int(&(info)->input_stream_id), \
-			SPA_POD_Int(&(info)->change_mask), \
+			SPA_POD_Long(&(info)->change_mask), \
 			SPA_POD_Int(&(info)->state), \
 			SPA_POD_String(&(info)->error), \
 			NULL) < 0) \
@@ -462,10 +450,10 @@ static int client_endpoint_marshal_stream_update(void *object,
 	return pw_protocol_native_end_proxy(proxy, b);
 }
 
-static int client_endpoint_demarshal_set_session_id(void *object,
+static int client_endpoint_demarshal_set_session_id(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id;
 
@@ -478,10 +466,10 @@ static int client_endpoint_demarshal_set_session_id(void *object,
 				set_session_id, 0, id);
 }
 
-static int client_endpoint_demarshal_set_param(void *object,
+static int client_endpoint_demarshal_set_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id, flags;
 	const struct spa_pod *param = NULL;
@@ -497,10 +485,10 @@ static int client_endpoint_demarshal_set_param(void *object,
 				set_param, 0, id, flags, param);
 }
 
-static int client_endpoint_demarshal_stream_set_param(void *object,
+static int client_endpoint_demarshal_stream_set_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t stream_id, id, flags;
 	const struct spa_pod *param = NULL;
@@ -517,10 +505,10 @@ static int client_endpoint_demarshal_stream_set_param(void *object,
 				stream_set_param, 0, stream_id, id, flags, param);
 }
 
-static int client_endpoint_demarshal_create_link(void *object,
+static int client_endpoint_demarshal_create_link(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -553,6 +541,8 @@ static int client_endpoint_demarshal_update(void *object,
 			SPA_POD_Int(&n_params), NULL) < 0)
 		return -EINVAL;
 
+	if (n_params > MAX_PARAMS)
+		return -ENOSPC;
 	if (n_params > 0)
 		params = alloca(n_params * sizeof(struct spa_pod *));
 	for (i = 0; i < n_params; i++)
@@ -593,6 +583,8 @@ static int client_endpoint_demarshal_stream_update(void *object,
 			SPA_POD_Int(&n_params), NULL) < 0)
 		return -EINVAL;
 
+	if (n_params > MAX_PARAMS)
+		return -ENOSPC;
 	if (n_params > 0)
 		params = alloca(n_params * sizeof(struct spa_pod *));
 	for (i = 0; i < n_params; i++)
@@ -660,11 +652,11 @@ static const struct pw_protocol_marshal pw_protocol_native_client_endpoint_marsh
  *              CLIENT SESSION
  ***********************************************/
 
-static int client_session_marshal_set_param (void *object,
+static int client_session_marshal_set_param (void *data,
 					uint32_t id, uint32_t flags,
 					const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -678,11 +670,11 @@ static int client_session_marshal_set_param (void *object,
 	return pw_protocol_native_end_resource(resource, b);
 }
 
-static int client_session_marshal_link_set_param (void *object,
+static int client_session_marshal_link_set_param (void *data,
 				uint32_t link_id, uint32_t id,
 				uint32_t flags, const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -697,10 +689,10 @@ static int client_session_marshal_link_set_param (void *object,
 	return pw_protocol_native_end_resource(resource, b);
 }
 
-static int client_session_marshal_link_request_state (void *object,
+static int client_session_marshal_link_request_state (void *data,
 				uint32_t link_id, uint32_t state)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -791,10 +783,10 @@ static int client_session_marshal_link_update(void *object,
 	return pw_protocol_native_end_proxy(proxy, b);
 }
 
-static int client_session_demarshal_set_param(void *object,
+static int client_session_demarshal_set_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id, flags;
 	const struct spa_pod *param = NULL;
@@ -810,10 +802,10 @@ static int client_session_demarshal_set_param(void *object,
 				set_param, 0, id, flags, param);
 }
 
-static int client_session_demarshal_link_set_param(void *object,
+static int client_session_demarshal_link_set_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t link_id, id, flags;
 	const struct spa_pod *param = NULL;
@@ -830,10 +822,10 @@ static int client_session_demarshal_link_set_param(void *object,
 				link_set_param, 0, link_id, id, flags, param);
 }
 
-static int client_session_demarshal_link_request_state(void *object,
+static int client_session_demarshal_link_request_state(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t link_id, state;
 
@@ -867,6 +859,8 @@ static int client_session_demarshal_update(void *object,
 			SPA_POD_Int(&n_params), NULL) < 0)
 		return -EINVAL;
 
+	if (n_params > MAX_PARAMS)
+		return -ENOSPC;
 	if (n_params > 0)
 		params = alloca(n_params * sizeof(struct spa_pod *));
 	for (i = 0; i < n_params; i++)
@@ -907,6 +901,8 @@ static int client_session_demarshal_link_update(void *object,
 			SPA_POD_Int(&n_params), NULL) < 0)
 		return -EINVAL;
 
+	if (n_params > MAX_PARAMS)
+		return -ENOSPC;
 	if (n_params > 0)
 		params = alloca(n_params * sizeof(struct spa_pod *));
 	for (i = 0; i < n_params; i++)
@@ -972,10 +968,10 @@ static const struct pw_protocol_marshal pw_protocol_native_client_session_marsha
  *               ENDPOINT LINK
  ***********************************************/
 
-static void endpoint_link_proxy_marshal_info (void *object,
+static void endpoint_link_proxy_marshal_info (void *data,
 				const struct pw_endpoint_link_info *info)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -986,10 +982,10 @@ static void endpoint_link_proxy_marshal_info (void *object,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void endpoint_link_resource_marshal_info (void *object,
+static void endpoint_link_resource_marshal_info (void *data,
 				const struct pw_endpoint_link_info *info)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -1000,11 +996,11 @@ static void endpoint_link_resource_marshal_info (void *object,
 	pw_protocol_native_end_resource(resource, b);
 }
 
-static void endpoint_link_proxy_marshal_param (void *object, int seq, uint32_t id,
+static void endpoint_link_proxy_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -1019,11 +1015,11 @@ static void endpoint_link_proxy_marshal_param (void *object, int seq, uint32_t i
 
 	pw_protocol_native_end_proxy(proxy, b);
 }
-static void endpoint_link_resource_marshal_param (void *object, int seq, uint32_t id,
+static void endpoint_link_resource_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -1197,10 +1193,10 @@ static int endpoint_link_resource_marshal_request_state(void *object,
 	return pw_protocol_native_end_resource(resource, b);
 }
 
-static int endpoint_link_proxy_demarshal_info(void *object,
+static int endpoint_link_proxy_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -1214,10 +1210,10 @@ static int endpoint_link_proxy_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int endpoint_link_resource_demarshal_info(void *object,
+static int endpoint_link_resource_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -1231,10 +1227,10 @@ static int endpoint_link_resource_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int endpoint_link_proxy_demarshal_param(void *object,
+static int endpoint_link_proxy_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -1253,10 +1249,10 @@ static int endpoint_link_proxy_demarshal_param(void *object,
 				param, 0, seq, id, index, next, param);
 }
 
-static int endpoint_link_resource_demarshal_param(void *object,
+static int endpoint_link_resource_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -1521,10 +1517,10 @@ static const struct pw_protocol_marshal pw_protocol_native_endpoint_link_impl_ma
  *               ENDPOINT STREAM
  ***********************************************/
 
-static void endpoint_stream_proxy_marshal_info (void *object,
+static void endpoint_stream_proxy_marshal_info (void *data,
 				const struct pw_endpoint_stream_info *info)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -1535,10 +1531,10 @@ static void endpoint_stream_proxy_marshal_info (void *object,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void endpoint_stream_resource_marshal_info (void *object,
+static void endpoint_stream_resource_marshal_info (void *data,
 				const struct pw_endpoint_stream_info *info)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -1549,11 +1545,11 @@ static void endpoint_stream_resource_marshal_info (void *object,
 	pw_protocol_native_end_resource(resource, b);
 }
 
-static void endpoint_stream_proxy_marshal_param (void *object, int seq, uint32_t id,
+static void endpoint_stream_proxy_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -1569,11 +1565,11 @@ static void endpoint_stream_proxy_marshal_param (void *object, int seq, uint32_t
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void endpoint_stream_resource_marshal_param (void *object, int seq, uint32_t id,
+static void endpoint_stream_resource_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -1719,10 +1715,10 @@ static int endpoint_stream_resource_marshal_set_param(void *object,
 	return pw_protocol_native_end_resource(resource, b);
 }
 
-static int endpoint_stream_proxy_demarshal_info(void *object,
+static int endpoint_stream_proxy_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -1736,10 +1732,10 @@ static int endpoint_stream_proxy_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int endpoint_stream_resource_demarshal_info(void *object,
+static int endpoint_stream_resource_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -1753,10 +1749,10 @@ static int endpoint_stream_resource_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int endpoint_stream_proxy_demarshal_param(void *object,
+static int endpoint_stream_proxy_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -1775,10 +1771,10 @@ static int endpoint_stream_proxy_demarshal_param(void *object,
 				param, 0, seq, id, index, next, param);
 }
 
-static int endpoint_stream_resource_demarshal_param(void *object,
+static int endpoint_stream_resource_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -2007,10 +2003,10 @@ static const struct pw_protocol_marshal pw_protocol_native_endpoint_stream_impl_
  *                  ENDPOINT
  ***********************************************/
 
-static void endpoint_proxy_marshal_info (void *object,
+static void endpoint_proxy_marshal_info (void *data,
 				const struct pw_endpoint_info *info)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -2021,10 +2017,10 @@ static void endpoint_proxy_marshal_info (void *object,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void endpoint_resource_marshal_info (void *object,
+static void endpoint_resource_marshal_info (void *data,
 				const struct pw_endpoint_info *info)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -2035,11 +2031,11 @@ static void endpoint_resource_marshal_info (void *object,
 	pw_protocol_native_end_resource(resource, b);
 }
 
-static void endpoint_proxy_marshal_param (void *object, int seq, uint32_t id,
+static void endpoint_proxy_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -2055,11 +2051,11 @@ static void endpoint_proxy_marshal_param (void *object, int seq, uint32_t id,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void endpoint_resource_marshal_param (void *object, int seq, uint32_t id,
+static void endpoint_resource_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -2233,10 +2229,10 @@ static int endpoint_resource_marshal_create_link(void *object,
 	return pw_protocol_native_end_resource(resource, b);
 }
 
-static int endpoint_proxy_demarshal_info(void *object,
+static int endpoint_proxy_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -2250,10 +2246,10 @@ static int endpoint_proxy_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int endpoint_resource_demarshal_info(void *object,
+static int endpoint_resource_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -2267,10 +2263,10 @@ static int endpoint_resource_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int endpoint_proxy_demarshal_param(void *object,
+static int endpoint_proxy_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -2289,10 +2285,10 @@ static int endpoint_proxy_demarshal_param(void *object,
 				param, 0, seq, id, index, next, param);
 }
 
-static int endpoint_resource_demarshal_param(void *object,
+static int endpoint_resource_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -2557,10 +2553,10 @@ static const struct pw_protocol_marshal pw_protocol_native_endpoint_impl_marshal
  *                 SESSION
  ***********************************************/
 
-static void session_proxy_marshal_info (void *object,
+static void session_proxy_marshal_info (void *data,
 				const struct pw_session_info *info)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -2571,10 +2567,10 @@ static void session_proxy_marshal_info (void *object,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void session_resource_marshal_info (void *object,
+static void session_resource_marshal_info (void *data,
 				const struct pw_session_info *info)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -2585,11 +2581,11 @@ static void session_resource_marshal_info (void *object,
 	pw_protocol_native_end_resource(resource, b);
 }
 
-static void session_proxy_marshal_param (void *object, int seq, uint32_t id,
+static void session_proxy_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_proxy(proxy,
@@ -2605,11 +2601,11 @@ static void session_proxy_marshal_param (void *object, int seq, uint32_t id,
 	pw_protocol_native_end_proxy(proxy, b);
 }
 
-static void session_resource_marshal_param (void *object, int seq, uint32_t id,
+static void session_resource_marshal_param (void *data, int seq, uint32_t id,
 					uint32_t index, uint32_t next,
 					const struct spa_pod *param)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_builder *b;
 
 	b = pw_protocol_native_begin_resource(resource,
@@ -2755,10 +2751,10 @@ static int session_resource_marshal_set_param(void *object,
 	return pw_protocol_native_end_resource(resource, b);
 }
 
-static int session_proxy_demarshal_info(void *object,
+static int session_proxy_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -2772,10 +2768,10 @@ static int session_proxy_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int session_resource_demarshal_info(void *object,
+static int session_resource_demarshal_info(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	struct spa_pod_frame f;
 	struct spa_dict props = SPA_DICT_INIT(NULL, 0);
@@ -2789,10 +2785,10 @@ static int session_resource_demarshal_info(void *object,
 				info, 0, &info);
 }
 
-static int session_proxy_demarshal_param(void *object,
+static int session_proxy_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_proxy *proxy = object;
+	struct pw_proxy *proxy = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;
@@ -2811,10 +2807,10 @@ static int session_proxy_demarshal_param(void *object,
 				param, 0, seq, id, index, next, param);
 }
 
-static int session_resource_demarshal_param(void *object,
+static int session_resource_demarshal_param(void *data,
 				const struct pw_protocol_native_message *msg)
 {
-	struct pw_resource *resource = object;
+	struct pw_resource *resource = data;
 	struct spa_pod_parser prs;
 	uint32_t id, index, next;
 	int seq;

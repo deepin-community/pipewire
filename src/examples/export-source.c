@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 /*
  [title]
@@ -46,6 +26,7 @@
 #define M_PI_M2 ( M_PI + M_PI )
 
 #define BUFFER_SAMPLES	128
+#define MAX_BUFFERS	32
 
 struct buffer {
 	uint32_t id;
@@ -79,7 +60,7 @@ struct data {
 
 	struct spa_audio_info_raw format;
 
-	struct buffer buffers[32];
+	struct buffer buffers[MAX_BUFFERS];
 	uint32_t n_buffers;
 	struct spa_list empty;
 
@@ -221,8 +202,7 @@ static int impl_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
 							BUFFER_SAMPLES * sizeof(float), 32, INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(sizeof(float)),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(sizeof(float)));
 		break;
 
 	case SPA_PARAM_Meta:
@@ -276,26 +256,31 @@ static int port_set_format(void *object,
 {
 	struct data *d = object;
 
-	d->info.change_mask = SPA_PORT_CHANGE_MASK_PARAMS;
 	if (format == NULL) {
-		d->format.format = 0;
-		d->params[3] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
-		d->params[4] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
-		spa_node_emit_port_info(&d->hooks, SPA_DIRECTION_OUTPUT, 0, &d->info);
-		return 0;
+		spa_zero(d->format);
+	} else {
+		spa_debug_format(0, NULL, format);
+
+		if (spa_format_audio_raw_parse(format, &d->format) < 0)
+			return -EINVAL;
+
+		if (d->format.format != SPA_AUDIO_FORMAT_S16 &&
+		    d->format.format != SPA_AUDIO_FORMAT_F32)
+			return -EINVAL;
+		if (d->format.rate == 0 ||
+		    d->format.channels == 0 ||
+		    d->format.channels > SPA_AUDIO_MAX_CHANNELS)
+			return -EINVAL;
 	}
 
-	spa_debug_format(0, NULL, format);
-
-	if (spa_format_audio_raw_parse(format, &d->format) < 0)
-		return -EINVAL;
-
-	if (d->format.format != SPA_AUDIO_FORMAT_S16 &&
-	    d->format.format != SPA_AUDIO_FORMAT_F32)
-		return -EINVAL;
-
-	d->params[3] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
-	d->params[4] = SPA_PARAM_INFO(SPA_PARAM_Buffers, SPA_PARAM_INFO_READ);
+	d->info.change_mask = SPA_PORT_CHANGE_MASK_PARAMS;
+	if (format) {
+		d->params[3] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
+		d->params[4] = SPA_PARAM_INFO(SPA_PARAM_Buffers, SPA_PARAM_INFO_READ);
+	} else {
+		d->params[3] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
+		d->params[4] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
+	}
 	spa_node_emit_port_info(&d->hooks, SPA_DIRECTION_OUTPUT, 0, &d->info);
 
 	return 0;
@@ -320,6 +305,9 @@ static int impl_port_use_buffers(void *object,
 {
 	struct data *d = object;
 	uint32_t i;
+
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b = &d->buffers[i];
@@ -484,7 +472,7 @@ static void make_node(struct data *data)
 				  PW_KEY_MEDIA_ROLE, "Music",
 				  NULL);
 	if (data->path)
-		pw_properties_set(props, PW_KEY_NODE_TARGET, data->path);
+		pw_properties_set(props, PW_KEY_TARGET_OBJECT, data->path);
 
 	data->impl_node.iface = SPA_INTERFACE_INIT(
 			SPA_TYPE_INTERFACE_Node,

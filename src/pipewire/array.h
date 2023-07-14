@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_ARRAY_H
 #define PIPEWIRE_ARRAY_H
@@ -52,7 +32,7 @@ struct pw_array {
 	size_t extend;		/**< number of bytes to extend with */
 };
 
-#define PW_ARRAY_INIT(extend) (struct pw_array) { NULL, 0, 0, extend }
+#define PW_ARRAY_INIT(extend) ((struct pw_array) { NULL, 0, 0, (extend) })
 
 #define pw_array_get_len_s(a,s)			((a)->size / (s))
 #define pw_array_get_unchecked_s(a,idx,s,t)	SPA_PTROFF((a)->data,(idx)*(s),t)
@@ -67,17 +47,17 @@ struct pw_array {
 
 #define pw_array_first(a)	((a)->data)
 #define pw_array_end(a)		SPA_PTROFF((a)->data, (a)->size, void)
-#define pw_array_check(a,p)	(SPA_PTROFF(p,sizeof(*p),void) <= pw_array_end(a))
+#define pw_array_check(a,p)	(SPA_PTROFF(p,sizeof(*(p)),void) <= pw_array_end(a))
 
 #define pw_array_for_each(pos, array)					\
-	for (pos = (__typeof__(pos)) pw_array_first(array);		\
+	for ((pos) = (__typeof__(pos)) pw_array_first(array);		\
 	     pw_array_check(array, pos);				\
 	     (pos)++)
 
 #define pw_array_consume(pos, array)					\
-	for (pos = (__typeof__(pos)) pw_array_first(array);		\
+	for ((pos) = (__typeof__(pos)) pw_array_first(array);		\
 	     pw_array_check(array, pos);				\
-	     pos = (__typeof__(pos)) pw_array_first(array))
+	     (pos) = (__typeof__(pos)) pw_array_first(array))
 
 #define pw_array_remove(a,p)						\
 ({									\

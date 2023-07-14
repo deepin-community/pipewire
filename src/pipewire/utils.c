@@ -1,40 +1,22 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
-#if HAVE_SYS_RANDOM_H
+#ifdef HAVE_SYS_RANDOM_H
 #include <sys/random.h>
 #endif
 #include <string.h>
+#include <time.h>
 
 #include <pipewire/array.h>
 #include <pipewire/log.h>
 #include <pipewire/utils.h>
+#include <pipewire/private.h>
 
 /** Split a string based on delimiters
  * \param str a string to split
@@ -97,6 +79,37 @@ char **pw_split_strv(const char *str, const char *delimiter, int max_tokens, int
 	return arr.data;
 }
 
+/** Split a string in-place based on delimiters
+ * \param str a string to split
+ * \param delimiter delimiter characters to split on
+ * \param max_tokens the max number of tokens to split
+ * \param[out] tokens an array to hold up to \a max_tokens of strings
+ * \return the number of tokens in \a tokens
+ *
+ * \a str will be modified in-place so that \a tokens will contain zero terminated
+ * strings split at \a delimiter characters.
+ */
+SPA_EXPORT
+int pw_split_ip(char *str, const char *delimiter, int max_tokens, char *tokens[])
+{
+	const char *state = NULL;
+	char *s, *t;
+	size_t len, l2;
+	int n = 0;
+
+	s = (char *)pw_split_walk(str, delimiter, &len, &state);
+	while (s && n + 1 < max_tokens) {
+		t = (char*)pw_split_walk(str, delimiter, &l2, &state);
+		s[len] = '\0';
+		tokens[n++] = s;
+		s = t;
+		len = l2;
+	}
+	if (s)
+		tokens[n++] = s;
+	return n;
+}
+
 /** Free a NULL terminated array of strings
  * \param str a NULL terminated array of string
  *
@@ -142,6 +155,31 @@ char *pw_strip(char *str, const char *whitespace)
 	return str;
 }
 
+static inline ssize_t make_random(void *buf, size_t buflen, unsigned int flags)
+{
+	ssize_t bytes;
+
+#ifdef HAVE_GETRANDOM
+	bytes = getrandom(buf, buflen, flags);
+	if (bytes < 0)
+		bytes = -errno;
+	if (bytes != -ENOSYS)
+		return bytes;
+#endif
+
+	int fd = open("/dev/urandom", O_CLOEXEC);
+	if (fd < 0)
+		return -errno;
+
+	bytes = read(fd, buf, buflen);
+	if (bytes < 0)
+		bytes = -errno;
+
+	close(fd);
+
+	return bytes;
+}
+
 /** Fill a buffer with random data
  * \param buf a buffer to fill
  * \param buflen the number of bytes to fill
@@ -153,18 +191,68 @@ char *pw_strip(char *str, const char *whitespace)
 SPA_EXPORT
 ssize_t pw_getrandom(void *buf, size_t buflen, unsigned int flags)
 {
-	ssize_t bytes;
+	ssize_t res;
+	do {
+		res = make_random(buf, buflen, flags);
+	} while (res == -EINTR);
+	if (res < 0)
+		return res;
+	if ((size_t)res != buflen)
+		return -ENODATA;
+	return res;
+}
 
-#ifdef HAVE_GETRANDOM
-	bytes = getrandom(buf, buflen, flags);
-	if (!(bytes == -1 && errno == ENOSYS))
-		return bytes;
+#ifdef HAVE_RANDOM_R
+static char statebuf[256];
+static struct random_data random_state;
 #endif
 
-	int fd = open("/dev/urandom", O_CLOEXEC);
-	if (fd < 0)
-		return -1;
-	bytes = read(fd, buf, buflen);
-	close(fd);
-	return bytes;
+/** Fill a buffer with random data
+ * \param buf a buffer to fill
+ * \param buflen the number of bytes to fill
+ *
+ * Fill \a buf with \a buflen random bytes. This functions uses
+ * pw_getrandom() but falls back to a pseudo random number
+ * generator in case of failure.
+ */
+SPA_EXPORT
+void pw_random(void *buf, size_t buflen)
+{
+	if (pw_getrandom(buf, buflen, 0) < 0) {
+		uint8_t *p = buf;
+		while (buflen-- > 0) {
+			int32_t val;
+#ifdef HAVE_RANDOM_R
+			random_r(&random_state, &val);
+#else
+			val = rand();
+#endif
+			*p++ = (uint8_t) val;;
+		}
+	}
+}
+
+void pw_random_init(void)
+{
+	unsigned int seed;
+	if (pw_getrandom(&seed, sizeof(seed), 0) < 0) {
+		struct timespec ts;
+		clock_gettime(CLOCK_REALTIME, &ts);
+		seed = (unsigned int) SPA_TIMESPEC_TO_NSEC(&ts);
+	}
+#ifdef HAVE_RANDOM_R
+	initstate_r(seed, statebuf, sizeof(statebuf), &random_state);
+#else
+	srand(seed);
+#endif
+}
+
+SPA_EXPORT
+void* pw_reallocarray(void *ptr, size_t nmemb, size_t size)
+{
+#ifdef HAVE_REALLOCARRAY
+	return reallocarray(ptr, nmemb, size);
+#else
+	return realloc(ptr, nmemb * size);
+#endif
 }

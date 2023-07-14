@@ -1,8 +1,9 @@
 doxyfile_conf = configuration_data()
 doxyfile_conf.set('PACKAGE_NAME', meson.project_name())
 doxyfile_conf.set('PACKAGE_VERSION', meson.project_version())
-doxyfile_conf.set('top_srcdir', meson.source_root())
-doxyfile_conf.set('top_builddir', meson.build_root())
+doxyfile_conf.set('top_srcdir', meson.project_source_root())
+doxyfile_conf.set('top_builddir', meson.project_build_root())
+doxyfile_conf.set('output_directory', meson.current_build_dir())
 
 dot_found = find_program('dot', required: false).found()
 summary({'dot (used with doxygen)': dot_found}, bool_yn: true, section: 'Optional programs')
@@ -26,10 +27,11 @@ extra_docs = [
   'pipewire-daemon.dox',
   'pipewire-library.dox',
   'pipewire-modules.dox',
-  'pipewire-tools.dox',
   'pipewire-session-manager.dox',
   'pipewire-objects-design.dox',
   'pipewire-audio.dox',
+  'pipewire-scheduling.dox',
+  'pipewire-protocol.dox',
   'tutorial.dox',
   'tutorial1.dox',
   'tutorial2.dox',
@@ -49,35 +51,35 @@ extra_docs = [
 
 inputs = []
 foreach extra : extra_docs
-  inputs += meson.source_root() / 'doc' / extra
+  inputs += meson.project_source_root() / 'doc' / extra
 endforeach
 foreach h : pipewire_headers
-  inputs += meson.source_root() / 'src' / 'pipewire' / h
+  inputs += meson.project_source_root() / 'src' / 'pipewire' / h
 endforeach
 foreach h : pipewire_ext_headers
-  inputs += meson.source_root() / 'src' / 'pipewire' / 'extensions' / h
+  inputs += meson.project_source_root() / 'src' / 'pipewire' / 'extensions' / h
 endforeach
 foreach h : pipewire_ext_sm_headers
-  inputs += meson.source_root() / 'src' / 'pipewire' / 'extensions' / h
+  inputs += meson.project_source_root() / 'src' / 'pipewire' / 'extensions' / h
 endforeach
 foreach h : pipewire_sources
-  inputs += meson.source_root() / 'src' / 'pipewire' / h
+  inputs += meson.project_source_root() / 'src' / 'pipewire' / h
 endforeach
 foreach h : module_sources
-  inputs += meson.source_root() / 'src' / 'modules' / h
+  inputs += meson.project_source_root() / 'src' / 'modules' / h
 endforeach
-inputs += meson.source_root() / 'test' / 'pwtest.h'
-input_dirs = [ meson.source_root() / 'spa' / 'include' / 'spa' ]
+inputs += meson.project_source_root() / 'test' / 'pwtest.h'
+input_dirs = [ meson.project_source_root() / 'spa' / 'include' / 'spa' ]
 
 path_prefixes = [
-  meson.source_root() / 'src',
-  meson.source_root() / 'spa' / 'include',
-  meson.source_root(),
+  meson.project_source_root() / 'src',
+  meson.project_source_root() / 'spa' / 'include',
+  meson.project_source_root(),
 ]
 
 cssfiles = [
-  meson.source_root() / 'doc' / 'doxygen-awesome.css',
-  meson.source_root() / 'doc' / 'custom.css'
+  meson.project_source_root() / 'doc' / 'doxygen-awesome.css',
+  meson.project_source_root() / 'doc' / 'custom.css'
 ]
 
 # Example files (in order from simple to esoteric)
@@ -115,11 +117,35 @@ examples_dox = configure_file(input: 'examples.dox.in',
 
 input_dirs += [ 'doc/examples.dox' ]
 
+man_doxygen = []
+man_subpages = []
+foreach m : manpages
+  manconf = configuration_data()
+  pagename = 'page_man_' + m.split('.rst.in').get(0).replace('.', '_').replace('-', '_')
+  filename = m.split('.rst.in').get(0) + '.dox'
+  manconf.set('pagename', pagename)
+  manconf.set('title', m.split('.rst.in').get(0).replace('.1','').replace('.5',''))
+  manconf.set('filename', meson.project_source_root() / 'man' / m)
+  manfile = configure_file(input: 'manpage.dox.in',
+                           output: filename,
+                           configuration: manconf)
+  man_doxygen += [manfile]
+  man_subpages += ['- \subpage ' + pagename]
+  input_dirs += [ 'doc/' + filename ]
+endforeach
+
+pw_tools_dox_conf = configuration_data()
+pw_tools_dox_conf.set('man_subpages', '\n'.join(man_subpages))
+pw_tools_dox = configure_file(input: 'pipewire-tools.dox.in',
+                          output: 'pipewire-tools.dox',
+                          configuration: pw_tools_dox_conf)
+input_dirs += [ 'doc/pipewire-tools.dox' ]
+
 doxyfile_conf.set('inputs', ' '.join(inputs + input_dirs))
 doxyfile_conf.set('cssfiles', ' '.join(cssfiles))
 doxyfile_conf.set('path_prefixes', ' '.join(path_prefixes))
-doxyfile_conf.set('c_input_filter', meson.source_root() / 'doc' / 'input-filter.sh')
-doxyfile_conf.set('h_input_filter', meson.source_root() / 'doc' / 'input-filter-h.sh')
+doxyfile_conf.set('c_input_filter', meson.project_source_root() / 'doc' / 'input-filter.sh')
+doxyfile_conf.set('h_input_filter', meson.project_source_root() / 'doc' / 'input-filter-h.sh')
 
 doxyfile = configure_file(input: 'Doxyfile.in',
                           output: 'Doxyfile',
@@ -131,7 +157,7 @@ if docdir == ''
 endif
 
 html_target = custom_target('pipewire-docs',
-                            input: [ doxyfile, examples_dox ] + inputs + cssfiles,
+                            input: [ doxyfile, examples_dox, pw_tools_dox ] + inputs + cssfiles + man_doxygen,
                             output: [ 'html' ],
                             command: [ doxygen, doxyfile ],
                             install: true,

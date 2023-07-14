@@ -1,36 +1,14 @@
-/* Spa libcamera Source
- *
- * Copyright (C) 2020, Collabora Ltd.
- *     Author: Raghavendra Rao Sidlagatta <raghavendra.rao@collabora.com>
- * Copyright (C) 2021 Wim Taymans <wim.taymans@gmail.com>
- *
- * libcamera-source.cpp
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa libcamera source */
+/* SPDX-FileCopyrightText: Copyright © 2020 Collabora Ltd. */
+/*                         @author Raghavendra Rao Sidlagatta <raghavendra.rao@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <deque>
+#include <optional>
 
 #include <spa/support/plugin.h>
 #include <spa/support/log.h>
@@ -48,8 +26,8 @@
 #include <spa/node/keys.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/param/param.h>
+#include <spa/control/control.h>
 #include <spa/pod/filter.h>
-#include <spa/debug/pod.h>
 
 #include <libcamera/camera.h>
 #include <libcamera/stream.h>
@@ -60,15 +38,9 @@
 #include "libcamera.h"
 #include "libcamera-manager.hpp"
 
-struct props {
-	char device[128];
-	char device_name[128];
-};
+using namespace libcamera;
 
-static void reset_props(struct props *props)
-{
-	spa_zero(*props);
-}
+namespace {
 
 #define MAX_BUFFERS	32
 #define MASK_BUFFERS	31
@@ -83,6 +55,7 @@ struct buffer {
 	struct spa_list link;
 	struct spa_buffer *outbuf;
 	struct spa_meta_header *h;
+	struct spa_meta_videotransform *videotransform;
 	void *ptr;
 };
 
@@ -97,75 +70,110 @@ struct control {
 struct port {
 	struct impl *impl;
 
-	bool have_format;
-	struct spa_video_info current_format;
-	struct spa_fraction rate;
+	std::optional<spa_video_info> current_format;
+
+	struct spa_fraction rate = {};
 	StreamConfiguration streamConfig;
 
-	uint32_t memtype;
+	uint32_t memtype = 0;
 
 	struct control controls[MAX_CONTROLS];
-	uint32_t n_controls;
+	uint32_t n_controls = 0;
 
 	struct buffer buffers[MAX_BUFFERS];
-	uint32_t n_buffers;
+	uint32_t n_buffers = 0;
 	struct spa_list queue;
-	struct spa_ringbuffer ring;
+	struct spa_ringbuffer ring = SPA_RINGBUFFER_INIT();
 	uint32_t ring_ids[MAX_BUFFERS];
 
-	uint64_t info_all;
-	struct spa_port_info info;
-	struct spa_io_buffers *io;
-	struct spa_io_sequence *control;
-	struct spa_param_info params[8];
+	static constexpr uint64_t info_all = SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_PARAMS;
+	struct spa_port_info info = SPA_PORT_INFO_INIT();
+	struct spa_io_buffers *io = nullptr;
+	struct spa_io_sequence *control = nullptr;
+#define PORT_PropInfo	0
+#define PORT_EnumFormat	1
+#define PORT_Meta	2
+#define PORT_IO		3
+#define PORT_Format	4
+#define PORT_Buffers	5
+#define N_PORT_PARAMS	6
+	struct spa_param_info params[N_PORT_PARAMS];
 
-	uint32_t fmt_index;
-	bool next_fmt;
+	uint32_t fmt_index = 0;
 	PixelFormat enum_fmt;
-	uint32_t size_index;
-	bool next_size;
+	uint32_t size_index = 0;
+
+	port(struct impl *impl)
+		: impl(impl)
+	{
+		spa_list_init(&queue);
+
+		params[PORT_PropInfo] = SPA_PARAM_INFO(SPA_PARAM_PropInfo, SPA_PARAM_INFO_READ);
+		params[PORT_EnumFormat] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
+		params[PORT_Meta] = SPA_PARAM_INFO(SPA_PARAM_Meta, SPA_PARAM_INFO_READ);
+		params[PORT_IO] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);
+		params[PORT_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
+		params[PORT_Buffers] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
+
+		info.flags = SPA_PORT_FLAG_LIVE | SPA_PORT_FLAG_PHYSICAL | SPA_PORT_FLAG_TERMINAL;
+		info.params = params;
+		info.n_params = N_PORT_PARAMS;
+	}
 };
 
 struct impl {
 	struct spa_handle handle;
-	struct spa_node node;
+	struct spa_node node = {};
 
 	struct spa_log *log;
 	struct spa_loop *data_loop;
 	struct spa_system *system;
 
-	uint64_t info_all;
-	struct spa_node_info info;
-	struct spa_param_info params[8];
-	struct props props;
+	static constexpr uint64_t info_all =
+		SPA_NODE_CHANGE_MASK_FLAGS |
+		SPA_NODE_CHANGE_MASK_PROPS |
+		SPA_NODE_CHANGE_MASK_PARAMS;
+	struct spa_node_info info = SPA_NODE_INFO_INIT();
+#define NODE_PropInfo	0
+#define NODE_Props	1
+#define NODE_EnumFormat	2
+#define NODE_Format	3
+#define N_NODE_PARAMS	4
+	struct spa_param_info params[N_NODE_PARAMS];
+
+	std::string device_id;
+	std::string device_name;
 
 	struct spa_hook_list hooks;
-	struct spa_callbacks callbacks;
+	struct spa_callbacks callbacks = {};
 
-	struct port out_ports[1];
+	std::array<port, 1> out_ports;
 
-	struct spa_io_position *position;
-	struct spa_io_clock *clock;
+	struct spa_io_position *position = nullptr;
+	struct spa_io_clock *clock = nullptr;
 
-	CameraManager *manager;
+	std::shared_ptr<CameraManager> manager;
 	std::shared_ptr<Camera> camera;
 
-	FrameBufferAllocator *allocator;
+	FrameBufferAllocator *allocator = nullptr;
 	std::vector<std::unique_ptr<libcamera::Request>> requestPool;
 	std::deque<libcamera::Request *> pendingRequests;
 
 	void requestComplete(libcamera::Request *request);
 
-	unsigned int have_config;
 	std::unique_ptr<CameraConfiguration> config;
 
-	struct spa_source source;
+	struct spa_source source = {};
 
-	unsigned int active:1;
-	unsigned int acquired:1;
+	ControlList ctrls;
+	bool active = false;
+	bool acquired = false;
+
+	impl(spa_log *log, spa_loop *data_loop, spa_system *system,
+	     std::shared_ptr<CameraManager> manager, std::shared_ptr<Camera> camera, std::string device_id);
 };
 
-typedef struct impl Impl;
+}
 
 #define CHECK_PORT(impl,direction,port_id)  ((direction) == SPA_DIRECTION_OUTPUT && (port_id) == 0)
 
@@ -173,6 +181,55 @@ typedef struct impl Impl;
 #define GET_PORT(impl,d,p)           GET_OUT_PORT(impl,p)
 
 #include "libcamera-utils.cpp"
+
+static int port_get_format(struct impl *impl, struct port *port,
+			   uint32_t index,
+			   const struct spa_pod *filter,
+			   struct spa_pod **param,
+			   struct spa_pod_builder *builder)
+{
+	struct spa_pod_frame f;
+
+	if (!port->current_format)
+		return -EIO;
+	if (index > 0)
+		return 0;
+
+	spa_pod_builder_push_object(builder, &f, SPA_TYPE_OBJECT_Format, SPA_PARAM_Format);
+	spa_pod_builder_add(builder,
+		SPA_FORMAT_mediaType,    SPA_POD_Id(port->current_format->media_type),
+		SPA_FORMAT_mediaSubtype, SPA_POD_Id(port->current_format->media_subtype),
+		0);
+
+	switch (port->current_format->media_subtype) {
+	case SPA_MEDIA_SUBTYPE_raw:
+		spa_pod_builder_add(builder,
+			SPA_FORMAT_VIDEO_format,    SPA_POD_Id(port->current_format->info.raw.format),
+			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format->info.raw.size),
+			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format->info.raw.framerate),
+			0);
+		break;
+	case SPA_MEDIA_SUBTYPE_mjpg:
+	case SPA_MEDIA_SUBTYPE_jpeg:
+		spa_pod_builder_add(builder,
+			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format->info.mjpg.size),
+			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format->info.mjpg.framerate),
+			0);
+		break;
+	case SPA_MEDIA_SUBTYPE_h264:
+		spa_pod_builder_add(builder,
+			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format->info.h264.size),
+			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format->info.h264.framerate),
+			0);
+		break;
+	default:
+		return -EIO;
+	}
+
+	*param = (struct spa_pod*)spa_pod_builder_pop(builder, &f);
+
+	return 1;
+}
 
 static int impl_node_enum_params(void *object, int seq,
 				 uint32_t id, uint32_t start, uint32_t num,
@@ -184,6 +241,7 @@ static int impl_node_enum_params(void *object, int seq,
 	uint8_t buffer[1024];
 	struct spa_result_node_params result;
 	uint32_t count = 0;
+	int res;
 
 	spa_return_val_if_fail(impl != NULL, -EINVAL);
 	spa_return_val_if_fail(num != 0, -EINVAL);
@@ -198,44 +256,49 @@ next:
 	switch (id) {
 	case SPA_PARAM_PropInfo:
 	{
-		struct props *p = &impl->props;
-
 		switch (result.index) {
 		case 0:
 			param = (struct spa_pod*)spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_device),
-				SPA_PROP_INFO_name, SPA_POD_String("The libcamera device"),
-				SPA_PROP_INFO_type, SPA_POD_String(p->device));
+				SPA_PROP_INFO_description, SPA_POD_String("The libcamera device"),
+				SPA_PROP_INFO_type, SPA_POD_String(impl->device_id.c_str()));
 			break;
 		case 1:
 			param = (struct spa_pod*)spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_deviceName),
-				SPA_PROP_INFO_name, SPA_POD_String("The libcamera device name"),
-				SPA_PROP_INFO_type, SPA_POD_String(p->device_name));
+				SPA_PROP_INFO_description, SPA_POD_String("The libcamera device name"),
+				SPA_PROP_INFO_type, SPA_POD_String(impl->device_name.c_str()));
 			break;
 		default:
-			return 0;
+			return spa_libcamera_enum_controls(impl,
+					GET_OUT_PORT(impl, 0),
+					seq, result.index - 2, num, filter);
 		}
 		break;
 	}
 	case SPA_PARAM_Props:
 	{
-		struct props *p = &impl->props;
-
 		switch (result.index) {
 		case 0:
 			param = (struct spa_pod*)spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_Props, id,
-				SPA_PROP_device,     SPA_POD_String(p->device),
-				SPA_PROP_deviceName, SPA_POD_String(p->device_name));
+				SPA_PROP_device,     SPA_POD_String(impl->device_id.c_str()),
+				SPA_PROP_deviceName, SPA_POD_String(impl->device_name.c_str()));
 			break;
 		default:
 			return 0;
 		}
 		break;
 	}
+	case SPA_PARAM_EnumFormat:
+		return spa_libcamera_enum_format(impl, GET_OUT_PORT(impl, 0),
+				seq, start, num, filter);
+	case SPA_PARAM_Format:
+		if ((res = port_get_format(impl, GET_OUT_PORT(impl, 0), result.index, filter, &param, &b)) <= 0)
+			return res;
+		break;
 	default:
 		return -ENOENT;
 	}
@@ -262,15 +325,28 @@ static int impl_node_set_param(void *object,
 	switch (id) {
 	case SPA_PARAM_Props:
 	{
-		struct props *p = &impl->props;
+		struct spa_pod_object *obj = (struct spa_pod_object *) param;
+		struct spa_pod_prop *prop;
 
 		if (param == NULL) {
-			reset_props(p);
+			impl->device_id.clear();
+			impl->device_name.clear();
 			return 0;
 		}
-		spa_pod_parse_object(param,
-			SPA_TYPE_OBJECT_Props, NULL,
-			SPA_PROP_device, SPA_POD_OPT_Stringn(p->device, sizeof(p->device)));
+		SPA_POD_OBJECT_FOREACH(obj, prop) {
+			char device[128];
+
+			switch (prop->key) {
+			case SPA_PROP_device:
+				strncpy(device, (char *)SPA_POD_CONTENTS(struct spa_pod_string, &prop->value),
+						sizeof(device)-1);
+				impl->device_id = device;
+				break;
+			default:
+				spa_libcamera_set_control(impl, prop);
+				break;
+			}
+		}
 		break;
 	}
 	default:
@@ -311,7 +387,7 @@ static int impl_node_send_command(void *object, const struct spa_command *comman
 	{
 		struct port *port = GET_OUT_PORT(impl, 0);
 
-		if (!port->have_format)
+		if (!port->current_format)
 			return -EIO;
 		if (port->n_buffers == 0)
 			return -EIO;
@@ -336,7 +412,6 @@ static const struct spa_dict_item info_items[] = {
 	{ SPA_KEY_DEVICE_API, "libcamera" },
 	{ SPA_KEY_MEDIA_CLASS, "Video/Source" },
 	{ SPA_KEY_MEDIA_ROLE, "Camera" },
-	{ SPA_KEY_NODE_PAUSE_ON_IDLE, "false" },
 	{ SPA_KEY_NODE_DRIVER, "true" },
 };
 
@@ -424,55 +499,6 @@ static int impl_node_remove_port(void *object,
 	return -ENOTSUP;
 }
 
-static int port_get_format(struct impl *impl, struct port *port,
-			   uint32_t index,
-			   const struct spa_pod *filter,
-			   struct spa_pod **param,
-			   struct spa_pod_builder *builder)
-{
-	struct spa_pod_frame f;
-
-	if (!port->have_format)
-		return -EIO;
-	if (index > 0)
-		return 0;
-
-	spa_pod_builder_push_object(builder, &f, SPA_TYPE_OBJECT_Format, SPA_PARAM_Format);
-	spa_pod_builder_add(builder,
-		SPA_FORMAT_mediaType,    SPA_POD_Id(port->current_format.media_type),
-		SPA_FORMAT_mediaSubtype, SPA_POD_Id(port->current_format.media_subtype),
-		0);
-
-	switch (port->current_format.media_subtype) {
-	case SPA_MEDIA_SUBTYPE_raw:
-		spa_pod_builder_add(builder,
-			SPA_FORMAT_VIDEO_format,    SPA_POD_Id(port->current_format.info.raw.format),
-			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format.info.raw.size),
-			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format.info.raw.framerate),
-			0);
-		break;
-	case SPA_MEDIA_SUBTYPE_mjpg:
-	case SPA_MEDIA_SUBTYPE_jpeg:
-		spa_pod_builder_add(builder,
-			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format.info.mjpg.size),
-			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format.info.mjpg.framerate),
-			0);
-		break;
-	case SPA_MEDIA_SUBTYPE_h264:
-		spa_pod_builder_add(builder,
-			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format.info.h264.size),
-			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format.info.h264.framerate),
-			0);
-		break;
-	default:
-		return -EIO;
-	}
-
-	*param = (struct spa_pod*)spa_pod_builder_pop(builder, &f);
-
-	return 1;
-}
-
 static int impl_node_port_enum_params(void *object, int seq,
 				      enum spa_direction direction,
 				      uint32_t port_id,
@@ -515,7 +541,7 @@ next:
 		break;
 	case SPA_PARAM_Buffers:
 	{
-		if (!port->have_format)
+		if (!port->current_format)
 			return -EIO;
 		if (result.index > 0)
 			return 0;
@@ -530,8 +556,7 @@ next:
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(n_buffers, n_buffers, n_buffers),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_Int(port->streamConfig.frameSize),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->streamConfig.stride),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->streamConfig.stride));
 		break;
 	}
 	case SPA_PARAM_Meta:
@@ -541,6 +566,12 @@ next:
 				SPA_TYPE_OBJECT_ParamMeta, id,
 				SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
 				SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
+			break;
+		case 1:
+			param = (struct spa_pod*)spa_pod_builder_add_object(&b,
+				SPA_TYPE_OBJECT_ParamMeta, id,
+				SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoTransform),
+				SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_videotransform)));
 			break;
 		default:
 			return 0;
@@ -592,16 +623,17 @@ static int port_set_format(struct impl *impl, struct port *port,
 	int res;
 
 	if (format == NULL) {
-		if (!port->have_format)
+		if (!port->current_format)
 			return 0;
 
 		spa_libcamera_stream_off(impl);
 		spa_libcamera_clear_buffers(impl, port);
-		port->have_format = false;
+		port->current_format.reset();
 
 		spa_libcamera_close(impl);
 		goto done;
 	} else {
+		spa_zero(info);
 		if ((res = spa_format_parse(format, &info.media_type, &info.media_subtype)) < 0)
 			return res;
 
@@ -617,31 +649,34 @@ static int port_set_format(struct impl *impl, struct port *port,
 				return -EINVAL;
 			}
 
-			if (port->have_format && info.media_type == port->current_format.media_type &&
-			    info.media_subtype == port->current_format.media_subtype &&
-			    info.info.raw.format == port->current_format.info.raw.format &&
-			    info.info.raw.size.width == port->current_format.info.raw.size.width &&
-			    info.info.raw.size.height == port->current_format.info.raw.size.height)
+			if (port->current_format && info.media_type == port->current_format->media_type &&
+			    info.media_subtype == port->current_format->media_subtype &&
+			    info.info.raw.format == port->current_format->info.raw.format &&
+			    info.info.raw.size.width == port->current_format->info.raw.size.width &&
+			    info.info.raw.size.height == port->current_format->info.raw.size.height &&
+			    info.info.raw.flags == port->current_format->info.raw.flags &&
+			    (!(info.info.raw.flags & SPA_VIDEO_FLAG_MODIFIER) ||
+			     (info.info.raw.modifier == port->current_format->info.raw.modifier)))
 				return 0;
 			break;
 		case SPA_MEDIA_SUBTYPE_mjpg:
 			if (spa_format_video_mjpg_parse(format, &info.info.mjpg) < 0)
 				return -EINVAL;
 
-			if (port->have_format && info.media_type == port->current_format.media_type &&
-			    info.media_subtype == port->current_format.media_subtype &&
-			    info.info.mjpg.size.width == port->current_format.info.mjpg.size.width &&
-			    info.info.mjpg.size.height == port->current_format.info.mjpg.size.height)
+			if (port->current_format && info.media_type == port->current_format->media_type &&
+			    info.media_subtype == port->current_format->media_subtype &&
+			    info.info.mjpg.size.width == port->current_format->info.mjpg.size.width &&
+			    info.info.mjpg.size.height == port->current_format->info.mjpg.size.height)
 				return 0;
 			break;
 		case SPA_MEDIA_SUBTYPE_h264:
 			if (spa_format_video_h264_parse(format, &info.info.h264) < 0)
 				return -EINVAL;
 
-			if (port->have_format && info.media_type == port->current_format.media_type &&
-			    info.media_subtype == port->current_format.media_subtype &&
-			    info.info.h264.size.width == port->current_format.info.h264.size.width &&
-			    info.info.h264.size.height == port->current_format.info.h264.size.height)
+			if (port->current_format && info.media_type == port->current_format->media_type &&
+			    info.media_subtype == port->current_format->media_subtype &&
+			    info.info.h264.size.width == port->current_format->info.h264.size.width &&
+			    info.info.h264.size.height == port->current_format->info.h264.size.height)
 				return 0;
 			break;
 		default:
@@ -649,9 +684,9 @@ static int port_set_format(struct impl *impl, struct port *port,
 		}
 	}
 
-	if (port->have_format && !(flags & SPA_NODE_PARAM_FLAG_TEST_ONLY)) {
+	if (port->current_format && !(flags & SPA_NODE_PARAM_FLAG_TEST_ONLY)) {
 		spa_libcamera_use_buffers(impl, port, NULL, 0);
-		port->have_format = false;
+		port->current_format.reset();
 	}
 
 	if (spa_libcamera_set_format(impl, port, &info, flags & SPA_NODE_PARAM_FLAG_TEST_ONLY) < 0)
@@ -659,19 +694,22 @@ static int port_set_format(struct impl *impl, struct port *port,
 
 	if (!(flags & SPA_NODE_PARAM_FLAG_TEST_ONLY)) {
 		port->current_format = info;
-		port->have_format = true;
 	}
 
     done:
+	impl->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
-	if (port->have_format) {
-		port->params[4] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
-		port->params[5] = SPA_PARAM_INFO(SPA_PARAM_Buffers, SPA_PARAM_INFO_READ);
+	if (port->current_format) {
+		impl->params[NODE_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
+		port->params[PORT_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
+		port->params[PORT_Buffers] = SPA_PARAM_INFO(SPA_PARAM_Buffers, SPA_PARAM_INFO_READ);
 	} else {
-		port->params[4] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
-		port->params[5] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
+		impl->params[NODE_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
+		port->params[PORT_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
+		port->params[PORT_Buffers] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
 	}
 	emit_port_info(impl, port, false);
+	emit_node_info(impl, false);
 
 	return 0;
 }
@@ -716,14 +754,15 @@ static int impl_node_port_use_buffers(void *object,
 
 	port = GET_PORT(impl, direction, port_id);
 
-	if (!port->have_format)
-		return -EIO;
-
 	if (port->n_buffers) {
 		spa_libcamera_stream_off(impl);
 		if ((res = spa_libcamera_clear_buffers(impl, port)) < 0)
 			return res;
 	}
+	if (n_buffers > 0 && !port->current_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 	if (buffers == NULL)
 		return 0;
 
@@ -782,15 +821,9 @@ static int impl_node_port_reuse_buffer(void *object,
 	return res;
 }
 
-static void set_control(struct impl *impl, struct port *port, uint32_t control_id, float value)
-{
-	spa_log_error(impl->log, "Failed to set control");
-}
-
 static int process_control(struct impl *impl, struct spa_pod_sequence *control)
 {
 	struct spa_pod_control *c;
-	struct port *port;
 
 	SPA_POD_SEQUENCE_FOREACH(control, c) {
 		switch (c->type) {
@@ -800,9 +833,7 @@ static int process_control(struct impl *impl, struct spa_pod_sequence *control)
 			struct spa_pod_object *obj = (struct spa_pod_object *) &c->value;
 
 			SPA_POD_OBJECT_FOREACH(obj, prop) {
-				port = GET_OUT_PORT(impl, 0);
-				set_control(impl, port, prop->key,
-						SPA_POD_VALUE(struct spa_pod_float, &prop->value));
+				spa_libcamera_set_control(impl, prop);
 			}
 			break;
 		}
@@ -824,8 +855,8 @@ static int impl_node_process(void *object)
 	spa_return_val_if_fail(impl != NULL, -EINVAL);
 
 	port = GET_OUT_PORT(impl, 0);
-	io = port->io;
-	spa_return_val_if_fail(io != NULL, -EIO);
+	if ((io = port->io) == NULL)
+		return -EIO;
 
 	if (port->control)
 		process_control(impl, &port->control->sequence);
@@ -897,11 +928,39 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 
 static int impl_clear(struct spa_handle *handle)
 {
-	struct impl *impl;
-
-	impl = (struct impl *) handle;
-	impl->~Impl();
+	std::destroy_at(reinterpret_cast<impl *>(handle));
 	return 0;
+}
+
+impl::impl(spa_log *log, spa_loop *data_loop, spa_system *system,
+	   std::shared_ptr<CameraManager> manager, std::shared_ptr<Camera> camera, std::string device_id)
+	: handle({ SPA_VERSION_HANDLE, impl_get_interface, impl_clear }),
+	  log(log),
+	  data_loop(data_loop),
+	  system(system),
+	  device_id(std::move(device_id)),
+	  out_ports{{this}},
+	  manager(std::move(manager)),
+	  camera(std::move(camera))
+{
+	libcamera_log_topic_init(log);
+
+	spa_hook_list_init(&hooks);
+
+	node.iface = SPA_INTERFACE_INIT(
+			SPA_TYPE_INTERFACE_Node,
+			SPA_VERSION_NODE,
+			&impl_node, this);
+
+	params[NODE_PropInfo] = SPA_PARAM_INFO(SPA_PARAM_PropInfo, SPA_PARAM_INFO_READ);
+	params[NODE_Props] = SPA_PARAM_INFO(SPA_PARAM_Props, SPA_PARAM_INFO_READWRITE);
+	params[NODE_EnumFormat] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
+	params[NODE_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
+
+	info.max_output_ports = 1;
+	info.flags = SPA_NODE_FLAG_RT;
+	info.params = params;
+	info.n_params = N_NODE_PARAMS;
 }
 
 static size_t
@@ -918,87 +977,45 @@ impl_init(const struct spa_handle_factory *factory,
 	  const struct spa_support *support,
 	  uint32_t n_support)
 {
-	struct impl *impl;
 	const char *str;
-	struct port *port;
 	int res;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
 
-	impl = new(handle) Impl();
+	auto log = static_cast<spa_log *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log));
+	auto data_loop = static_cast<spa_loop *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataLoop));
+	auto system = static_cast<spa_system *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_System));
 
-	handle->get_interface = impl_get_interface;
-	handle->clear = impl_clear;
-
-	impl->log = (struct spa_log*)spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
-	libcamera_log_topic_init(impl->log);
-
-	impl->data_loop = (struct spa_loop*)spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataLoop);
-	impl->system = (struct spa_system*)spa_support_find(support, n_support, SPA_TYPE_INTERFACE_System);
-
-	if (impl->data_loop == NULL) {
-		spa_log_error(impl->log, "a data_loop is needed");
+	if (!data_loop) {
+		spa_log_error(log, "a data_loop is needed");
 		return -EINVAL;
 	}
 
-	if (impl->system == NULL) {
-		spa_log_error(impl->log, "a system is needed");
+	if (!system) {
+		spa_log_error(log, "a system is needed");
 		return -EINVAL;
 	}
 
-	impl->node.iface = SPA_INTERFACE_INIT(
-			SPA_TYPE_INTERFACE_Node,
-			SPA_VERSION_NODE,
-			&impl_node, impl);
-	spa_hook_list_init(&impl->hooks);
+	auto manager = libcamera_manager_acquire(res);
+	if (!manager) {
+		spa_log_error(log, "can't start camera manager: %s", spa_strerror(res));
+		return res;
+	}
 
-	impl->info_all = SPA_NODE_CHANGE_MASK_FLAGS |
-			SPA_NODE_CHANGE_MASK_PROPS |
-			SPA_NODE_CHANGE_MASK_PARAMS;
-	impl->info = SPA_NODE_INFO_INIT();
-	impl->info.max_output_ports = 1;
-	impl->info.flags = SPA_NODE_FLAG_RT;
-	impl->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo, SPA_PARAM_INFO_READ);
-	impl->params[1] = SPA_PARAM_INFO(SPA_PARAM_Props, SPA_PARAM_INFO_READWRITE);
-	impl->info.params = impl->params;
-	impl->info.n_params = 2;
-	reset_props(&impl->props);
-
-	port = GET_OUT_PORT(impl, 0);
-	port->impl = impl;
-	spa_list_init(&port->queue);
-	port->info_all = SPA_PORT_CHANGE_MASK_FLAGS |
-			SPA_PORT_CHANGE_MASK_PARAMS;
-	port->info = SPA_PORT_INFO_INIT();
-	port->info.flags = SPA_PORT_FLAG_LIVE |
-			   SPA_PORT_FLAG_PHYSICAL |
-			   SPA_PORT_FLAG_TERMINAL;
-	port->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo, SPA_PARAM_INFO_READ);
-	port->params[1] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
-	port->params[2] = SPA_PARAM_INFO(SPA_PARAM_Meta, SPA_PARAM_INFO_READ);
-	port->params[3] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);
-	port->params[4] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
-	port->params[5] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
-	port->info.params = port->params;
-	port->info.n_params = 6;
-
+	std::string device_id;
 	if (info && (str = spa_dict_lookup(info, SPA_KEY_API_LIBCAMERA_PATH)))
-		strncpy(impl->props.device, str, sizeof(impl->props.device));
+		device_id = str;
 
-	impl->manager = libcamera_manager_acquire();
-	if (impl->manager == NULL) {
-		res = -errno;
-		spa_log_error(impl->log, "can't start camera manager: %s", spa_strerror(res));
-                return res;
-	}
-
-	impl->camera = impl->manager->get(impl->props.device);
-	if (impl->camera == NULL) {
-		spa_log_error(impl->log, "unknown camera id %s", impl->props.device);
-		libcamera_manager_release(impl->manager);
+	auto camera = manager->get(device_id);
+	if (!camera) {
+		spa_log_error(log, "unknown camera id %s", device_id.c_str());
 		return -ENOENT;
 	}
+
+	new (handle) impl(log, data_loop, system,
+			  std::move(manager), std::move(camera), std::move(device_id));
+
 	return 0;
 }
 

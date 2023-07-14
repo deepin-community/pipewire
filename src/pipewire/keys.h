@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_KEYS_H
 #define PIPEWIRE_KEYS_H
@@ -29,6 +9,7 @@
 extern "C" {
 #endif
 
+#include <pipewire/utils.h>
 /**
  * \defgroup pw_keys Key Names
  *
@@ -64,14 +45,21 @@ extern "C" {
 /** object properties */
 #define PW_KEY_OBJECT_PATH		"object.path"		/**< unique path to construct the object */
 #define PW_KEY_OBJECT_ID		"object.id"		/**< a global object id */
+#define PW_KEY_OBJECT_SERIAL		"object.serial"		/**< a 64 bit object serial number. This is a number
+								  *  incremented for each object that is created.
+								  *  The lower 32 bits are guaranteed to never be
+								  *  SPA_ID_INVALID. */
 #define PW_KEY_OBJECT_LINGER		"object.linger"		/**< the object lives on even after the client
 								  *  that created it has been destroyed */
 #define PW_KEY_OBJECT_REGISTER		"object.register"	/**< If the object should be registered. */
-
+#define PW_KEY_OBJECT_EXPORT		"object.export"		/**< If the object should be exported,
+								  *  since 0.3.72 */
 
 /* config */
 #define PW_KEY_CONFIG_PREFIX		"config.prefix"		/**< a config prefix directory */
 #define PW_KEY_CONFIG_NAME		"config.name"		/**< a config file name */
+#define PW_KEY_CONFIG_OVERRIDE_PREFIX	"config.override.prefix"	/**< a config override prefix directory */
+#define PW_KEY_CONFIG_OVERRIDE_NAME	"config.override.name"	/**< a config override file name */
 
 /* context */
 #define PW_KEY_CONTEXT_PROFILE_MODULES	"context.profile.modules"	/**< a context profile for modules, deprecated */
@@ -149,25 +137,33 @@ extern "C" {
 #define PW_KEY_NODE_EXCLUSIVE		"node.exclusive"	/**< node wants exclusive access to resources */
 #define PW_KEY_NODE_AUTOCONNECT		"node.autoconnect"	/**< node wants to be automatically connected
 								  *  to a compatible node */
-#define PW_KEY_NODE_TARGET		"node.target"		/**< node wants to be connected to the target
-								  *  node/session */
 #define PW_KEY_NODE_LATENCY		"node.latency"		/**< the requested latency of the node as
 								  *  a fraction. Ex: 128/48000 */
 #define PW_KEY_NODE_MAX_LATENCY		"node.max-latency"	/**< the maximum supported latency of the
 								  *  node as a fraction. Ex: 1024/48000 */
 #define PW_KEY_NODE_LOCK_QUANTUM	"node.lock-quantum"	/**< don't change quantum when this node
 								  *  is active */
+#define PW_KEY_NODE_FORCE_QUANTUM	"node.force-quantum"	/**< force a quantum while the node is
+								  *  active */
 #define PW_KEY_NODE_RATE		"node.rate"		/**< the requested rate of the graph as
 								  *  a fraction. Ex: 1/48000 */
 #define PW_KEY_NODE_LOCK_RATE		"node.lock-rate"	/**< don't change rate when this node
 								  *  is active */
+#define PW_KEY_NODE_FORCE_RATE		"node.force-rate"	/**< force a rate while the node is
+								  *  active. A value of 0 takes the denominator
+								  *  of node.rate */
 
-#define PW_KEY_NODE_DONT_RECONNECT	"node.dont-reconnect"	/**< don't reconnect this node */
+#define PW_KEY_NODE_DONT_RECONNECT	"node.dont-reconnect"	/**< don't reconnect this node. The node is
+								  *  initially linked to target.object or the
+								  *  default node. If the target is removed,
+								  *  the node is destroyed */
 #define PW_KEY_NODE_ALWAYS_PROCESS	"node.always-process"	/**< process even when unlinked */
 #define PW_KEY_NODE_WANT_DRIVER		"node.want-driver"	/**< the node wants to be grouped with a driver
 								  *  node in order to schedule the graph. */
 #define PW_KEY_NODE_PAUSE_ON_IDLE	"node.pause-on-idle"	/**< pause the node when idle */
+#define PW_KEY_NODE_SUSPEND_ON_IDLE	"node.suspend-on-idle"	/**< suspend the node when idle */
 #define PW_KEY_NODE_CACHE_PARAMS	"node.cache-params"	/**< cache the node params */
+#define PW_KEY_NODE_TRANSPORT_SYNC	"node.transport.sync"	/**< the node handles transport sync */
 #define PW_KEY_NODE_DRIVER		"node.driver"		/**< node can drive the graph */
 #define PW_KEY_NODE_STREAM		"node.stream"		/**< node is a stream, the server side should
 								  *  add a converter */
@@ -179,6 +175,14 @@ extern "C" {
 #define PW_KEY_NODE_LINK_GROUP		"node.link-group"	/**< the node is internally linked to
 								  *  nodes with the same link-group */
 #define PW_KEY_NODE_NETWORK		"node.network"		/**< the node is on a network */
+#define PW_KEY_NODE_TRIGGER		"node.trigger"		/**< the node is not scheduled automatically
+								  *   based on the dependencies in the graph
+								  *   but it will be triggered explicitly. */
+#define PW_KEY_NODE_CHANNELNAMES		"node.channel-names"		/**< names of node's
+									*   channels (unrelated to positions) */
+#define PW_KEY_NODE_DEVICE_PORT_NAME_PREFIX			"node.device-port-name-prefix"		/** override
+									*		port name prefix for device ports, like capture and playback
+									*		or disable the prefix completely if an empty string is provided */
 
 /** Port keys */
 #define PW_KEY_PORT_ID			"port.id"		/**< port id */
@@ -193,6 +197,8 @@ extern "C" {
 #define PW_KEY_PORT_CACHE_PARAMS	"port.cache-params"	/**< cache the node port params */
 #define PW_KEY_PORT_EXTRA		"port.extra"		/**< api specific extra port info, API name
 								  *  should be prefixed. "jack:flags:56" */
+#define PW_KEY_PORT_PASSIVE		"port.passive"		/**< the ports wants passive links, since 0.3.67 */
+#define PW_KEY_PORT_IGNORE_LATENCY	"port.ignore-latency"	/**< latency ignored by peers, since 0.3.71 */
 
 /** link properties */
 #define PW_KEY_LINK_ID			"link.id"		/**< a link id */
@@ -236,6 +242,7 @@ extern "C" {
 								  *  "isa", "pci", "usb", "firewire",
 								  *  "bluetooth" */
 #define PW_KEY_DEVICE_SUBSYSTEM		"device.subsystem"	/**< device subsystem */
+#define PW_KEY_DEVICE_SYSFS_PATH	"device.sysfs.path"	/**< device sysfs path */
 #define PW_KEY_DEVICE_ICON		"device.icon"		/**< icon for the device. A base64 blob
 								  *  containing PNG image data */
 #define PW_KEY_DEVICE_ICON_NAME		"device.icon-name"	/**< an XDG icon name for the device.
@@ -269,7 +276,10 @@ extern "C" {
 #define PW_KEY_STREAM_LATENCY_MAX	"stream.latency.max"	/**< The maximum latency of the stream */
 #define PW_KEY_STREAM_MONITOR		"stream.monitor"	/**< Indicates that the stream is monitoring
 								  *  and might select a less accurate but faster
-								  *  conversion algorithm. */
+								  *  conversion algorithm. Monitor streams are also
+								  *  ignored when calculating the latency of their peer
+								  *  ports (since 0.3.71).
+								  */
 #define PW_KEY_STREAM_DONT_REMIX	"stream.dont-remix"	/**< don't remix channels */
 #define PW_KEY_STREAM_CAPTURE_SINK	"stream.capture.sink"	/**< Try to capture the sink output instead of
 								  *  source output */
@@ -307,15 +317,26 @@ extern "C" {
 #define PW_KEY_AUDIO_RATE		"audio.rate"		/**< an audio samplerate */
 #define PW_KEY_AUDIO_CHANNELS		"audio.channels"	/**< number of audio channels */
 #define PW_KEY_AUDIO_FORMAT		"audio.format"		/**< an audio format. Ex: "S16LE" */
+#define PW_KEY_AUDIO_ALLOWED_RATES	"audio.allowed-rates"	/**< a list of allowed samplerates
+								  *  ex. "[ 44100 48000 ]" */
 
 /** video related properties */
 #define PW_KEY_VIDEO_RATE		"video.framerate"	/**< a video framerate */
 #define PW_KEY_VIDEO_FORMAT		"video.format"		/**< a video format */
 #define PW_KEY_VIDEO_SIZE		"video.size"		/**< a video size as "<width>x<height" */
 
-#ifdef PW_ENABLE_DEPRECATED
-#define PW_KEY_PRIORITY_MASTER		"priority.master"	/**< deprecated */
-#endif /* PW_ENABLE_DEPRECATED */
+#define PW_KEY_TARGET_OBJECT		"target.object"		/**< a target object to link to. This can be
+								  * and object name or object.serial */
+
+#ifndef PW_REMOVE_DEPRECATED
+# ifdef PW_ENABLE_DEPRECATED
+#  define PW_KEY_PRIORITY_MASTER	"priority.master"	/**< deprecated, use priority.driver */
+#  define PW_KEY_NODE_TARGET		"node.target"		/**< deprecated since 0.3.64, use target.object. */
+# else
+#  define PW_KEY_PRIORITY_MASTER	PW_DEPRECATED("priority.master")
+#  define PW_KEY_NODE_TARGET		PW_DEPRECATED("node.target")
+# endif /* PW_ENABLE_DEPRECATED */
+#endif /* PW_REMOVE_DEPRECATED */
 
 /** \}
  */

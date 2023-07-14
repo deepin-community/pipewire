@@ -17,6 +17,7 @@ clean:
 
 run: all
 	SPA_PLUGIN_DIR=$(BUILD_ROOT)/spa/plugins \
+	SPA_DATA_DIR=$(SOURCE_ROOT)/spa/plugins \
 	PIPEWIRE_MODULE_DIR=$(BUILD_ROOT)/src/modules \
 	PATH=$(BUILD_ROOT)/src/examples:$(PATH) \
 	PIPEWIRE_CONFIG_DIR=$(BUILD_ROOT)/src/daemon \
@@ -26,6 +27,7 @@ run: all
 
 run-pulse: all
 	SPA_PLUGIN_DIR=$(BUILD_ROOT)/spa/plugins \
+	SPA_DATA_DIR=$(SOURCE_ROOT)/spa/plugins \
 	PIPEWIRE_MODULE_DIR=$(BUILD_ROOT)/src/modules \
 	PIPEWIRE_CONFIG_DIR=$(BUILD_ROOT)/src/daemon \
 	ACP_PATHS_DIR=$(SOURCE_ROOT)/spa/plugins/alsa/mixer/paths \
@@ -36,7 +38,7 @@ gdb:
 	$(MAKE) run DBG=gdb
 
 valgrind:
-	$(MAKE) run DBG="DISABLE_RTKIT=1 valgrind --trace-children=yes"
+	$(MAKE) run DBG="DISABLE_RTKIT=1 PIPEWIRE_DLCLOSE=false valgrind --trace-children=yes"
 
 test: all
 	ninja -C $(BUILD_ROOT) test
@@ -46,11 +48,13 @@ benchmark: all
 
 monitor: all
 	SPA_PLUGIN_DIR=$(BUILD_ROOT)/spa/plugins \
+	SPA_DATA_DIR=$(SOURCE_ROOT)/spa/plugins \
 	PIPEWIRE_MODULE_DIR=$(BUILD_ROOT)/src/modules/ \
 	$(BUILD_ROOT)/src/tools/pw-mon
 
 cli: all
 	SPA_PLUGIN_DIR=$(BUILD_ROOT)/spa/plugins \
+	SPA_DATA_DIR=$(SOURCE_ROOT)/spa/plugins \
 	PIPEWIRE_MODULE_DIR=$(BUILD_ROOT)/src/modules/ \
 	$(BUILD_ROOT)/src/tools/pw-cli
 

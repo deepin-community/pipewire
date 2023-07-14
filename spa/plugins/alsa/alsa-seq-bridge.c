@@ -1,26 +1,6 @@
-/* Spa ALSA Source
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa ALSA Source */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <ctype.h>
@@ -41,11 +21,14 @@
 
 #include "alsa-seq.h"
 
-static const char default_device[] = "default";
+#define DEFAULT_DEVICE		"default"
+#define DEFAULT_CLOCK_NAME	"clock.system.monotonic"
 
 static void reset_props(struct props *props)
 {
-	strncpy(props->device, default_device, 64);
+	strncpy(props->device, DEFAULT_DEVICE, sizeof(props->device));
+	strncpy(props->clock_name, DEFAULT_CLOCK_NAME, sizeof(props->clock_name));
+	props->disable_longname = 0;
 }
 
 static int impl_node_enum_params(void *object, int seq,
@@ -79,7 +62,7 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_device),
-				SPA_PROP_INFO_name, SPA_POD_String("The ALSA device"),
+				SPA_PROP_INFO_description, SPA_POD_String("The ALSA device"),
 				SPA_PROP_INFO_type, SPA_POD_Stringn(p->device, sizeof(p->device)));
 			break;
 		default:
@@ -142,6 +125,9 @@ static int impl_node_set_io(void *object, uint32_t id, void *data, size_t size)
 	switch (id) {
 	case SPA_IO_Clock:
 		this->clock = data;
+		if (this->clock != NULL)
+			spa_scnprintf(this->clock->name, sizeof(this->clock->name),
+					"%s", this->props.clock_name);
 		break;
 	case SPA_IO_Position:
 		this->position = data;
@@ -244,7 +230,7 @@ static void emit_port_info(struct seq_state *this, struct seq_port *port, bool f
 		snd_seq_port_info_t *info;
 		snd_seq_client_info_t *client_info;
 		char card[8];
-		char name[128];
+		char name[256];
 		char path[128];
 		char alias[128];
 
@@ -256,11 +242,34 @@ static void emit_port_info(struct seq_state *this, struct seq_port *port, bool f
 		snd_seq_get_any_client_info(this->sys.hndl,
 				port->addr.client, client_info);
 
-		snprintf(name, sizeof(name), "%s:(%s_%d) %s",
-				snd_seq_client_info_get_name(client_info),
-				port->direction == SPA_DIRECTION_OUTPUT ? "capture" : "playback",
-				port->addr.port,
-				snd_seq_port_info_get_name(info));
+		int card_id;
+
+		// Failed to obtain card number (software device) or disabled
+		if (this->props.disable_longname || (card_id = snd_seq_client_info_get_card(client_info)) < 0) {
+			snprintf(name, sizeof(name), "%s:(%s_%d) %s",
+					snd_seq_client_info_get_name(client_info),
+					port->direction == SPA_DIRECTION_OUTPUT ? "capture" : "playback",
+					port->addr.port,
+					snd_seq_port_info_get_name(info));
+		} else {
+			char *longname;
+			if (snd_card_get_longname(card_id, &longname) == 0) {
+				snprintf(name, sizeof(name), "%s:(%s_%d) %s",
+						longname,
+						port->direction == SPA_DIRECTION_OUTPUT ? "capture" : "playback",
+						port->addr.port,
+						snd_seq_port_info_get_name(info));
+				free(longname);
+			} else {
+				// At least add card number to be distinct
+				snprintf(name, sizeof(name), "%s %d:(%s_%d) %s",
+						snd_seq_client_info_get_name(client_info),
+						card_id,
+						port->direction == SPA_DIRECTION_OUTPUT ? "capture" : "playback",
+						port->addr.port,
+						snd_seq_port_info_get_name(info));
+			}
+		}
 		clean_name(name);
 
 		snprintf(path, sizeof(path), "alsa:seq:%s:client_%d:%s_%d",
@@ -537,7 +546,7 @@ impl_node_port_enum_params(void *object, int seq,
 		if (result.index > 0)
 			return 0;
 		param = spa_pod_builder_add_object(&b,
-			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+			SPA_TYPE_OBJECT_Format, SPA_PARAM_Format,
 			SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
 			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
 		break;
@@ -554,8 +563,7 @@ impl_node_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
 							4096, 4096, INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(1),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(1));
 		break;
 
 	case SPA_PARAM_Meta:
@@ -720,10 +728,12 @@ impl_node_port_use_buffers(void *object,
 	spa_log_debug(this->log, "%p: port %d.%d buffers:%d format:%d", this,
 			direction, port_id, n_buffers, port->have_format);
 
-	if (!port->have_format)
-		return -EIO;
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b = &port->buffers[i];
@@ -883,7 +893,7 @@ impl_init(const struct spa_handle_factory *factory,
 
 	this->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
 	alsa_log_topic_init(this->log);
-	spa_log_info(this->log, "this is an alsa message");
+
 	this->data_system = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataSystem);
 	this->data_loop = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataLoop);
 	this->main_loop = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Loop);
@@ -915,8 +925,16 @@ impl_init(const struct spa_handle_factory *factory,
 	reset_props(&this->props);
 
 	for (i = 0; info && i < info->n_items; i++) {
-		if (spa_streq(info->items[i].key, SPA_KEY_API_ALSA_PATH)) {
-			snprintf(this->props.device, 63, "%s", info->items[i].value);
+		const char *k = info->items[i].key;
+		const char *s = info->items[i].value;
+		if (spa_streq(k, SPA_KEY_API_ALSA_PATH)) {
+			spa_scnprintf(this->props.device,
+					sizeof(this->props.device), "%s", s);
+		} else if (spa_streq(k, "clock.name")) {
+			spa_scnprintf(this->props.clock_name,
+					sizeof(this->props.clock_name), "%s", s);
+		} else if (spa_streq(k, SPA_KEY_API_ALSA_DISABLE_LONGNAME)) {
+			this->props.disable_longname = spa_atob(s);
 		}
 	}
 

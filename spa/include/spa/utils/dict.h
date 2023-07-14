@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_DICT_H
 #define SPA_DICT_H
@@ -48,7 +28,7 @@ struct spa_dict_item {
 	const char *value;
 };
 
-#define SPA_DICT_ITEM_INIT(key,value) (struct spa_dict_item) { key, value }
+#define SPA_DICT_ITEM_INIT(key,value) ((struct spa_dict_item) { (key), (value) })
 
 struct spa_dict {
 #define SPA_DICT_FLAG_SORTED	(1<<0)		/**< items are sorted */
@@ -57,8 +37,8 @@ struct spa_dict {
 	const struct spa_dict_item *items;
 };
 
-#define SPA_DICT_INIT(items,n_items) (struct spa_dict) { 0, n_items, items }
-#define SPA_DICT_INIT_ARRAY(items) (struct spa_dict) { 0, SPA_N_ELEMENTS(items), items }
+#define SPA_DICT_INIT(items,n_items) ((struct spa_dict) { 0, (n_items), (items) })
+#define SPA_DICT_INIT_ARRAY(items) ((struct spa_dict) { 0, SPA_N_ELEMENTS(items), (items) })
 
 #define spa_dict_for_each(item, dict)				\
 	for ((item) = (dict)->items;				\
@@ -74,8 +54,9 @@ static inline int spa_dict_item_compare(const void *i1, const void *i2)
 
 static inline void spa_dict_qsort(struct spa_dict *dict)
 {
-	qsort((void*)dict->items, dict->n_items, sizeof(struct spa_dict_item),
-			spa_dict_item_compare);
+	if (dict->n_items > 0)
+		qsort((void*)dict->items, dict->n_items, sizeof(struct spa_dict_item),
+				spa_dict_item_compare);
 	SPA_FLAG_SET(dict->flags, SPA_DICT_FLAG_SORTED);
 }
 
@@ -84,7 +65,8 @@ static inline const struct spa_dict_item *spa_dict_lookup_item(const struct spa_
 {
 	const struct spa_dict_item *item;
 
-	if (SPA_FLAG_IS_SET(dict->flags, SPA_DICT_FLAG_SORTED)) {
+	if (SPA_FLAG_IS_SET(dict->flags, SPA_DICT_FLAG_SORTED) &&
+			dict->n_items > 0) {
 		struct spa_dict_item k = SPA_DICT_ITEM_INIT(key, NULL);
 		item = (const struct spa_dict_item *)bsearch(&k,
 				(const void *) dict->items, dict->n_items,

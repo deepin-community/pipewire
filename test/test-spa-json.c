@@ -1,26 +1,8 @@
-/* Simple Plugin API
- *
- * Copyright © 2020 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
+
+#include <locale.h>
 
 #include "pwtest.h"
 
@@ -77,14 +59,14 @@ static void expect_string(struct spa_json *it, const char *str)
 	pwtest_int_gt((len = spa_json_next(it, &value)), 0);
 	check_type(TYPE_STRING, value, len);
 	s = alloca(len+1);
-	spa_json_parse_string(value, len, s);
+	spa_json_parse_stringn(value, len, s, len+1);
 	pwtest_str_eq(s, str);
 }
 static void expect_float(struct spa_json *it, float val)
 {
 	const char *value;
 	int len;
-	float f;
+	float f = 0.0f;
 	pwtest_int_gt((len = spa_json_next(it, &value)), 0);
 	check_type(TYPE_FLOAT, value, len);
 	pwtest_int_gt(spa_json_parse_float(value, len, &f), 0);
@@ -158,7 +140,7 @@ PWTEST(json_parse)
 
 PWTEST(json_encode)
 {
-	char dst[1024];
+	char dst[128];
 	char dst4[4];
 	char dst6[6];
 	char result[1024];
@@ -172,8 +154,14 @@ PWTEST(json_encode)
 	pwtest_str_eq(dst, "\"test\\\"\\n\\r \\t\\b\\f'\"");
 	pwtest_int_eq(spa_json_encode_string(dst, sizeof(dst), "\x04\x05\x1f\x20\x01\x7f\x90"), 29);
 	pwtest_str_eq(dst, "\"\\u0004\\u0005\\u001f \\u0001\x7f\x90\"");
-	pwtest_int_eq(spa_json_parse_string(dst, sizeof(dst), result), 1);
+	pwtest_int_eq(spa_json_parse_stringn(dst, sizeof(dst), result, sizeof(result)), 1);
 	pwtest_str_eq(result, "\x04\x05\x1f\x20\x01\x7f\x90");
+	strcpy(dst, "\"\\u03b2a\"");
+	pwtest_int_eq(spa_json_parse_stringn(dst, sizeof(dst), result, sizeof(result)), 1);
+	pwtest_str_eq(result, "\316\262a");
+	strcpy(dst, "\"\\u 03b2a \"");
+	pwtest_int_eq(spa_json_parse_stringn(dst, sizeof(dst), result, sizeof(result)), 1);
+	pwtest_str_eq(result, "u 03b2a ");
 
 	return PWTEST_PASS;
 }
@@ -223,6 +211,93 @@ PWTEST(json_overflow)
 	return PWTEST_PASS;
 }
 
+PWTEST(json_float)
+{
+	struct {
+		const char *str;
+		double val;
+	} val[] = {
+		{ "0.0", 0.0f },
+		{ ".0", 0.0f },
+		{ ".0E0", 0.0E0f },
+		{ "1.0", 1.0f },
+		{ "1.011", 1.011f },
+		{ "176543.123456", 176543.123456f },
+		{ "-176543.123456", -176543.123456f },
+		{ "-5678.5432E10", -5678.5432E10f },
+		{ "-5678.5432e10", -5678.5432e10f },
+		{ "-5678.5432e-10", -5678.5432e-10f },
+		{ "5678.5432e+10", 5678.5432e+10f },
+		{ "00.000100", 00.000100f },
+		{ "-0.000100", -0.000100f },
+	};
+	float v;
+	unsigned i;
+	char buf1[128], buf2[128], *b1 = buf1, *b2 = buf2;
+
+	pwtest_int_eq(spa_json_parse_float("", 0, &v), 0);
+
+	setlocale(LC_NUMERIC, "C");
+	for (i = 0; i < SPA_N_ELEMENTS(val); i++) {
+		pwtest_int_gt(spa_json_parse_float(val[i].str, strlen(val[i].str), &v), 0);
+		pwtest_double_eq(v, val[i].val);
+	}
+	setlocale(LC_NUMERIC, "fr_FR");
+	for (i = 0; i < SPA_N_ELEMENTS(val); i++) {
+		pwtest_int_gt(spa_json_parse_float(val[i].str, strlen(val[i].str), &v), 0);
+		pwtest_double_eq(v, val[i].val);
+	}
+	pwtest_ptr_eq(spa_json_format_float(buf1, sizeof(buf1), 0.0f), b1);
+	pwtest_str_eq(buf1, "0.000000");
+	pwtest_ptr_eq(spa_json_format_float(buf1, sizeof(buf1), NAN), b1);
+	pwtest_str_eq(buf1, "0.000000");
+	pwtest_ptr_eq(spa_json_format_float(buf1, sizeof(buf1), INFINITY), b1);
+	pwtest_ptr_eq(spa_json_format_float(buf2, sizeof(buf2), FLT_MAX), b2);
+	pwtest_str_eq(buf1, buf2);
+	pwtest_ptr_eq(spa_json_format_float(buf1, sizeof(buf1), -INFINITY), b1);
+	pwtest_ptr_eq(spa_json_format_float(buf2, sizeof(buf2), FLT_MIN), b2);
+	pwtest_str_eq(buf1, buf2);
+
+	return PWTEST_PASS;
+}
+
+PWTEST(json_float_check)
+{
+	struct {
+		const char *str;
+		int res;
+	} val[] = {
+		{ "0.0", 1 },
+		{ ".0", 1 },
+		{ "+.0E0", 1 },
+		{ "-.0e0", 1 },
+
+		{ "0,0", 0 },
+		{ "0.0.5", 0 },
+		{ "0x0", 0 },
+		{ "0x0.0", 0 },
+		{ "E10", 0 },
+		{ "e20", 0 },
+		{ " 0.0", 0 },
+		{ "0.0 ", 0 },
+		{ " 0.0 ", 0 },
+	};
+	unsigned i;
+	float v;
+
+	for (i = 0; i < SPA_N_ELEMENTS(val); i++) {
+		pwtest_int_eq(spa_json_parse_float(val[i].str, strlen(val[i].str), &v), val[i].res);
+	}
+	return PWTEST_PASS;
+}
+
+PWTEST(json_int)
+{
+	int v;
+	pwtest_int_eq(spa_json_parse_int("", 0, &v), 0);
+	return PWTEST_PASS;
+}
+
 PWTEST_SUITE(spa_json)
 {
 	pwtest_add(json_abi, PWTEST_NOARG);
@@ -230,6 +305,9 @@ PWTEST_SUITE(spa_json)
 	pwtest_add(json_encode, PWTEST_NOARG);
 	pwtest_add(json_array, PWTEST_NOARG);
 	pwtest_add(json_overflow, PWTEST_NOARG);
+	pwtest_add(json_float, PWTEST_NOARG);
+	pwtest_add(json_float_check, PWTEST_NOARG);
+	pwtest_add(json_int, PWTEST_NOARG);
 
 	return PWTEST_PASS;
 }

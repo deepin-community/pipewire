@@ -1,28 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
-
-#define NAME "pulse-server"
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -52,27 +30,30 @@
 #include "log.h"
 #include "utils.h"
 
-int get_runtime_dir(char *buf, size_t buflen, const char *dir)
+int get_runtime_dir(char *buf, size_t buflen)
 {
-	const char *runtime_dir;
+	const char *runtime_dir, *dir = NULL;
 	struct stat stat_buf;
 	int res, size;
 
 	runtime_dir = getenv("PULSE_RUNTIME_PATH");
-	if (runtime_dir == NULL)
+	if (runtime_dir == NULL) {
 		runtime_dir = getenv("XDG_RUNTIME_DIR");
-
+		dir = "pulse";
+	}
 	if (runtime_dir == NULL) {
 		pw_log_error("could not find a suitable runtime directory in"
 				"$PULSE_RUNTIME_PATH and $XDG_RUNTIME_DIR");
 		return -ENOENT;
 	}
 
-	size = snprintf(buf, buflen, "%s/%s", runtime_dir, dir);
+	size = snprintf(buf, buflen, "%s%s%s", runtime_dir,
+			dir ? "/" : "", dir ? dir : "");
 	if (size < 0)
 		return -errno;
 	if ((size_t) size >= buflen) {
-		pw_log_error("path %s/%s too long", runtime_dir, dir);
+		pw_log_error("path %s%s%s too long", runtime_dir,
+				dir ? "/" : "", dir ? dir : "");
 		return -ENAMETOOLONG;
 	}
 
@@ -151,7 +132,7 @@ pid_t get_client_pid(struct client *client, int client_fd)
 		pw_log_warn("client %p: no peercred: %m", client);
 	} else
 		return ucred.pid;
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__MidnightBSD__)
 	struct xucred xucred;
 	len = sizeof(xucred);
 	if (getsockopt(client_fd, 0, LOCAL_PEERCRED, &xucred, &len) < 0) {
@@ -170,10 +151,9 @@ const char *get_server_name(struct pw_context *context)
 	const char *name = NULL;
 	const struct pw_properties *props = pw_context_get_properties(context);
 
-	if (props)
+	name = getenv("PIPEWIRE_REMOTE");
+	if ((name == NULL || name[0] == '\0') && props != NULL)
 		name = pw_properties_get(props, PW_KEY_REMOTE_NAME);
-	if (name == NULL || name[0] == '\0')
-		name = getenv("PIPEWIRE_REMOTE");
 	if (name == NULL || name[0] == '\0')
 		name = PW_DEFAULT_REMOTE;
 	return name;
@@ -184,7 +164,7 @@ int create_pid_file(void) {
 	FILE *f;
 	int res;
 
-	if ((res = get_runtime_dir(pid_file, sizeof(pid_file), "pulse")) < 0)
+	if ((res = get_runtime_dir(pid_file, sizeof(pid_file))) < 0)
 		return res;
 
 	if (strlen(pid_file) > PATH_MAX - sizeof("/pid")) {
@@ -194,7 +174,7 @@ int create_pid_file(void) {
 
 	strcat(pid_file, "/pid");
 
-	if ((f = fopen(pid_file, "w")) == NULL) {
+	if ((f = fopen(pid_file, "we")) == NULL) {
 		res = -errno;
 		pw_log_error("failed to open pid file: %m");
 		return res;

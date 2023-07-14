@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_BLUETOOTH_AUDIO_H
 #define SPA_BLUETOOTH_AUDIO_H
@@ -48,10 +28,19 @@ enum spa_bluetooth_audio_codec {
 	SPA_BLUETOOTH_AUDIO_CODEC_APTX_LL_DUPLEX,
 	SPA_BLUETOOTH_AUDIO_CODEC_FASTSTREAM,
 	SPA_BLUETOOTH_AUDIO_CODEC_FASTSTREAM_DUPLEX,
+	SPA_BLUETOOTH_AUDIO_CODEC_LC3PLUS_HR,
+	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05,
+	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05_51,
+	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05_71,
+	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05_DUPLEX,
+	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05_PRO,
 
 	/* HFP */
 	SPA_BLUETOOTH_AUDIO_CODEC_CVSD = 0x100,
 	SPA_BLUETOOTH_AUDIO_CODEC_MSBC,
+
+	/* BAP */
+	SPA_BLUETOOTH_AUDIO_CODEC_LC3 = 0x200,
 };
 
 /**

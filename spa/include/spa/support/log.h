@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_LOG_H
 #define SPA_LOG_H
@@ -212,7 +192,7 @@ struct spa_log_methods {
 
 
 #define SPA_LOG_TOPIC(v, t) \
-   (struct spa_log_topic){ .version = v, .topic = (t)}
+   (struct spa_log_topic){ .version = (v), .topic = (t)}
 
 #define spa_log_topic_init(l, topic)				\
 do {								\
@@ -231,10 +211,10 @@ do {								\
 ({								\
 	struct spa_log *_log = l;				\
 	enum spa_log_level _lev = _log ? _log->level : SPA_LOG_LEVEL_NONE;		\
-	struct spa_log_topic *_t = (struct spa_log_topic *)topic; \
+	struct spa_log_topic *_t = (struct spa_log_topic *)(topic); \
 	if (_t && _t->has_custom_level)							\
 		_lev = _t->level;				\
-	_lev >= lev;						\
+	_lev >= (lev);						\
 })
 
 /* Transparently calls to version 0 log if v1 is not supported */
@@ -269,29 +249,36 @@ do {								\
 	}								\
 })
 
+#define spa_logt_lev(l,lev,t,...)					\
+	spa_log_logt(l,lev,t,__FILE__,__LINE__,__func__,__VA_ARGS__)
+
+#define spa_log_lev(l,lev,...)					\
+	spa_logt_lev(l,lev,SPA_LOG_TOPIC_DEFAULT,__VA_ARGS__)
+
 #define spa_log_log(l,lev,...)					\
 	spa_log_logt(l,lev,SPA_LOG_TOPIC_DEFAULT,__VA_ARGS__)
 
 #define spa_log_logv(l,lev,...)					\
 	spa_log_logtv(l,lev,SPA_LOG_TOPIC_DEFAULT,__VA_ARGS__)
 
-#define spa_log_error(l,...)	spa_log_log(l,SPA_LOG_LEVEL_ERROR,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_log_warn(l,...)	spa_log_log(l,SPA_LOG_LEVEL_WARN,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_log_info(l,...)	spa_log_log(l,SPA_LOG_LEVEL_INFO,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_log_debug(l,...)	spa_log_log(l,SPA_LOG_LEVEL_DEBUG,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_log_trace(l,...)	spa_log_log(l,SPA_LOG_LEVEL_TRACE,__FILE__,__LINE__,__func__,__VA_ARGS__)
+#define spa_log_error(l,...)	spa_log_lev(l,SPA_LOG_LEVEL_ERROR,__VA_ARGS__)
+#define spa_log_warn(l,...)	spa_log_lev(l,SPA_LOG_LEVEL_WARN,__VA_ARGS__)
+#define spa_log_info(l,...)	spa_log_lev(l,SPA_LOG_LEVEL_INFO,__VA_ARGS__)
+#define spa_log_debug(l,...)	spa_log_lev(l,SPA_LOG_LEVEL_DEBUG,__VA_ARGS__)
+#define spa_log_trace(l,...)	spa_log_lev(l,SPA_LOG_LEVEL_TRACE,__VA_ARGS__)
 
-#define spa_logt_error(l,t,...)	spa_log_logt(l,SPA_LOG_LEVEL_ERROR,t,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_logt_warn(l,t,...)	spa_log_logt(l,SPA_LOG_LEVEL_WARN,t,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_logt_info(l,t,...)	spa_log_logt(l,SPA_LOG_LEVEL_INFO,t,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_logt_debug(l,t,...)	spa_log_logt(l,SPA_LOG_LEVEL_DEBUG,t,__FILE__,__LINE__,__func__,__VA_ARGS__)
-#define spa_logt_trace(l,t,...)	spa_log_logt(l,SPA_LOG_LEVEL_TRACE,t,__FILE__,__LINE__,__func__,__VA_ARGS__)
+#define spa_logt_error(l,t,...)	spa_logt_lev(l,SPA_LOG_LEVEL_ERROR,t,__VA_ARGS__)
+#define spa_logt_warn(l,t,...)	spa_logt_lev(l,SPA_LOG_LEVEL_WARN,t,__VA_ARGS__)
+#define spa_logt_info(l,t,...)	spa_logt_lev(l,SPA_LOG_LEVEL_INFO,t,__VA_ARGS__)
+#define spa_logt_debug(l,t,...)	spa_logt_lev(l,SPA_LOG_LEVEL_DEBUG,t,__VA_ARGS__)
+#define spa_logt_trace(l,t,...)	spa_logt_lev(l,SPA_LOG_LEVEL_TRACE,t,__VA_ARGS__)
 
 #ifndef FASTPATH
-#define spa_log_trace_fp(l,...)	spa_log_log(l,SPA_LOG_LEVEL_TRACE,__FILE__,__LINE__,__func__,__VA_ARGS__)
+#define spa_log_trace_fp(l,...)	spa_log_lev(l,SPA_LOG_LEVEL_TRACE,__VA_ARGS__)
 #else
 #define spa_log_trace_fp(l,...)
 #endif
+
 
 /** \fn spa_log_error */
 

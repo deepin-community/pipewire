@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <stddef.h>
@@ -34,6 +14,7 @@
 #include <spa/support/loop.h>
 #include <spa/utils/list.h>
 #include <spa/utils/keys.h>
+#include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -55,6 +36,9 @@ enum wave_type {
 	WAVE_SQUARE,
 };
 
+#define DEFAULT_RATE		48000
+#define DEFAULT_CHANNELS	2
+
 #define DEFAULT_LIVE true
 #define DEFAULT_WAVE WAVE_SINE
 #define DEFAULT_FREQ 440.0
@@ -75,7 +59,6 @@ static void reset_props(struct props *props)
 	props->volume = DEFAULT_VOLUME;
 }
 
-#define MAX_SAMPLES	8192
 #define MAX_BUFFERS	16
 #define MAX_PORTS	1
 
@@ -118,6 +101,8 @@ struct impl {
 	struct spa_log *log;
 	struct spa_loop *data_loop;
 	struct spa_system *data_system;
+
+	uint32_t quantum_limit;
 
 	uint64_t info_all;
 	struct spa_node_info info;
@@ -176,14 +161,14 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_live),
-				SPA_PROP_INFO_name, SPA_POD_String("Configure live mode of the source"),
+				SPA_PROP_INFO_description, SPA_POD_String("Configure live mode of the source"),
 				SPA_PROP_INFO_type, SPA_POD_Bool(p->live));
 			break;
 		case 1:
 			spa_pod_builder_push_object(&b, &f[0], SPA_TYPE_OBJECT_PropInfo, id);
 			spa_pod_builder_add(&b,
 				SPA_PROP_INFO_id,     SPA_POD_Id(SPA_PROP_waveType),
-				SPA_PROP_INFO_name,   SPA_POD_String("Select the waveform"),
+				SPA_PROP_INFO_description,   SPA_POD_String("Select the waveform"),
 				SPA_PROP_INFO_type,   SPA_POD_Int(p->wave),
 				0);
 			spa_pod_builder_prop(&b, SPA_PROP_INFO_labels, 0);
@@ -199,14 +184,14 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_frequency),
-				SPA_PROP_INFO_name, SPA_POD_String("Select the frequency"),
+				SPA_PROP_INFO_description, SPA_POD_String("Select the frequency"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->freq, 0.0, 50000000.0));
 			break;
 		case 3:
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_volume),
-				SPA_PROP_INFO_name, SPA_POD_String("Select the volume"),
+				SPA_PROP_INFO_description, SPA_POD_String("Select the volume"),
 				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(p->volume, 0.0, 10.0));
 			break;
 		default:
@@ -276,6 +261,7 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 
 	if (id == SPA_PARAM_Props) {
 		struct props *p = &this->props;
+		struct port *port = &this->port;
 
 		if (param == NULL) {
 			reset_props(p);
@@ -289,9 +275,9 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 			SPA_PROP_volume,    SPA_POD_OPT_Float(&p->volume));
 
 		if (p->live)
-			this->info.flags |= SPA_PORT_FLAG_LIVE;
+			port->info.flags |= SPA_PORT_FLAG_LIVE;
 		else
-			this->info.flags &= ~SPA_PORT_FLAG_LIVE;
+			port->info.flags &= ~SPA_PORT_FLAG_LIVE;
 	}
 	else
 		return -ENOENT;
@@ -343,13 +329,27 @@ static void set_timer(struct impl *this, bool enabled)
 	}
 }
 
-static void read_timer(struct impl *this)
+static int read_timer(struct impl *this)
 {
 	uint64_t expirations;
+	int res = 0;
 
 	if (this->async || this->props.live) {
-		if (spa_system_timerfd_read(this->data_system, this->timer_source.fd, &expirations) < 0)
-			perror("read timerfd");
+		if ((res = spa_system_timerfd_read(this->data_system,
+				this->timer_source.fd, &expirations)) < 0) {
+			if (res != -EAGAIN)
+				spa_log_error(this->log, NAME " %p: timerfd error: %s",
+						this, spa_strerror(res));
+		}
+	}
+	return 0;
+}
+
+static void update_target(struct impl *this)
+{
+	if (this->position) {
+		this->position->clock.duration = this->position->clock.target_duration;
+		this->position->clock.rate = this->position->clock.target_rate;
 	}
 }
 
@@ -364,7 +364,8 @@ static int make_buffer(struct impl *this)
 	uint32_t filled, avail;
 	uint32_t index, offset, l0, l1;
 
-	read_timer(this);
+	if (read_timer(this) < 0)
+		return 0;
 
 	if (spa_list_is_empty(&port->empty)) {
 		set_timer(this, false);
@@ -430,6 +431,8 @@ static void on_output(struct spa_source *source)
 {
 	struct impl *this = source->data;
 	int res;
+
+	update_target(this);
 
 	res = make_buffer(this);
 
@@ -581,8 +584,10 @@ port_enum_formats(struct impl *this,
 							SPA_AUDIO_FORMAT_S32,
 							SPA_AUDIO_FORMAT_F32,
 							SPA_AUDIO_FORMAT_F64),
-			SPA_FORMAT_AUDIO_rate,     SPA_POD_CHOICE_RANGE_Int(44100, 1, INT32_MAX),
-			SPA_FORMAT_AUDIO_channels, SPA_POD_CHOICE_RANGE_Int(2, 1, INT32_MAX));
+			SPA_FORMAT_AUDIO_rate,     SPA_POD_CHOICE_RANGE_Int(
+							DEFAULT_RATE, 1, INT32_MAX),
+			SPA_FORMAT_AUDIO_channels, SPA_POD_CHOICE_RANGE_Int(
+							DEFAULT_CHANNELS, 1, INT32_MAX));
 		break;
 	default:
 		return 0;
@@ -646,11 +651,10 @@ impl_node_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-							MAX_SAMPLES * port->bpf,
+							this->quantum_limit * port->bpf,
 							16 * port->bpf,
 							INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->bpf),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->bpf));
 		break;
 	case SPA_PARAM_Meta:
 		switch (result.index) {
@@ -737,6 +741,10 @@ port_set_format(struct impl *this,
 		if (spa_format_audio_raw_parse(format, &info.info.raw) < 0)
 			return -EINVAL;
 
+		if (info.info.raw.rate == 0 ||
+		    info.info.raw.channels == 0)
+			return -EINVAL;
+
 		switch (info.info.raw.format) {
 		case SPA_AUDIO_FORMAT_S16:
 			idx = 0;
@@ -811,10 +819,12 @@ impl_node_port_use_buffers(void *object,
 
 	port = &this->port;
 
-	if (!port->have_format)
-		return -EIO;
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
@@ -930,7 +940,8 @@ static int impl_node_process(void *object)
 	port = &this->port;
 
 	io = port->io;
-	spa_return_val_if_fail(io != NULL, -EIO);
+	if ((io = port->io) == NULL)
+		return -EIO;
 
 	if (port->io_control)
 		process_control(this, &port->io_control->sequence);
@@ -984,6 +995,13 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 	return 0;
 }
 
+static int do_remove_timer(struct spa_loop *loop, bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct impl *this = user_data;
+	spa_loop_remove_source(this->data_loop, &this->timer_source);
+	return 0;
+}
+
 static int impl_clear(struct spa_handle *handle)
 {
 	struct impl *this;
@@ -993,7 +1011,7 @@ static int impl_clear(struct spa_handle *handle)
 	this = (struct impl *) handle;
 
 	if (this->data_loop)
-		spa_loop_remove_source(this->data_loop, &this->timer_source);
+		spa_loop_invoke(this->data_loop, do_remove_timer, 0, NULL, 0, true, this);
 	spa_system_close(this->data_system, this->timer_source.fd);
 
 	return 0;
@@ -1015,6 +1033,7 @@ impl_init(const struct spa_handle_factory *factory,
 {
 	struct impl *this;
 	struct port *port;
+	uint32_t i;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
@@ -1028,6 +1047,12 @@ impl_init(const struct spa_handle_factory *factory,
 	this->data_loop = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataLoop);
 	this->data_system = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_DataSystem);
 
+	for (i = 0; info && i < info->n_items; i++) {
+		const char *k = info->items[i].key;
+		const char *s = info->items[i].value;
+		if (spa_streq(k, "clock.quantum-limit"))
+			spa_atou32(s, &this->quantum_limit, 0);
+	}
 	spa_hook_list_init(&this->hooks);
 
 	this->node.iface = SPA_INTERFACE_INIT(
@@ -1067,7 +1092,7 @@ impl_init(const struct spa_handle_factory *factory,
 	port->info = SPA_PORT_INFO_INIT();
 	port->info.flags = SPA_PORT_FLAG_NO_REF;
 	if (this->props.live)
-		this->info.flags |= SPA_PORT_FLAG_LIVE;
+		port->info.flags |= SPA_PORT_FLAG_LIVE;
 	port->params[0] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
 	port->params[1] = SPA_PARAM_INFO(SPA_PARAM_Meta, SPA_PARAM_INFO_READ);
 	port->params[2] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);

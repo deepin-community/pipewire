@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -32,16 +12,38 @@
 
 #include "config.h"
 
+#include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/param/profiler.h>
-#include <spa/debug/pod.h>
 
 #include <pipewire/private.h>
 #include <pipewire/impl.h>
 #include <pipewire/extensions/profiler.h>
 
 /** \page page_module_profiler PipeWire Module: Profiler
+ *
+ * The profiler module provides a Profiler interface for applications that
+ * can be used to receive profiling information.
+ *
+ * Use tools like pw-top and pw-profiler to collect profiling information
+ * about the pipewire graph.
+ *
+ * ## Example configuration
+ *
+ * The module has no arguments and is usually added to the config file of
+ * the main pipewire daemon.
+ *
+ *\code{.unparsed}
+ * context.modules = [
+ * { name = libpipewire-module-profiler }
+ * ]
+ *\endcode
+ *
+ * ## See also
+ *
+ * - `pw-top`: a tool to display realtime profiler data
+ * - `pw-profiler`: a tool to collect and render profiler data
  */
 
 #define NAME "profiler"
@@ -72,6 +74,9 @@ static const struct spa_dict_item module_props[] = {
 struct impl {
 	struct pw_context *context;
 	struct pw_properties *properties;
+
+	struct pw_loop *main_loop;
+	struct pw_loop *data_loop;
 
 	struct spa_hook context_listener;
 	struct spa_hook module_listener;
@@ -108,7 +113,7 @@ static void start_flush(struct impl *impl)
         value.tv_nsec = 1;
 	interval.tv_sec = DEFAULT_INTERVAL;
         interval.tv_nsec = 0;
-        pw_loop_update_timer(impl->context->main_loop,
+        pw_loop_update_timer(impl->main_loop,
 			impl->flush_timeout, &value, &interval, false);
 	impl->flushing = true;
 }
@@ -124,7 +129,7 @@ static void stop_flush(struct impl *impl)
         value.tv_nsec = 0;
 	interval.tv_sec = 0;
         interval.tv_nsec = 0;
-        pw_loop_update_timer(impl->context->main_loop,
+        pw_loop_update_timer(impl->main_loop,
 			impl->flush_timeout, &value, &interval, false);
 	impl->flushing = false;
 }
@@ -165,7 +170,8 @@ static void context_do_profile(void *data, struct pw_impl_node *node)
 	struct impl *impl = data;
 	struct spa_pod_builder b;
 	struct spa_pod_frame f[2];
-	struct pw_node_activation *a = node->rt.activation;
+	uint32_t id = node->info.id;
+	struct pw_node_activation *a = node->rt.target.activation;
 	struct spa_io_position *pos = &a->position;
 	struct pw_node_target *t;
 	int32_t filled;
@@ -202,33 +208,48 @@ static void context_do_profile(void *data, struct pw_impl_node *node)
 
 	spa_pod_builder_prop(&b, SPA_PROFILER_driverBlock, 0);
 	spa_pod_builder_add_struct(&b,
-			SPA_POD_Int(node->info.id),
+			SPA_POD_Int(id),
 			SPA_POD_String(node->name),
 			SPA_POD_Long(a->prev_signal_time),
 			SPA_POD_Long(a->signal_time),
 			SPA_POD_Long(a->awake_time),
 			SPA_POD_Long(a->finish_time),
 			SPA_POD_Int(a->status),
-			SPA_POD_Fraction(&node->latency));
+			SPA_POD_Fraction(&node->latency),
+			SPA_POD_Int(a->xrun_count));
 
 	spa_list_for_each(t, &node->rt.target_list, link) {
 		struct pw_impl_node *n = t->node;
 		struct pw_node_activation *na;
+		struct spa_fraction latency;
 
-		if (n == NULL || n == node)
+		if (t->id == id || t->flags & PW_NODE_TARGET_PEER)
 			continue;
 
-		na = n->rt.activation;
+		if (n != NULL) {
+			latency = n->latency;
+			if (n->force_quantum != 0)
+				latency.num = n->force_quantum;
+			if (n->force_rate != 0)
+				latency.denom = n->force_rate;
+			else if (n->rate.denom != 0)
+				latency.denom = n->rate.denom;
+		} else {
+			spa_zero(latency);
+		}
+
+		na = t->activation;
 		spa_pod_builder_prop(&b, SPA_PROFILER_followerBlock, 0);
 		spa_pod_builder_add_struct(&b,
-			SPA_POD_Int(n->info.id),
-			SPA_POD_String(n->name),
+			SPA_POD_Int(t->id),
+			SPA_POD_String(t->name),
 			SPA_POD_Long(a->signal_time),
 			SPA_POD_Long(na->signal_time),
 			SPA_POD_Long(na->awake_time),
 			SPA_POD_Long(na->finish_time),
 			SPA_POD_Int(na->status),
-			SPA_POD_Fraction(&n->latency));
+			SPA_POD_Fraction(&latency),
+			SPA_POD_Int(na->xrun_count));
 	}
 	spa_pod_builder_pop(&b, &f[0]);
 
@@ -263,19 +284,11 @@ static const struct pw_context_driver_events context_events = {
 	.complete = context_do_profile,
 };
 
-static int do_stop(struct spa_loop *loop,
-		bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct impl *impl = user_data;
-	spa_hook_remove(&impl->context_listener);
-	return 0;
-}
-
 static void stop_listener(struct impl *impl)
 {
 	if (impl->listening) {
-		pw_loop_invoke(impl->context->data_loop,
-                       do_stop, SPA_ID_INVALID, NULL, 0, true, impl);
+		pw_context_driver_remove_listener(impl->context,
+			&impl->context_listener);
 		impl->listening = false;
 	}
 }
@@ -295,20 +308,10 @@ static const struct pw_resource_events resource_events = {
 };
 
 static int
-do_start(struct spa_loop *loop,
-		bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct impl *impl = user_data;
-	spa_hook_list_append(&impl->context->driver_listener_list,
-			&impl->context_listener,
-			&context_events, impl);
-	return 0;
-}
-static int
-global_bind(void *_data, struct pw_impl_client *client, uint32_t permissions,
+global_bind(void *object, struct pw_impl_client *client, uint32_t permissions,
             uint32_t version, uint32_t id)
 {
-	struct impl *impl = _data;
+	struct impl *impl = object;
 	struct pw_global *global = impl->global;
 	struct pw_resource *resource;
 	struct resource_data *data;
@@ -328,8 +331,9 @@ global_bind(void *_data, struct pw_impl_client *client, uint32_t permissions,
 
 	if (++impl->busy == 1) {
 		pw_log_info("%p: starting profiler", impl);
-		pw_loop_invoke(impl->context->data_loop,
-                       do_start, SPA_ID_INVALID, NULL, 0, false, impl);
+		pw_context_driver_add_listener(impl->context,
+			&impl->context_listener,
+			&context_events, impl);
 		impl->listening = true;
 	}
 	return 0;
@@ -346,7 +350,7 @@ static void module_destroy(void *data)
 
 	pw_properties_free(impl->properties);
 
-	pw_loop_destroy_source(pw_context_get_main_loop(impl->context), impl->flush_timeout);
+	pw_loop_destroy_source(impl->main_loop, impl->flush_timeout);
 
 	free(impl);
 }
@@ -378,7 +382,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_properties *props;
 	struct impl *impl;
-	struct pw_loop *main_loop = pw_context_get_main_loop(context);
+	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
+		NULL
+	};
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -397,6 +404,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->context = context;
 	impl->properties = props;
+	impl->main_loop = pw_context_get_main_loop(impl->context);
+	impl->data_loop = pw_data_loop_get_loop(pw_context_get_data_loop(impl->context));
 
 	spa_ringbuffer_init(&impl->buffer);
 
@@ -409,8 +418,13 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		free(impl);
 		return -errno;
 	}
+	pw_properties_setf(impl->properties, PW_KEY_OBJECT_ID, "%d", pw_global_get_id(impl->global));
+	pw_properties_setf(impl->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
+			pw_global_get_serial(impl->global));
 
-	impl->flush_timeout = pw_loop_add_timer(main_loop, flush_timeout, impl);
+	impl->flush_timeout = pw_loop_add_timer(impl->main_loop, flush_timeout, impl);
+
+	pw_global_update_keys(impl->global, &impl->properties->dict, keys);
 
 	pw_impl_module_add_listener(module, &impl->module_listener, &module_events, impl);
 

@@ -1,15 +1,15 @@
 # Polish translation for pipewire.
-# Copyright © 2008-2021 the pipewire authors.
+# Copyright © 2008-2023 the pipewire authors.
 # This file is distributed under the same license as the pipewire package.
-# Piotr Drąg <piotrdrag@gmail.com>, 2008, 2012-2021.
+# Piotr Drąg <piotrdrag@gmail.com>, 2008, 2012-2023.
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: pipewire\n"
 "Report-Msgid-Bugs-To: https://gitlab.freedesktop.org/pipewire/pipewire/-/"
 "issues\n"
-"POT-Creation-Date: 2021-09-21 15:31+0000\n"
-"PO-Revision-Date: 2021-10-09 15:35+0200\n"
+"POT-Creation-Date: 2023-05-28 10:45+0000\n"
+"PO-Revision-Date: 2023-05-28 12:48+0200\n"
 "Last-Translator: Piotr Drąg <piotrdrag@gmail.com>\n"
 "Language-Team: Polish <community-poland@mozilla.org>\n"
 "Language: pl\n"
@@ -19,7 +19,7 @@ msgstr ""
 "Plural-Forms: nplurals=3; plural=n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 "
 "|| n%100>=20) ? 1 : 2;\n"
 
-#: src/daemon/pipewire.c:45
+#: src/daemon/pipewire.c:26
 #, c-format
 msgid ""
 "%s [options]\n"
@@ -41,72 +41,66 @@ msgstr "System multimediów PipeWire"
 msgid "Start the PipeWire Media System"
 msgstr "Uruchomienie systemu multimediów PipeWire"
 
-#: src/examples/media-session/alsa-monitor.c:656
-#: spa/plugins/alsa/acp/compat.c:189
-msgid "Built-in Audio"
-msgstr "Wbudowany dźwięk"
-
-#: src/examples/media-session/alsa-monitor.c:660
-#: spa/plugins/alsa/acp/compat.c:194
-msgid "Modem"
-msgstr "Modem"
-
-#: src/examples/media-session/alsa-monitor.c:669
-#: src/modules/module-zeroconf-discover.c:296
-msgid "Unknown device"
-msgstr "Nieznane urządzenie"
-
-#: src/modules/module-protocol-pulse/modules/module-tunnel-sink.c:173
-#: src/modules/module-protocol-pulse/modules/module-tunnel-source.c:173
+#: src/modules/module-protocol-pulse/modules/module-tunnel-sink.c:141
+#: src/modules/module-protocol-pulse/modules/module-tunnel-source.c:141
 #, c-format
-msgid "Tunnel to %s/%s"
-msgstr "Tunel do %s/%s"
+msgid "Tunnel to %s%s%s"
+msgstr "Tunel do %s%s%s"
 
-#: src/modules/module-pulse-tunnel.c:534
+#: src/modules/module-fallback-sink.c:31
+msgid "Dummy Output"
+msgstr "Głuche wyjście"
+
+#: src/modules/module-pulse-tunnel.c:844
 #, c-format
 msgid "Tunnel for %s@%s"
 msgstr "Tunel dla %s@%s"
 
-#: src/modules/module-zeroconf-discover.c:308
+#: src/modules/module-zeroconf-discover.c:315
+msgid "Unknown device"
+msgstr "Nieznane urządzenie"
+
+#: src/modules/module-zeroconf-discover.c:327
 #, c-format
 msgid "%s on %s@%s"
 msgstr "%s na %s@%s"
 
-#: src/modules/module-zeroconf-discover.c:312
+#: src/modules/module-zeroconf-discover.c:331
 #, c-format
 msgid "%s on %s"
 msgstr "%s na %s"
 
-#: src/tools/pw-cat.c:1055
+#: src/tools/pw-cat.c:974
 #, c-format
 msgid ""
-"%s [options] <file>\n"
+"%s [options] [<file>|-]\n"
 "  -h, --help                            Show this help\n"
 "      --version                         Show version\n"
 "  -v, --verbose                         Enable verbose operations\n"
 "\n"
 msgstr ""
-"%s [opcje] <plik>\n"
+"%s [opcje] [<plik>|-]\n"
 "  -h, --help                            Wyświetla tę pomoc\n"
 "      --version                         Wyświetla wersję\n"
 "  -v, --verbose                         Wyświetla więcej komunikatów\n"
 "\n"
 
-#: src/tools/pw-cat.c:1062
+#: src/tools/pw-cat.c:981
 #, c-format
 msgid ""
 "  -R, --remote                          Remote daemon name\n"
 "      --media-type                      Set media type (default %s)\n"
 "      --media-category                  Set media category (default %s)\n"
 "      --media-role                      Set media role (default %s)\n"
-"      --target                          Set node target (default %s)\n"
+"      --target                          Set node target serial or name "
+"(default %s)\n"
 "                                          0 means don't link\n"
 "      --latency                         Set node latency (default %s)\n"
 "                                          Xunit (unit = s, ms, us, ns)\n"
 "                                          or direct samples (256)\n"
 "                                          the rate is the one of the source "
 "file\n"
-"      --list-targets                    List available targets for --target\n"
+"  -P  --properties                      Set node properties\n"
 "\n"
 msgstr ""
 "  -R, --remote                          Nazwa zdalnej usługi\n"
@@ -116,8 +110,8 @@ msgstr ""
 "(domyślnie %s)\n"
 "      --media-role                      Ustawia rolę multimediów (domyślnie "
 "%s)\n"
-"      --target                          Ustawia węzeł docelowy (domyślnie "
-"%s)\n"
+"      --target                          Ustawia docelowy numer seryjny\n"
+"                                        lub nazwę węzła (domyślnie %s)\n"
 "                                          0 oznacza brak wiązania\n"
 "      --latency                         Ustawia opóźnienie węzła (domyślnie "
 "%s)\n"
@@ -126,11 +120,10 @@ msgstr ""
 "                                          lub bezpośrednie próbki (256)\n"
 "                                          częstotliwość jest z pliku "
 "źródłowego\n"
-"      --list-targets                    Wyświetla listę dostępnych elementów "
-"docelowych dla --target\n"
+"  -P  --properties                      Ustawia właściwości węzła\n"
 "\n"
 
-#: src/tools/pw-cat.c:1080
+#: src/tools/pw-cat.c:999
 #, c-format
 msgid ""
 "      --rate                            Sample rate (req. for rec) (default "
@@ -166,21 +159,23 @@ msgstr ""
 "(domyślnie %d)\n"
 "\n"
 
-#: src/tools/pw-cat.c:1097
+#: src/tools/pw-cat.c:1016
 msgid ""
 "  -p, --playback                        Playback mode\n"
 "  -r, --record                          Recording mode\n"
 "  -m, --midi                            Midi mode\n"
 "  -d, --dsd                             DSD mode\n"
+"  -o, --encoded                         Encoded mode\n"
 "\n"
 msgstr ""
 "  -p, --playback                        Tryb odtwarzania\n"
 "  -r, --record                          Tryb nagrywania\n"
 "  -m, --midi                            Tryb MIDI\n"
 "  -d, --dsd                             Tryb DSD\n"
+"  -o, --encoded                         Tryb zakodowany\n"
 "\n"
 
-#: src/tools/pw-cli.c:2954
+#: src/tools/pw-cli.c:2220
 #, c-format
 msgid ""
 "%s [options] [command]\n"
@@ -188,6 +183,7 @@ msgid ""
 "      --version                         Show version\n"
 "  -d, --daemon                          Start as daemon (Default false)\n"
 "  -r, --remote                          Remote daemon name\n"
+"  -m, --monitor                         Monitor activity\n"
 "\n"
 msgstr ""
 "%s [opcje] [polecenie]\n"
@@ -196,14 +192,15 @@ msgstr ""
 "  -d, --daemon                          Uruchamia jako usługę (domyślnie "
 "tego nie robi)\n"
 "  -r, --remote                          Nazwa zdalnej usługi\n"
+"  -m, --monitor                         Monitoruje aktywność\n"
 "\n"
 
-#: spa/plugins/alsa/acp/acp.c:310
+#: spa/plugins/alsa/acp/acp.c:303
 msgid "Pro Audio"
 msgstr "Dźwięk w zastosowaniach profesjonalnych"
 
-#: spa/plugins/alsa/acp/acp.c:433 spa/plugins/alsa/acp/alsa-mixer.c:4648
-#: spa/plugins/bluez5/bluez5-device.c:1135
+#: spa/plugins/alsa/acp/acp.c:427 spa/plugins/alsa/acp/alsa-mixer.c:4648
+#: spa/plugins/bluez5/bluez5-device.c:1586
 msgid "Off"
 msgstr "Wyłączone"
 
@@ -230,7 +227,7 @@ msgstr "Wejście liniowe"
 
 #: spa/plugins/alsa/acp/alsa-mixer.c:2657
 #: spa/plugins/alsa/acp/alsa-mixer.c:2741
-#: spa/plugins/bluez5/bluez5-device.c:1292
+#: spa/plugins/bluez5/bluez5-device.c:1831
 msgid "Microphone"
 msgstr "Mikrofon"
 
@@ -296,7 +293,7 @@ msgid "No Bass Boost"
 msgstr "Brak podbicia basów"
 
 #: spa/plugins/alsa/acp/alsa-mixer.c:2672
-#: spa/plugins/bluez5/bluez5-device.c:1297
+#: spa/plugins/bluez5/bluez5-device.c:1837
 msgid "Speaker"
 msgstr "Głośnik"
 
@@ -411,7 +408,7 @@ msgstr "Stereo"
 
 #: spa/plugins/alsa/acp/alsa-mixer.c:4484
 #: spa/plugins/alsa/acp/alsa-mixer.c:4642
-#: spa/plugins/bluez5/bluez5-device.c:1282
+#: spa/plugins/bluez5/bluez5-device.c:1819
 msgid "Headset"
 msgstr "Słuchawki z mikrofonem"
 
@@ -525,17 +522,17 @@ msgstr "Dupleks stereo"
 msgid "Mono Chat + 7.1 Surround"
 msgstr "Rozmowa mono + przestrzenne 7.1"
 
-#: spa/plugins/alsa/acp/alsa-mixer.c:4750
+#: spa/plugins/alsa/acp/alsa-mixer.c:4748
 #, c-format
 msgid "%s Output"
 msgstr "Wyjście %s"
 
-#: spa/plugins/alsa/acp/alsa-mixer.c:4757
+#: spa/plugins/alsa/acp/alsa-mixer.c:4756
 #, c-format
 msgid "%s Input"
 msgstr "Wejście %s"
 
-#: spa/plugins/alsa/acp/alsa-util.c:1173 spa/plugins/alsa/acp/alsa-util.c:1267
+#: spa/plugins/alsa/acp/alsa-util.c:1187 spa/plugins/alsa/acp/alsa-util.c:1281
 #, c-format
 msgid ""
 "snd_pcm_avail() returned a value that is exceptionally large: %lu byte (%lu "
@@ -560,16 +557,16 @@ msgstr[2] ""
 "Prawdopodobnie jest to błąd sterownika ALSA „%s”. Proszę zgłosić ten problem "
 "programistom usługi ALSA."
 
-#: spa/plugins/alsa/acp/alsa-util.c:1239
+#: spa/plugins/alsa/acp/alsa-util.c:1253
 #, c-format
 msgid ""
-"snd_pcm_delay() returned a value that is exceptionally large: %li byte (%s"
-"%lu ms).\n"
+"snd_pcm_delay() returned a value that is exceptionally large: %li byte "
+"(%s%lu ms).\n"
 "Most likely this is a bug in the ALSA driver '%s'. Please report this issue "
 "to the ALSA developers."
 msgid_plural ""
-"snd_pcm_delay() returned a value that is exceptionally large: %li bytes (%s"
-"%lu ms).\n"
+"snd_pcm_delay() returned a value that is exceptionally large: %li bytes "
+"(%s%lu ms).\n"
 "Most likely this is a bug in the ALSA driver '%s'. Please report this issue "
 "to the ALSA developers."
 msgstr[0] ""
@@ -585,7 +582,7 @@ msgstr[2] ""
 "Prawdopodobnie jest to błąd sterownika ALSA „%s”. Proszę zgłosić ten problem "
 "programistom usługi ALSA."
 
-#: spa/plugins/alsa/acp/alsa-util.c:1286
+#: spa/plugins/alsa/acp/alsa-util.c:1300
 #, c-format
 msgid ""
 "snd_pcm_avail_delay() returned strange values: delay %lu is less than avail "
@@ -598,7 +595,7 @@ msgstr ""
 "Prawdopodobnie jest to błąd sterownika ALSA „%s”. Proszę zgłosić ten problem "
 "programistom usługi ALSA."
 
-#: spa/plugins/alsa/acp/alsa-util.c:1329
+#: spa/plugins/alsa/acp/alsa-util.c:1343
 #, c-format
 msgid ""
 "snd_pcm_mmap_begin() returned a value that is exceptionally large: %lu byte "
@@ -623,65 +620,116 @@ msgstr[2] ""
 "Prawdopodobnie jest to błąd sterownika ALSA „%s”. Proszę zgłosić ten problem "
 "programistom usługi ALSA."
 
-#: spa/plugins/alsa/acp/channelmap.h:466
+#: spa/plugins/alsa/acp/channelmap.h:457
 msgid "(invalid)"
 msgstr "(nieprawidłowe)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1145
+#: spa/plugins/alsa/acp/compat.c:189
+msgid "Built-in Audio"
+msgstr "Wbudowany dźwięk"
+
+#: spa/plugins/alsa/acp/compat.c:194
+msgid "Modem"
+msgstr "Modem"
+
+#: spa/plugins/bluez5/bluez5-device.c:1597
 msgid "Audio Gateway (A2DP Source & HSP/HFP AG)"
 msgstr "Bramka dźwięku (źródło A2DP i AG HSP/HFP)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1168
+#: spa/plugins/bluez5/bluez5-device.c:1622
 #, c-format
 msgid "High Fidelity Playback (A2DP Sink, codec %s)"
 msgstr "Odtwarzanie o wysokiej dokładności (odpływ A2DP, kodek %s)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1171
+#: spa/plugins/bluez5/bluez5-device.c:1625
 #, c-format
 msgid "High Fidelity Duplex (A2DP Source/Sink, codec %s)"
 msgstr "Dupleks o wysokiej dokładności (źródło/odpływ A2DP, kodek %s)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1178
+#: spa/plugins/bluez5/bluez5-device.c:1633
 msgid "High Fidelity Playback (A2DP Sink)"
 msgstr "Odtwarzanie o wysokiej dokładności (odpływ A2DP)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1180
+#: spa/plugins/bluez5/bluez5-device.c:1635
 msgid "High Fidelity Duplex (A2DP Source/Sink)"
 msgstr "Dupleks o wysokiej dokładności (źródło/odpływ A2DP)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1207
+#: spa/plugins/bluez5/bluez5-device.c:1677
+#, c-format
+msgid "High Fidelity Playback (BAP Sink, codec %s)"
+msgstr "Odtwarzanie o wysokiej dokładności (odpływ BAP, kodek %s)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1681
+#, c-format
+msgid "High Fidelity Input (BAP Source, codec %s)"
+msgstr "Wejście o wysokiej dokładności (źródło BAP, kodek %s)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1685
+#, c-format
+msgid "High Fidelity Duplex (BAP Source/Sink, codec %s)"
+msgstr "Dupleks o wysokiej dokładności (źródło/odpływ BAP, kodek %s)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1693
+msgid "High Fidelity Playback (BAP Sink)"
+msgstr "Odtwarzanie o wysokiej dokładności (odpływ BAP)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1696
+msgid "High Fidelity Input (BAP Source)"
+msgstr "Wejście o wysokiej dokładności (źródło BAP)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1699
+msgid "High Fidelity Duplex (BAP Source/Sink)"
+msgstr "Dupleks o wysokiej dokładności (źródło/odpływ BAP)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1735
 #, c-format
 msgid "Headset Head Unit (HSP/HFP, codec %s)"
 msgstr "Jednostka główna słuchawek z mikrofonem (HSP/HFP, kodek %s)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1211
+#: spa/plugins/bluez5/bluez5-device.c:1740
 msgid "Headset Head Unit (HSP/HFP)"
 msgstr "Jednostka główna słuchawek z mikrofonem (HSP/HFP)"
 
-#: spa/plugins/bluez5/bluez5-device.c:1287
+#: spa/plugins/bluez5/bluez5-device.c:1820
+#: spa/plugins/bluez5/bluez5-device.c:1825
+#: spa/plugins/bluez5/bluez5-device.c:1832
+#: spa/plugins/bluez5/bluez5-device.c:1838
+#: spa/plugins/bluez5/bluez5-device.c:1844
+#: spa/plugins/bluez5/bluez5-device.c:1850
+#: spa/plugins/bluez5/bluez5-device.c:1856
+#: spa/plugins/bluez5/bluez5-device.c:1862
+#: spa/plugins/bluez5/bluez5-device.c:1868
 msgid "Handsfree"
 msgstr "Zestaw głośnomówiący"
 
-#: spa/plugins/bluez5/bluez5-device.c:1302
+#: spa/plugins/bluez5/bluez5-device.c:1826
+msgid "Handsfree (HFP)"
+msgstr "Zestaw głośnomówiący (HFP)"
+
+#: spa/plugins/bluez5/bluez5-device.c:1843
 msgid "Headphone"
 msgstr "Słuchawki"
 
-#: spa/plugins/bluez5/bluez5-device.c:1307
+#: spa/plugins/bluez5/bluez5-device.c:1849
 msgid "Portable"
 msgstr "Przenośne"
 
-#: spa/plugins/bluez5/bluez5-device.c:1312
+#: spa/plugins/bluez5/bluez5-device.c:1855
 msgid "Car"
 msgstr "Samochód"
 
-#: spa/plugins/bluez5/bluez5-device.c:1317
+#: spa/plugins/bluez5/bluez5-device.c:1861
 msgid "HiFi"
 msgstr "HiFi"
 
-#: spa/plugins/bluez5/bluez5-device.c:1322
+#: spa/plugins/bluez5/bluez5-device.c:1867
 msgid "Phone"
 msgstr "Telefon"
 
-#: spa/plugins/bluez5/bluez5-device.c:1328
+#: spa/plugins/bluez5/bluez5-device.c:1874
 msgid "Bluetooth"
 msgstr "Bluetooth"
+
+#: spa/plugins/bluez5/bluez5-device.c:1875
+msgid "Bluetooth (HFP)"
+msgstr "Bluetooth (HFP)"

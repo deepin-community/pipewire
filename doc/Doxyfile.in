@@ -1,13 +1,12 @@
 PROJECT_NAME           = PipeWire
 PROJECT_NUMBER         = @PACKAGE_VERSION@
-OUTPUT_DIRECTORY       = doc
+OUTPUT_DIRECTORY       = "@output_directory@"
 FULL_PATH_NAMES        = NO
 JAVADOC_AUTOBRIEF      = YES
 TAB_SIZE               = 8
 OPTIMIZE_OUTPUT_FOR_C  = YES
 EXTRACT_ALL            = YES
 EXTRACT_STATIC         = YES
-FULL_PATH_NAMES        = YES
 STRIP_FROM_PATH        = @path_prefixes@
 STRIP_FROM_INC_PATH    = @path_prefixes@
 SHOW_FILES             = NO
@@ -34,7 +33,7 @@ IGNORE_PREFIX          = pw_ \
                          spa_ \
                          SPA_
 GENERATE_TREEVIEW      = YES
-SEARCHENGINE           = NO
+SEARCHENGINE           = YES
 GENERATE_LATEX         = NO
 
 MACRO_EXPANSION        = YES

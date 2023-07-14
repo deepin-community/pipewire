@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -48,6 +28,7 @@
 #include <spa/utils/defs.h>
 #include <spa/utils/json.h>
 #include <spa/utils/result.h>
+#include <pipewire/cleanup.h>
 #include <pipewire/pipewire.h>
 
 #include "client.h"
@@ -60,13 +41,13 @@
 #include "server.h"
 #include "stream.h"
 #include "utils.h"
+#include "flatpak-utils.h"
 
 #define LISTEN_BACKLOG 32
 #define MAX_CLIENTS 64
 
 static int handle_packet(struct client *client, struct message *msg)
 {
-	struct impl * const impl = client->impl;
 	uint32_t command, tag;
 	int res = 0;
 
@@ -91,15 +72,26 @@ static int handle_packet(struct client *client, struct message *msg)
 		message_dump(SPA_LOG_LEVEL_INFO, msg);
 	}
 
-	if (commands[command].run == NULL) {
+	const struct command *cmd = &commands[command];
+	if (cmd->run == NULL) {
 		res = -ENOTSUP;
 		goto finish;
 	}
 
-	res = commands[command].run(client, command, tag, msg);
+	if (!client->authenticated && !SPA_FLAG_IS_SET(cmd->access, COMMAND_ACCESS_WITHOUT_AUTH)) {
+		res = -EACCES;
+		goto finish;
+	}
+
+	if (client->manager == NULL && !SPA_FLAG_IS_SET(cmd->access, COMMAND_ACCESS_WITHOUT_MANAGER)) {
+		res = -EACCES;
+		goto finish;
+	}
+
+	res = cmd->run(client, command, tag, msg);
 
 finish:
-	message_free(impl, msg, false, false);
+	message_free(msg, false, false);
 	if (res < 0)
 		reply_error(client, command, tag, res);
 
@@ -108,7 +100,6 @@ finish:
 
 static int handle_memblock(struct client *client, struct message *msg)
 {
-	struct impl * const impl = client->impl;
 	struct stream *stream;
 	uint32_t channel, flags, index;
 	int64_t offset, diff;
@@ -126,7 +117,8 @@ static int handle_memblock(struct client *client, struct message *msg)
 
 	stream = pw_map_lookup(&client->streams, channel);
 	if (stream == NULL || stream->type == STREAM_TYPE_RECORD) {
-		res = -EINVAL;
+		pw_log_info("client %p [%s]: received memblock for unknown channel %d",
+			    client, client->name, channel);
 		goto finish;
 	}
 
@@ -155,7 +147,8 @@ static int handle_memblock(struct client *client, struct message *msg)
 	index += diff;
 	filled += diff;
 	stream->write_index += diff;
-	stream->missing -= diff;
+	if ((flags & FLAG_SEEKMASK) == SEEK_RELATIVE)
+		stream->requested -= diff;
 
 	if (filled < 0) {
 		/* underrun, reported on reader side */
@@ -167,17 +160,23 @@ static int handle_memblock(struct client *client, struct message *msg)
 	/* always write data to ringbuffer, we expect the other side
 	 * to recover */
 	spa_ringbuffer_write_data(&stream->ring,
-			stream->buffer, stream->attr.maxlength,
-			index % stream->attr.maxlength,
+			stream->buffer, MAXLENGTH,
+			index % MAXLENGTH,
 			msg->data,
-			SPA_MIN(msg->length, stream->attr.maxlength));
+			SPA_MIN(msg->length, MAXLENGTH));
 	index += msg->length;
-	stream->write_index += msg->length;
 	spa_ringbuffer_write_update(&stream->ring, index);
-	stream->requested -= SPA_MIN(msg->length, stream->requested);
+
+	stream->write_index += msg->length;
+	stream->requested -= msg->length;
+
+	stream_send_request(stream);
+
+	if (stream->is_paused && !stream->corked)
+		stream_set_paused(stream, false, "new data");
 
 finish:
-	message_free(impl, msg, false, false);
+	message_free(msg, false, false);
 	return res;
 }
 
@@ -194,7 +193,7 @@ static int do_read(struct client *client)
 	} else {
 		uint32_t idx = client->in_index - sizeof(client->desc);
 
-		if (client->message == NULL) {
+		if (client->message == NULL || client->message->length < idx) {
 			res = -EPROTO;
 			goto exit;
 		}
@@ -213,7 +212,8 @@ static int do_read(struct client *client)
 			if (errno == EINTR)
 				continue;
 			res = -errno;
-			if (res != -EAGAIN && res != -EWOULDBLOCK)
+			if (res != -EAGAIN && res != -EWOULDBLOCK &&
+			    res != -EPIPE && res != -ECONNRESET)
 				pw_log_warn("recv client:%p res %zd: %m", client, r);
 			goto exit;
 		}
@@ -250,7 +250,7 @@ static int do_read(struct client *client)
 		}
 
 		if (client->message)
-			message_free(impl, client->message, false, false);
+			message_free(client->message, false, false);
 
 		client->message = message_alloc(impl, channel, length);
 	} else if (client->message &&
@@ -274,7 +274,6 @@ static void
 on_client_data(void *data, int fd, uint32_t mask)
 {
 	struct client * const client = data;
-	struct impl * const impl = client->impl;
 	int res;
 
 	client->ref++;
@@ -301,15 +300,9 @@ on_client_data(void *data, int fd, uint32_t mask)
 		}
 	}
 
-	if (mask & SPA_IO_OUT || client->need_flush) {
-		pw_log_trace("client %p: can write", client);
-		client->need_flush = false;
+	if (mask & SPA_IO_OUT || client->new_msg_since_last_flush) {
 		res = client_flush_messages(client);
-		if (res >= 0) {
-			int m = client->source->mask;
-			SPA_FLAG_CLEAR(m, SPA_IO_OUT);
-			pw_loop_update_io(impl->loop, client->source, m);
-		} else if (res != -EAGAIN && res != -EWOULDBLOCK)
+		if (res < 0)
 			goto error;
 	}
 
@@ -321,6 +314,7 @@ done:
 error:
 	switch (res) {
 	case -EPIPE:
+	case -ECONNRESET:
 		pw_log_info("server %p: client %p [%s] disconnected",
 			    client->server, client, client->name);
 		SPA_FALLTHROUGH;
@@ -356,6 +350,7 @@ on_connect(void *data, int fd, uint32_t mask)
 	socklen_t length;
 	int client_fd, val;
 	struct client *client = NULL;
+	const char *client_access = NULL;
 	pid_t pid;
 
 	length = sizeof(name);
@@ -372,27 +367,15 @@ on_connect(void *data, int fd, uint32_t mask)
 		goto error;
 	}
 
-	if (server->n_clients >= MAX_CLIENTS) {
+	if (server->n_clients >= server->max_clients) {
 		close(client_fd);
 		errno = ECONNREFUSED;
 		goto error;
 	}
 
-	client = calloc(1, sizeof(*client));
+	client = client_new(server);
 	if (client == NULL)
 		goto error;
-
-	client->impl = impl;
-	client->ref = 1;
-	client->connect_tag = SPA_ID_INVALID;
-	client->server = server;
-	spa_list_append(&server->clients, &client->link);
-	server->n_clients++;
-	pw_map_init(&client->streams, 16, 16);
-	spa_list_init(&client->out_messages);
-	spa_list_init(&client->operations);
-	spa_list_init(&client->pending_samples);
-	spa_list_init(&client->pending_streams);
 
 	pw_log_debug("server %p: new client %p fd:%d", server, client, client_fd);
 
@@ -405,6 +388,7 @@ on_connect(void *data, int fd, uint32_t mask)
 
 	client->props = pw_properties_new(
 			PW_KEY_CLIENT_API, "pipewire-pulse",
+			"config.ext", pw_properties_get(impl->props, "config.ext"),
 			NULL);
 	if (client->props == NULL)
 		goto error;
@@ -417,17 +401,52 @@ on_connect(void *data, int fd, uint32_t mask)
 	if (client->routes == NULL)
 		goto error;
 
+	if (server->client_access[0] != '\0')
+		client_access = server->client_access;
+
 	if (server->addr.ss_family == AF_UNIX) {
+		spa_autofree char *app_id = NULL, *devices = NULL;
+
 #ifdef SO_PRIORITY
 		val = 6;
 		if (setsockopt(client_fd, SOL_SOCKET, SO_PRIORITY, &val, sizeof(val)) < 0)
 			pw_log_warn("setsockopt(SO_PRIORITY) failed: %m");
 #endif
 		pid = get_client_pid(client, client_fd);
-		if (pid != 0 && check_flatpak(client, pid) == 1)
-			pw_properties_set(client->props, PW_KEY_CLIENT_ACCESS, "flatpak");
+		if (pid != 0 && pw_check_flatpak(pid, &app_id, &devices) == 1) {
+			/*
+			 * XXX: we should really use Portal client access here
+			 *
+			 * However, session managers currently support only camera
+			 * permissions, and the XDG Portal doesn't have a "Sound Manager"
+			 * permission defined. So for now, use access=flatpak, and determine
+			 * extra permissions here.
+			 *
+			 * The application has access to the Pulseaudio socket,
+			 * and with real PA it would always then have full sound access.
+			 * We'll restrict the full access here behind devices=all;
+			 * if the application can access all devices it can then
+			 * also sound and camera devices directly, so granting also the
+			 * Manager permissions here is reasonable.
+			 *
+			 * The "Manager" permission in any case is also currently not safe
+			 * as the session manager does not check any permission store
+			 * for it.
+			 */
+			client_access = "flatpak";
+			pw_properties_set(client->props, "pipewire.access.portal.app_id",
+					app_id);
+
+			if (devices && (spa_streq(devices, "all") ||
+							spa_strstartswith(devices, "all;") ||
+							strstr(devices, ";all;")))
+				pw_properties_set(client->props, PW_KEY_MEDIA_CATEGORY, "Manager");
+			else
+				pw_properties_set(client->props, PW_KEY_MEDIA_CATEGORY, NULL);
+		}
 	}
 	else if (server->addr.ss_family == AF_INET || server->addr.ss_family == AF_INET6) {
+
 		val = 1;
 		if (setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val)) < 0)
 			pw_log_warn("setsockopt(TCP_NODELAY) failed: %m");
@@ -437,9 +456,10 @@ on_connect(void *data, int fd, uint32_t mask)
 			if (setsockopt(client_fd, IPPROTO_IP, IP_TOS, &val, sizeof(val)) < 0)
 				pw_log_warn("setsockopt(IP_TOS) failed: %m");
 		}
-
-		pw_properties_set(client->props, PW_KEY_CLIENT_ACCESS, "restricted");
+		if (client_access == NULL)
+			client_access = "restricted";
 	}
+	pw_properties_set(client->props, PW_KEY_CLIENT_ACCESS, client_access);
 
 	return;
 
@@ -449,15 +469,15 @@ error:
 		client_free(client);
 }
 
-static int parse_unix_address(const char *address, struct pw_array *addrs)
+static int parse_unix_address(const char *address, struct sockaddr_storage *addrs, int len)
 {
-	struct sockaddr_un addr = {0}, *s;
+	struct sockaddr_un addr = {0};
 	int res;
 
 	if (address[0] != '/') {
 		char runtime_dir[PATH_MAX];
 
-		if ((res = get_runtime_dir(runtime_dir, sizeof(runtime_dir), "pulse")) < 0)
+		if ((res = get_runtime_dir(runtime_dir, sizeof(runtime_dir))) < 0)
 			return res;
 
 		res = snprintf(addr.sun_path, sizeof(addr.sun_path),
@@ -476,15 +496,13 @@ static int parse_unix_address(const char *address, struct pw_array *addrs)
 		return -ENAMETOOLONG;
 	}
 
-	s = pw_array_add(addrs, sizeof(struct sockaddr_storage));
-	if (s == NULL)
-		return -ENOMEM;
+	if (len < 1)
+		return -ENOSPC;
 
 	addr.sun_family = AF_UNIX;
 
-	*s = addr;
-
-	return 0;
+	memcpy(&addrs[0], &addr, sizeof(addr));
+	return 1;
 }
 
 #ifndef SUN_LEN
@@ -580,7 +598,6 @@ static int start_unix_server(struct server *server, const struct sockaddr_storag
 			pw_log_warn("server %p: unlink('%s') failed: %m",
 				    server, addr_un->sun_path);
 	}
-
 	if (bind(fd, (const struct sockaddr *) addr_un, SUN_LEN(addr_un)) < 0) {
 		res = -errno;
 		pw_log_warn("server %p: bind() to '%s' failed: %m",
@@ -588,7 +605,11 @@ static int start_unix_server(struct server *server, const struct sockaddr_storag
 		goto error_close;
 	}
 
-	if (listen(fd, LISTEN_BACKLOG) < 0) {
+	if (chmod(addr_un->sun_path, 0777) < 0)
+		pw_log_warn("server %p: chmod('%s') failed: %m",
+				    server, addr_un->sun_path);
+
+	if (listen(fd, server->listen_backlog) < 0) {
 		res = -errno;
 		pw_log_warn("server %p: listen() on '%s' failed: %m",
 			    server, addr_un->sun_path);
@@ -752,49 +773,44 @@ static int get_ip_address_length(const struct sockaddr_storage *addr)
 	}
 }
 
-static int parse_ip_address(const char *address, struct pw_array *addrs)
+static int parse_ip_address(const char *address, struct sockaddr_storage *addrs, int len)
 {
 	char ip[FORMATTED_IP_ADDR_STRLEN];
-	struct sockaddr_storage addr, *s;
+	struct sockaddr_storage addr;
 	int res;
 
 	res = parse_ipv6_address(address, (struct sockaddr_in6 *) &addr);
 	if (res == 0) {
-		s = pw_array_add(addrs, sizeof(*s));
-		if (s == NULL)
-			return -ENOMEM;
-
-		*s = addr;
-		return 0;
+		if (len < 1)
+			return -ENOSPC;
+		addrs[0] = addr;
+		return 1;
 	}
 
 	res = parse_ipv4_address(address, (struct sockaddr_in *) &addr);
 	if (res == 0) {
-		s = pw_array_add(addrs, sizeof(*s));
-		if (s == NULL)
-			return -ENOMEM;
-
-		*s = addr;
-		return 0;
+		if (len < 1)
+			return -ENOSPC;
+		addrs[0] = addr;
+		return 1;
 	}
 
 	res = parse_port(address);
 	if (res < 0)
 		return res;
 
-	s = pw_array_add(addrs, sizeof(*s) * 2);
-	if (s == NULL)
-		return -ENOMEM;
-
-	snprintf(ip, sizeof(ip), "[::]:%d", res);
-	spa_assert_se(parse_ipv6_address(ip, (struct sockaddr_in6 *) &addr) == 0);
-	*s++ = addr;
+	if (len < 2)
+		return -ENOSPC;
 
 	snprintf(ip, sizeof(ip), "0.0.0.0:%d", res);
 	spa_assert_se(parse_ipv4_address(ip, (struct sockaddr_in *) &addr) == 0);
-	*s++ = addr;
+	addrs[0] = addr;
 
-	return 0;
+	snprintf(ip, sizeof(ip), "[::]:%d", res);
+	spa_assert_se(parse_ipv6_address(ip, (struct sockaddr_in6 *) &addr) == 0);
+	addrs[1] = addr;
+
+	return 2;
 }
 
 static int start_ip_server(struct server *server, const struct sockaddr_storage *addr)
@@ -829,7 +845,7 @@ static int start_ip_server(struct server *server, const struct sockaddr_storage 
 		goto error_close;
 	}
 
-	if (listen(fd, LISTEN_BACKLOG) < 0) {
+	if (listen(fd, server->listen_backlog) < 0) {
 		res = -errno;
 		pw_log_warn("server %p: listen() failed: %m", server);
 		goto error_close;
@@ -866,7 +882,7 @@ static struct server *server_new(struct impl *impl)
 
 static int server_start(struct server *server, const struct sockaddr_storage *addr)
 {
-	const struct impl * const impl = server->impl;
+	struct impl * const impl = server->impl;
 	int res = 0, fd;
 
 	switch (addr->ss_family) {
@@ -891,17 +907,19 @@ static int server_start(struct server *server, const struct sockaddr_storage *ad
 		res = -errno;
 		pw_log_error("server %p: can't create server source: %m", impl);
 	}
+	if (res >= 0)
+		spa_hook_list_call(&impl->hooks, struct impl_events, server_started, 0, server);
 
 	return res;
 }
 
-static int parse_address(const char *address, struct pw_array *addrs)
+static int parse_address(const char *address, struct sockaddr_storage *addrs, int len)
 {
-	if (strncmp(address, "tcp:", strlen("tcp:")) == 0)
-		return parse_ip_address(address + strlen("tcp:"), addrs);
+	if (spa_strstartswith(address, "tcp:"))
+		return parse_ip_address(address + strlen("tcp:"), addrs, len);
 
-	if (strncmp(address, "unix:", strlen("unix:")) == 0)
-		return parse_unix_address(address + strlen("unix:"), addrs);
+	if (spa_strstartswith(address, "unix:"))
+		return parse_unix_address(address + strlen("unix:"), addrs, len);
 
 	return -EAFNOSUPPORT;
 }
@@ -934,11 +952,9 @@ static int format_socket_address(const struct sockaddr_storage *addr, char *buff
 
 int servers_create_and_start(struct impl *impl, const char *addresses, struct pw_array *servers)
 {
-	struct pw_array addrs = PW_ARRAY_INIT(sizeof(struct sockaddr_storage));
-	const struct sockaddr_storage *addr;
-	char addr_str[FORMATTED_SOCKET_ADDR_STRLEN];
-	int res, count = 0, err = 0; /* store the first error to return when no servers could be created */
-	struct spa_json it[2];
+	int len, res, count = 0, err = 0; /* store the first error to return when no servers could be created */
+	const char *v;
+	struct spa_json it[3];
 
 	/* update `err` if it hasn't been set to an errno */
 #define UPDATE_ERR(e) do { if (err == 0) err = (e); } while (false)
@@ -946,52 +962,79 @@ int servers_create_and_start(struct impl *impl, const char *addresses, struct pw
 	/* collect addresses into an array of `struct sockaddr_storage` */
 	spa_json_init(&it[0], addresses, strlen(addresses));
 
+	/* [ <server-spec> ... ] */
 	if (spa_json_enter_array(&it[0], &it[1]) < 0)
 		return -EINVAL;
 
-	while (spa_json_get_string(&it[1], addr_str, sizeof(addr_str) - 1) > 0) {
-		res = parse_address(addr_str, &addrs);
-		if (res < 0) {
+	/* a server-spec is either an address or an object */
+	while ((len = spa_json_next(&it[1], &v)) > 0) {
+		char addr_str[FORMATTED_SOCKET_ADDR_STRLEN] = { 0 };
+		char key[128], client_access[64] = { 0 };
+		struct sockaddr_storage addrs[2];
+		int i, max_clients = MAX_CLIENTS, listen_backlog = LISTEN_BACKLOG, n_addr;
+
+		if (spa_json_is_object(v, len)) {
+			spa_json_enter(&it[1], &it[2]);
+			while (spa_json_get_string(&it[2], key, sizeof(key)) > 0) {
+				if ((len = spa_json_next(&it[2], &v)) <= 0)
+					break;
+
+				if (spa_streq(key, "address")) {
+					spa_json_parse_stringn(v, len, addr_str, sizeof(addr_str));
+				} else if (spa_streq(key, "max-clients")) {
+					spa_json_parse_int(v, len, &max_clients);
+				} else if (spa_streq(key, "listen-backlog")) {
+					spa_json_parse_int(v, len, &listen_backlog);
+				} else if (spa_streq(key, "client.access")) {
+					spa_json_parse_stringn(v, len, client_access, sizeof(client_access));
+				}
+			}
+		} else {
+			spa_json_parse_stringn(v, len, addr_str, sizeof(addr_str));
+		}
+
+		n_addr = parse_address(addr_str, addrs, SPA_N_ELEMENTS(addrs));
+		if (n_addr < 0) {
 			pw_log_warn("pulse-server %p: failed to parse address '%s': %s",
-				    impl, addr_str, spa_strerror(res));
-
-			UPDATE_ERR(res);
-		}
-	}
-
-	/* try to create sockets for each address in the list */
-	pw_array_for_each (addr, &addrs) {
-		struct server * const server = server_new(impl);
-		if (server == NULL) {
-			UPDATE_ERR(-errno);
+				    impl, addr_str, spa_strerror(n_addr));
+			UPDATE_ERR(n_addr);
 			continue;
 		}
 
-		res = server_start(server, addr);
-		if (res < 0) {
-			spa_assert_se(format_socket_address(addr, addr_str, sizeof(addr_str)) >= 0);
-			pw_log_warn("pulse-server %p: failed to start server on '%s': %s",
-				    impl, addr_str, spa_strerror(res));
+		/* try to create sockets for each address in the list */
+		for (i = 0; i < n_addr; i++) {
+			const struct sockaddr_storage *addr = &addrs[i];
+			struct server * const server = server_new(impl);
 
-			UPDATE_ERR(res);
-			server_free(server);
+			if (server == NULL) {
+				UPDATE_ERR(-errno);
+				continue;
+			}
 
-			continue;
+			server->max_clients = max_clients;
+			server->listen_backlog = listen_backlog;
+			memcpy(server->client_access, client_access, sizeof(client_access));
+
+			res = server_start(server, addr);
+			if (res < 0) {
+				spa_assert_se(format_socket_address(addr, addr_str, sizeof(addr_str)) >= 0);
+				pw_log_warn("pulse-server %p: failed to start server on '%s': %s",
+					    impl, addr_str, spa_strerror(res));
+				UPDATE_ERR(res);
+				server_free(server);
+				continue;
+			}
+
+			if (servers != NULL)
+				pw_array_add_ptr(servers, server);
+
+			count += 1;
 		}
-
-		if (servers != NULL)
-			pw_array_add_ptr(servers, server);
-
-		count += 1;
 	}
-
-	pw_array_clear(&addrs);
-
 	if (count == 0) {
 		UPDATE_ERR(-EINVAL);
 		return err;
 	}
-
 	return count;
 
 #undef UPDATE_ERR
@@ -1010,6 +1053,8 @@ void server_free(struct server *server)
 		spa_assert_se(client_detach(c));
 		client_unref(c);
 	}
+
+	spa_hook_list_call(&impl->hooks, struct impl_events, server_stopped, 0, server);
 
 	if (server->source)
 		pw_loop_destroy_source(impl->loop, server->source);

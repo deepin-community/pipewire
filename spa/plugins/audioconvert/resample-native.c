@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 
@@ -33,22 +13,22 @@ struct quality {
 	double cutoff;
 };
 
-static const struct quality blackman_qualities[] = {
-	{ 8, 0.5, },
-	{ 16, 0.70, },
-	{ 24, 0.76, },
-	{ 32, 0.8, },
+static const struct quality window_qualities[] = {
+	{ 8, 0.53, },
+	{ 16, 0.67, },
+	{ 24, 0.75, },
+	{ 32, 0.80, },
 	{ 48, 0.85, },                  /* default */
-	{ 64, 0.90, },
-	{ 80, 0.92, },
-	{ 96, 0.933, },
-	{ 128, 0.950, },
-	{ 144, 0.955, },
-	{ 160, 0.958, },
-	{ 192, 0.965, },
-	{ 256, 0.975, },
-	{ 896, 0.997, },
-	{ 1024, 0.998, },
+	{ 64, 0.88, },
+	{ 80, 0.895, },
+	{ 96, 0.910, },
+	{ 128, 0.936, },
+	{ 144, 0.945, },
+	{ 160, 0.950, },
+	{ 192, 0.960, },
+	{ 256, 0.970, },
+	{ 896, 0.990, },
+	{ 1024, 0.995, },
 };
 
 static inline double sinc(double x)
@@ -58,14 +38,30 @@ static inline double sinc(double x)
 	return sin(x) / x;
 }
 
-static inline double blackman(double x, double n_taps)
+static inline double window_blackman(double x, double n_taps)
 {
-	double alpha = 0.232;
+	double alpha = 0.232, r;
 	x =  2.0 * M_PI * x / n_taps;
-	return (1.0 - alpha) / 2.0 + (1.0 / 2.0) * cos(x) +
-		(alpha / 2.0) * cos(2 * x);
+	r = (1.0 - alpha) / 2.0 + (1.0 / 2.0) * cos(x) +
+		(alpha / 2.0) * cos(2.0 * x);
+	return r;
 }
 
+static inline double window_cosh(double x, double n_taps)
+{
+	double r;
+	double A = 16.97789;
+	double x2;
+	x =  2.0 * x / n_taps;
+	x2 = x * x;
+	if (x2 >= 1.0)
+		return 0.0;
+	/* doi:10.1109/RME.2008.4595727 with tweak */
+	r = (exp(A * sqrt(1 - x2)) - 1) / (exp(A) - 1);
+	return r;
+}
+
+#define window (1 ? window_cosh : window_blackman)
 
 static int build_filter(float *taps, uint32_t stride, uint32_t n_taps, uint32_t n_phases, double cutoff)
 {
@@ -77,83 +73,43 @@ static int build_filter(float *taps, uint32_t stride, uint32_t n_taps, uint32_t 
 			/* exploit symmetry in filter taps */
 			taps[(n_phases - i) * stride + n_taps12 + j] =
 				taps[i * stride + (n_taps12 - j - 1)] =
-					cutoff * sinc(t * cutoff) * blackman(t, n_taps);
+					cutoff * sinc(t * cutoff) * window(t, n_taps);
 		}
 	}
 	return 0;
 }
 
-static void inner_product_c(float *d, const float * SPA_RESTRICT s,
-		const float * SPA_RESTRICT taps, uint32_t n_taps)
-{
-	float sum = 0.0f;
-#if 1
-	uint32_t i, j, nt2 = n_taps/2;
-	for (i = 0, j = n_taps-1; i < nt2; i++, j--)
-		sum += s[i] * taps[i] + s[j] * taps[j];
-#else
-	uint32_t i;
-	for (i = 0; i < n_taps; i++)
-		sum += s[i] * taps[i];
-#endif
-	*d = sum;
-}
-
-static void inner_product_ip_c(float *d, const float * SPA_RESTRICT s,
-	const float * SPA_RESTRICT t0, const float * SPA_RESTRICT t1, float x,
-	uint32_t n_taps)
-{
-	float sum[2] = { 0.0f, 0.0f };
-	uint32_t i;
-#if 1
-	uint32_t j, nt2 = n_taps/2;
-	for (i = 0, j = n_taps-1; i < nt2; i++, j--) {
-		sum[0] += s[i] * t0[i] + s[j] * t0[j];
-		sum[1] += s[i] * t1[i] + s[j] * t1[j];
-	}
-#else
-	for (i = 0; i < n_taps; i++) {
-		sum[0] += s[i] * t0[i];
-		sum[1] += s[i] * t1[i];
-	}
-#endif
-	*d = (sum[1] - sum[0]) * x + sum[0];
-}
-
 MAKE_RESAMPLER_COPY(c);
-MAKE_RESAMPLER_FULL(c);
-MAKE_RESAMPLER_INTER(c);
+
+#define MAKE(fmt,copy,full,inter,...) \
+	{ SPA_AUDIO_FORMAT_ ##fmt, do_resample_ ##copy, #copy, \
+		do_resample_ ##full, #full, do_resample_ ##inter, #inter, __VA_ARGS__ }
 
 static struct resample_info resample_table[] =
 {
 #if defined (HAVE_NEON)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_NEON,
-		do_resample_copy_c, do_resample_full_neon, do_resample_inter_neon },
+	MAKE(F32, copy_c, full_neon, inter_neon, SPA_CPU_FLAG_NEON),
 #endif
 #if defined(HAVE_AVX) && defined(HAVE_FMA)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_AVX | SPA_CPU_FLAG_FMA3,
-		do_resample_copy_c, do_resample_full_avx, do_resample_inter_avx },
+	MAKE(F32, copy_c, full_avx, inter_avx, SPA_CPU_FLAG_AVX | SPA_CPU_FLAG_FMA3),
 #endif
 #if defined (HAVE_SSSE3)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_SSSE3 | SPA_CPU_FLAG_SLOW_UNALIGNED,
-		do_resample_copy_c, do_resample_full_ssse3, do_resample_inter_ssse3 },
+	MAKE(F32, copy_c, full_ssse3, inter_ssse3, SPA_CPU_FLAG_SSSE3 | SPA_CPU_FLAG_SLOW_UNALIGNED),
 #endif
 #if defined (HAVE_SSE)
-	{ SPA_AUDIO_FORMAT_F32, SPA_CPU_FLAG_SSE,
-		do_resample_copy_c, do_resample_full_sse, do_resample_inter_sse },
+	MAKE(F32, copy_c, full_sse, inter_sse, SPA_CPU_FLAG_SSE),
 #endif
-	{ SPA_AUDIO_FORMAT_F32, 0,
-		do_resample_copy_c, do_resample_full_c, do_resample_inter_c },
+	MAKE(F32, copy_c, full_c, inter_c),
 };
+#undef MAKE
 
 #define MATCH_CPU_FLAGS(a,b)	((a) == 0 || ((a) & (b)) == a)
 static const struct resample_info *find_resample_info(uint32_t format, uint32_t cpu_flags)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(resample_table); i++) {
-		if (resample_table[i].format == format &&
-		    MATCH_CPU_FLAGS(resample_table[i].cpu_flags, cpu_flags))
-			return &resample_table[i];
+	SPA_FOR_EACH_ELEMENT_VAR(resample_table, t) {
+		if (t->format == format &&
+		    MATCH_CPU_FLAGS(t->cpu_flags, cpu_flags))
+			return t;
 	}
 	return NULL;
 }
@@ -200,15 +156,21 @@ static void impl_native_update_rate(struct resample *r, double rate)
 	data->inc = data->in_rate / data->out_rate;
 	data->frac = data->in_rate % data->out_rate;
 
-	if (data->in_rate == data->out_rate)
+	if (data->in_rate == data->out_rate) {
 		data->func = data->info->process_copy;
-	else if (rate == 1.0)
+		r->func_name = data->info->copy_name;
+	}
+	else if (rate == 1.0) {
 		data->func = data->info->process_full;
-	else
+		r->func_name = data->info->full_name;
+	}
+	else {
 		data->func = data->info->process_inter;
+		r->func_name = data->info->inter_name;
+	}
 
-	spa_log_trace_fp(r->log, "native %p: rate:%f in:%d out:%d phase:%d inc:%d frac:%d", r,
-			rate, data->in_rate, data->out_rate, data->phase, data->inc, data->frac);
+	spa_log_trace_fp(r->log, "native %p: rate:%f in:%d out:%d gcd:%d phase:%d inc:%d frac:%d", r,
+			rate, r->i_rate, r->o_rate, gcd, data->phase, data->inc, data->frac);
 
 }
 
@@ -322,7 +284,10 @@ static void impl_native_reset (struct resample *r)
 	if (d == NULL)
 		return;
 	memset(d->hist_mem, 0, r->channels * sizeof(float) * d->n_taps * 2);
-	d->hist = (d->n_taps / 2) - 1;
+	if (r->options & RESAMPLE_OPTION_PREFILL)
+		d->hist = d->n_taps - 1;
+	else
+		d->hist = (d->n_taps / 2) - 1;
 	d->phase = 0;
 }
 
@@ -340,7 +305,7 @@ int resample_native_init(struct resample *r)
 	uint32_t c, n_taps, n_phases, filter_size, in_rate, out_rate, gcd, filter_stride;
 	uint32_t history_stride, history_size, oversample;
 
-	r->quality = SPA_CLAMP(r->quality, 0, (int) SPA_N_ELEMENTS(blackman_qualities) - 1);
+	r->quality = SPA_CLAMP(r->quality, 0, (int) SPA_N_ELEMENTS(window_qualities) - 1);
 	r->free = impl_native_free;
 	r->update_rate = impl_native_update_rate;
 	r->in_len = impl_native_in_len;
@@ -348,14 +313,15 @@ int resample_native_init(struct resample *r)
 	r->reset = impl_native_reset;
 	r->delay = impl_native_delay;
 
-	q = &blackman_qualities[r->quality];
+	q = &window_qualities[r->quality];
 
 	gcd = calc_gcd(r->i_rate, r->o_rate);
 
 	in_rate = r->i_rate / gcd;
 	out_rate = r->o_rate / gcd;
 
-	scale = SPA_MIN(q->cutoff * out_rate / in_rate, 1.0);
+	scale = SPA_MIN(q->cutoff * out_rate / in_rate, q->cutoff);
+
 	/* multiple of 8 taps to ease simd optimizations */
 	n_taps = SPA_ROUND_UP_N((uint32_t)ceil(q->n_taps / scale), 8);
 	n_taps = SPA_MIN(n_taps, 1u << 18);
@@ -396,14 +362,13 @@ int resample_native_init(struct resample *r)
 	build_filter(d->filter, d->filter_stride, n_taps, n_phases, scale);
 
 	d->info = find_resample_info(SPA_AUDIO_FORMAT_F32, r->cpu_flags);
-	if (SPA_UNLIKELY(!d->info))
-	{
+	if (SPA_UNLIKELY(d->info == NULL)) {
 	    spa_log_error(r->log, "failed to find suitable resample format!");
-	    return -1;
+	    return -ENOTSUP;
 	}
 
-	spa_log_debug(r->log, "native %p: q:%d in:%d out:%d n_taps:%d n_phases:%d features:%08x:%08x",
-			r, r->quality, in_rate, out_rate, n_taps, n_phases,
+	spa_log_debug(r->log, "native %p: q:%d in:%d out:%d gcd:%d n_taps:%d n_phases:%d features:%08x:%08x",
+			r, r->quality, r->i_rate, r->o_rate, gcd, n_taps, n_phases,
 			r->cpu_flags, d->info->cpu_flags);
 
 	r->cpu_flags = d->info->cpu_flags;

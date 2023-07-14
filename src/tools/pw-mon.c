@@ -1,31 +1,12 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 #include <signal.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <locale.h>
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -48,10 +29,10 @@ static struct pprefix {
 	{ .prefix = "*", .suffix = "" },
 };
 
-#define with_prefix(use_prefix_, stream_) \
-   for (bool once_ = !!fprintf(stream_, "%s", (pprefix[!!(use_prefix_)]).prefix); \
+#define with_prefix(use_prefix_) \
+   for (bool once_ = !!printf("%s", (pprefix[!!(use_prefix_)]).prefix); \
 	once_; \
-	once_ = false, fprintf(stream_, "%s", (pprefix[!!(use_prefix_)]).suffix))
+	once_ = false, printf("%s", (pprefix[!!(use_prefix_)]).suffix))
 
 
 struct param {
@@ -147,10 +128,10 @@ static void remove_params(struct proxy_data *data, uint32_t id, int seq)
 	}
 }
 
-static void event_param(void *object, int seq, uint32_t id,
+static void event_param(void *_data, int seq, uint32_t id,
 		uint32_t index, uint32_t next, const struct spa_pod *param)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	struct param *p;
 
 	/* remove all params with the same id and older seq */
@@ -175,13 +156,13 @@ static void print_params(struct proxy_data *data, bool use_prefix)
 {
 	struct param *p;
 
-	with_prefix(use_prefix, stderr) {
-		fprintf(stderr, "\tparams:\n");
+	with_prefix(use_prefix) {
+		printf("\tparams:\n");
 	}
 
 	spa_list_for_each(p, &data->param_list, link) {
-		with_prefix(p->changed, stderr) {
-			fprintf(stderr, "\t  id:%u (%s)\n",
+		with_prefix(p->changed) {
+			printf("\t  id:%u (%s)\n",
 				p->id,
 				spa_debug_type_find_name(spa_type_param, p->id));
 			if (spa_pod_is_object_type(p->param, SPA_TYPE_OBJECT_Format))
@@ -197,20 +178,20 @@ static void print_properties(const struct spa_dict *props, bool use_prefix)
 {
 	const struct spa_dict_item *item;
 
-	with_prefix(use_prefix, stderr) {
-		fprintf(stderr, "\tproperties:\n");
+	with_prefix(use_prefix) {
+		printf("\tproperties:\n");
 		if (props == NULL || props->n_items == 0) {
-			fprintf(stderr, "\t\tnone\n");
+			printf("\t\tnone\n");
 			return;
 		}
 	}
 
 	spa_dict_for_each(item, props) {
-		with_prefix(use_prefix, stderr) {
+		with_prefix(use_prefix) {
 			if (item->value)
-				fprintf(stderr, "\t\t%s = \"%s\"\n", item->key, item->value);
+				printf("\t\t%s = \"%s\"\n", item->key, item->value);
 			else
-				fprintf(stderr, "\t\t%s = (null)\n", item->key);
+				printf("\t\t%s = (null)\n", item->key);
 		}
 	}
 }
@@ -221,41 +202,41 @@ static void on_core_info(void *data, const struct pw_core_info *info)
 {
 	bool print_all = true, print_mark = true;
 
-	fprintf(stderr, "\ttype: %s\n", PW_TYPE_INTERFACE_Core);
-	fprintf(stderr, "\tcookie: %u\n", info->cookie);
-	fprintf(stderr, "\tuser-name: \"%s\"\n", info->user_name);
-	fprintf(stderr, "\thost-name: \"%s\"\n", info->host_name);
-	fprintf(stderr, "\tversion: \"%s\"\n", info->version);
-	fprintf(stderr, "\tname: \"%s\"\n", info->name);
+	printf("\ttype: %s\n", PW_TYPE_INTERFACE_Core);
+	printf("\tcookie: %u\n", info->cookie);
+	printf("\tuser-name: \"%s\"\n", info->user_name);
+	printf("\thost-name: \"%s\"\n", info->host_name);
+	printf("\tversion: \"%s\"\n", info->version);
+	printf("\tname: \"%s\"\n", info->name);
 	if (print_all) {
 		print_properties(info->props, MARK_CHANGE(PW_CORE_CHANGE_MASK_PROPS));
 	}
 }
 
-static void module_event_info(void *object, const struct pw_module_info *info)
+static void module_event_info(void *_data, const struct pw_module_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	bool print_all, print_mark;
 
 	print_all = true;
         if (data->info == NULL) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
 	info = data->info = pw_module_info_update(data->info, info);
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
-	fprintf(stderr, "\tname: \"%s\"\n", info->name);
-	fprintf(stderr, "\tfilename: \"%s\"\n", info->filename);
-	fprintf(stderr, "\targs: \"%s\"\n", info->args);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\tname: \"%s\"\n", info->name);
+	printf("\tfilename: \"%s\"\n", info->filename);
+	printf("\targs: \"%s\"\n", info->args);
 	if (print_all) {
 		print_properties(info->props, MARK_CHANGE(PW_MODULE_CHANGE_MASK_PROPS));
 	}
@@ -273,44 +254,44 @@ static void print_node(struct proxy_data *data)
 
 	print_all = true;
         if (data->first) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 		data->first = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
 	if (print_all) {
 		print_params(data, MARK_CHANGE(PW_NODE_CHANGE_MASK_PARAMS));
-		with_prefix(MARK_CHANGE(PW_NODE_CHANGE_MASK_INPUT_PORTS), stderr) {
-			fprintf(stderr, "\tinput ports: %u/%u\n",
+		with_prefix(MARK_CHANGE(PW_NODE_CHANGE_MASK_INPUT_PORTS)) {
+			printf("\tinput ports: %u/%u\n",
 				info->n_input_ports, info->max_input_ports);
 		}
-		with_prefix(MARK_CHANGE(PW_NODE_CHANGE_MASK_OUTPUT_PORTS), stderr) {
-			fprintf(stderr, "\toutput ports: %u/%u\n",
+		with_prefix(MARK_CHANGE(PW_NODE_CHANGE_MASK_OUTPUT_PORTS)) {
+			printf("\toutput ports: %u/%u\n",
 				info->n_output_ports, info->max_output_ports);
 		}
-		with_prefix(MARK_CHANGE(PW_NODE_CHANGE_MASK_STATE), stderr) {
-			fprintf(stderr, "\tstate: \"%s\"",
+		with_prefix(MARK_CHANGE(PW_NODE_CHANGE_MASK_STATE)) {
+			printf("\tstate: \"%s\"",
 				pw_node_state_as_string(info->state));
 		}
 		if (info->state == PW_NODE_STATE_ERROR && info->error)
-			fprintf(stderr, " \"%s\"\n", info->error);
+			printf(" \"%s\"\n", info->error);
 		else
-			fprintf(stderr, "\n");
+			printf("\n");
 		print_properties(info->props, MARK_CHANGE(PW_NODE_CHANGE_MASK_PROPS));
 	}
 }
 
-static void node_event_info(void *object, const struct pw_node_info *info)
+static void node_event_info(void *_data, const struct pw_node_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	uint32_t i;
 
 	info = data->info = pw_node_info_update(data->info, info);
@@ -346,30 +327,30 @@ static void print_port(struct proxy_data *data)
 
 	print_all = true;
         if (data->first) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 		data->first = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
 
-	fprintf(stderr, "\tdirection: \"%s\"\n", pw_direction_as_string(info->direction));
+	printf("\tdirection: \"%s\"\n", pw_direction_as_string(info->direction));
 	if (print_all) {
 		print_params(data, MARK_CHANGE(PW_PORT_CHANGE_MASK_PARAMS));
 		print_properties(info->props, MARK_CHANGE(PW_PORT_CHANGE_MASK_PROPS));
 	}
 }
 
-static void port_event_info(void *object, const struct pw_port_info *info)
+static void port_event_info(void *_data, const struct pw_port_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	uint32_t i;
 
 	info = data->info = pw_port_info_update(data->info, info);
@@ -398,30 +379,30 @@ static const struct pw_port_events port_events = {
         .param = event_param
 };
 
-static void factory_event_info(void *object, const struct pw_factory_info *info)
+static void factory_event_info(void *_data, const struct pw_factory_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	bool print_all, print_mark;
 
 	print_all = true;
         if (data->info == NULL) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
         info = data->info = pw_factory_info_update(data->info, info);
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
 
-	fprintf(stderr, "\tname: \"%s\"\n", info->name);
-	fprintf(stderr, "\tobject-type: %s/%d\n", info->type, info->version);
+	printf("\tname: \"%s\"\n", info->name);
+	printf("\tobject-type: %s/%d\n", info->type, info->version);
 	if (print_all) {
 		print_properties(info->props, MARK_CHANGE(PW_FACTORY_CHANGE_MASK_PROPS));
 	}
@@ -432,27 +413,27 @@ static const struct pw_factory_events factory_events = {
         .info = factory_event_info
 };
 
-static void client_event_info(void *object, const struct pw_client_info *info)
+static void client_event_info(void *_data, const struct pw_client_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	bool print_all, print_mark;
 
 	print_all = true;
         if (data->info == NULL) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
         info = data->info = pw_client_info_update(data->info, info);
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
 
 	if (print_all) {
 		print_properties(info->props, MARK_CHANGE(PW_CLIENT_CHANGE_MASK_PROPS));
@@ -464,47 +445,47 @@ static const struct pw_client_events client_events = {
         .info = client_event_info
 };
 
-static void link_event_info(void *object, const struct pw_link_info *info)
+static void link_event_info(void *_data, const struct pw_link_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	bool print_all, print_mark;
 
 	print_all = true;
         if (data->info == NULL) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
         info = data->info = pw_link_info_update(data->info, info);
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
 
-	fprintf(stderr, "\toutput-node-id: %u\n", info->output_node_id);
-	fprintf(stderr, "\toutput-port-id: %u\n", info->output_port_id);
-	fprintf(stderr, "\tinput-node-id: %u\n", info->input_node_id);
-	fprintf(stderr, "\tinput-port-id: %u\n", info->input_port_id);
+	printf("\toutput-node-id: %u\n", info->output_node_id);
+	printf("\toutput-port-id: %u\n", info->output_port_id);
+	printf("\tinput-node-id: %u\n", info->input_node_id);
+	printf("\tinput-port-id: %u\n", info->input_port_id);
 	if (print_all) {
-		with_prefix(MARK_CHANGE(PW_LINK_CHANGE_MASK_STATE), stderr) {
-			fprintf(stderr, "\tstate: \"%s\"",
+		with_prefix(MARK_CHANGE(PW_LINK_CHANGE_MASK_STATE)) {
+			printf("\tstate: \"%s\"",
 				pw_link_state_as_string(info->state));
 		}
 		if (info->state == PW_LINK_STATE_ERROR && info->error)
-			fprintf(stderr, " \"%s\"\n", info->error);
+			printf(" \"%s\"\n", info->error);
 		else
-			fprintf(stderr, "\n");
-		with_prefix(MARK_CHANGE(PW_LINK_CHANGE_MASK_FORMAT), stderr) {
-			fprintf(stderr, "\tformat:\n");
+			printf("\n");
+		with_prefix(MARK_CHANGE(PW_LINK_CHANGE_MASK_FORMAT)) {
+			printf("\tformat:\n");
 			if (info->format)
 				spa_debug_format(2, NULL, info->format);
 			else
-				fprintf(stderr, "\t\tnone\n");
+				printf("\t\tnone\n");
 		}
 		print_properties(info->props, MARK_CHANGE(PW_LINK_CHANGE_MASK_PROPS));
 	}
@@ -522,19 +503,19 @@ static void print_device(struct proxy_data *data)
 
 	print_all = true;
         if (data->first) {
-		fprintf(stderr, "added:\n");
+		printf("added:\n");
 		print_mark = false;
 		data->first = false;
 	}
         else {
-		fprintf(stderr, "changed:\n");
+		printf("changed:\n");
 		print_mark = true;
 	}
 
-	fprintf(stderr, "\tid: %d\n", data->id);
-	fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+	printf("\tid: %d\n", data->id);
+	printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 			PW_PERMISSION_ARGS(data->permissions));
-	fprintf(stderr, "\ttype: %s (version %d)\n", data->type, data->version);
+	printf("\ttype: %s (version %d)\n", data->type, data->version);
 
 	if (print_all) {
 		print_params(data, MARK_CHANGE(PW_DEVICE_CHANGE_MASK_PARAMS));
@@ -543,9 +524,9 @@ static void print_device(struct proxy_data *data)
 }
 
 
-static void device_event_info(void *object, const struct pw_device_info *info)
+static void device_event_info(void *_data, const struct pw_device_info *info)
 {
-        struct proxy_data *data = object;
+        struct proxy_data *data = _data;
 	uint32_t i;
 
 	info = data->info = pw_device_info_update(data->info, info);
@@ -586,6 +567,9 @@ destroy_proxy (void *data)
 	struct proxy_data *pd = data;
 
 	spa_list_remove(&pd->global_link);
+
+	spa_hook_remove(&pd->object_listener);
+	spa_hook_remove(&pd->proxy_listener);
 
 	clear_params(pd);
 	remove_pending(pd);
@@ -648,11 +632,11 @@ static void registry_event_global(void *data, uint32_t id,
 		client_version = PW_VERSION_LINK;
 		destroy = (pw_destroy_t) pw_link_info_free;
 	} else {
-		fprintf(stderr, "added:\n");
-		fprintf(stderr, "\tid: %u\n", id);
-		fprintf(stderr, "\tpermissions: "PW_PERMISSION_FORMAT"\n",
+		printf("added:\n");
+		printf("\tid: %u\n", id);
+		printf("\tpermissions: "PW_PERMISSION_FORMAT"\n",
 				PW_PERMISSION_ARGS(permissions));
-		fprintf(stderr, "\ttype: %s (version %d)\n", type, version);
+		printf("\ttype: %s (version %d)\n", type, version);
 		print_properties(props, false);
 		return;
 	}
@@ -696,13 +680,13 @@ static struct proxy_data *find_proxy(struct data *d, uint32_t id)
 	return NULL;
 }
 
-static void registry_event_global_remove(void *object, uint32_t id)
+static void registry_event_global_remove(void *data, uint32_t id)
 {
-	struct data *d = object;
+	struct data *d = data;
 	struct proxy_data *pd;
 
-	fprintf(stderr, "removed:\n");
-	fprintf(stderr, "\tid: %u\n", id);
+	printf("removed:\n");
+	printf("\tid: %u\n", id);
 
 	pd = find_proxy(d, id);
 	if (pd == NULL)
@@ -741,9 +725,9 @@ static void do_quit(void *data, int signal_number)
 	pw_main_loop_quit(d->loop);
 }
 
-static void show_help(const char *name)
+static void show_help(const char *name, bool error)
 {
-        fprintf(stdout, "%s [options]\n"
+        fprintf(error ? stderr : stdout, "%s [options]\n"
 		"  -h, --help                            Show this help\n"
 		"      --version                         Show version\n"
 		"  -r, --remote                          Remote daemon name\n"
@@ -768,18 +752,21 @@ int main(int argc, char *argv[])
 	int c;
 	bool colors = false;
 
+	setlocale(LC_ALL, "");
 	pw_init(&argc, &argv);
+
+	setlinebuf(stdout);
 
 	if (isatty(STDERR_FILENO) && getenv("NO_COLOR") == NULL)
 		colors = true;
 
-	while ((c = getopt_long(argc, argv, "hVr:", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "hVr:NC", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h':
-			show_help(argv[0]);
+			show_help(argv[0], false);
 			return 0;
 		case 'V':
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -801,12 +788,13 @@ int main(int argc, char *argv[])
 			else if (!strcmp(optarg, "always"))
 				colors = true;
 			else {
-				show_help(argv[0]);
+				fprintf(stderr, "Invalid color: %s\n", optarg);
+				show_help(argv[0], true);
 				return -1;
 			}
 			break;
 		default:
-			show_help(argv[0]);
+			show_help(argv[0], true);
 			return -1;
 		}
 	}
@@ -856,7 +844,9 @@ int main(int argc, char *argv[])
 
 	pw_main_loop_run(data.loop);
 
+	spa_hook_remove(&data.registry_listener);
 	pw_proxy_destroy((struct pw_proxy*)data.registry);
+	spa_hook_remove(&data.core_listener);
 	pw_context_destroy(data.context);
 	pw_main_loop_destroy(data.loop);
 	pw_deinit();

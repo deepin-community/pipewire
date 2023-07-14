@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_CONTEXT_H
 #define PIPEWIRE_CONTEXT_H
@@ -108,8 +88,27 @@ const struct pw_properties *pw_context_get_properties(struct pw_context *context
 /** Update the context properties */
 int pw_context_update_properties(struct pw_context *context, const struct spa_dict *dict);
 
-/** Get a config section for this context. Since 0.3.22 */
+/** Get a config section for this context. Since 0.3.22, deprecated,
+ * use pw_context_conf_section_for_each(). */
 const char *pw_context_get_conf_section(struct pw_context *context, const char *section);
+/** Parse a standard config section for this context. Since 0.3.22 */
+int pw_context_parse_conf_section(struct pw_context *context,
+		struct pw_properties *conf, const char *section);
+
+/** update properties from a section into props. Since 0.3.45 */
+int pw_context_conf_update_props(struct pw_context *context, const char *section,
+		struct pw_properties *props);
+/** emit callback for all config sections. Since 0.3.45 */
+int pw_context_conf_section_for_each(struct pw_context *context, const char *section,
+		int (*callback) (void *data, const char *location, const char *section,
+			const char *str, size_t len),
+		void *data);
+/** emit callback for all matched properties. Since 0.3.46 */
+int pw_context_conf_section_match_rules(struct pw_context *context, const char *section,
+		const struct spa_dict *props,
+		int (*callback) (void *data, const char *location, const char *action,
+			const char *str, size_t len),
+		void *data);
 
 /** Get the context support objects */
 const struct spa_support *pw_context_get_support(struct pw_context *context, uint32_t *n_support);
@@ -117,8 +116,14 @@ const struct spa_support *pw_context_get_support(struct pw_context *context, uin
 /** get the context main loop */
 struct pw_loop *pw_context_get_main_loop(struct pw_context *context);
 
+/** get the context data loop. Since 0.3.56 */
+struct pw_data_loop *pw_context_get_data_loop(struct pw_context *context);
+
 /** Get the work queue from the context: Since 0.3.26 */
 struct pw_work_queue *pw_context_get_work_queue(struct pw_context *context);
+
+/** Get the memmory pool from the context: Since 0.3.74 */
+struct pw_mempool *pw_context_get_mempool(struct pw_context *context);
 
 /** Iterate the globals of the context. The callback should return
  * 0 to fetch the next item, any other value stops the iteration and returns

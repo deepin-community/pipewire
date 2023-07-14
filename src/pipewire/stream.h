@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_STREAM_H
 #define PIPEWIRE_STREAM_H
@@ -50,6 +30,14 @@ extern "C" {
  * inputs and/or outputs you will need to use the pw_filter or make
  * a pw_node yourself and export it with \ref pw_core_export.
  *
+ * Streams can also be used to:
+ *
+ * \li Implement a Sink in PipeWire. This is a PW_DIRECTION_INPUT stream.
+ * \li Implement a Source in PipeWire. This is a PW_DIRECTION_OUTPUT stream
+ *
+ * In this case, the PW_KEY_MEDIA_CLASS property needs to be set to
+ * "Audio/Sink" or "Audio/Source" respectively.
+ *
  * \section sec_create Create
  *
  * Make a new stream with \ref pw_stream_new(). You will need to specify
@@ -64,11 +52,22 @@ extern "C" {
  * The stream is initially unconnected. To connect the stream, use
  * \ref pw_stream_connect(). Pass the desired direction as an argument.
  *
+ * The direction is:
+
+ * \li PW_DIRECTION_INPUT for a stream that *consumes* data. This can be a
+ * stream that captures from a Source or a when the stream is used to
+ * implement a Sink.
+ *
+ * \li PW_DIRECTION_OUTPUT for a stream that *produces* data. This can be a
+ * stream that plays to a Sink or when the stream is used to implement
+ * a Source.
+ *
  * \subsection ssec_stream_target Stream target
  *
  * To make the newly connected stream automatically connect to an existing
- * PipeWire node, use the \ref PW_STREAM_FLAG_AUTOCONNECT and the port_path
- * argument while connecting.
+ * PipeWire node, use the \ref PW_STREAM_FLAG_AUTOCONNECT and set the
+ * PW_KEY_OBJECT_SERIAL or the PW_KEY_NODE_NAME value of the target node
+ * in the PW_KEY_TARGET_OBJECT property before connecting.
  *
  * \subsection ssec_stream_formats Stream formats
  *
@@ -123,7 +122,7 @@ extern "C" {
  * metadata of the buffer.
  *
  * The buffer is owned by the stream and stays alive until the
- * remove_buffer event is emitted or the stream is destroyed.
+ * remove_buffer callback has returned or the stream is destroyed.
  *
  * When the buffer has been processed, call \ref pw_stream_queue_buffer()
  * to let PipeWire reuse the buffer.
@@ -143,6 +142,18 @@ extern "C" {
  * \section sec_stream_disconnect Disconnect
  *
  * Use \ref pw_stream_disconnect() to disconnect a stream after use.
+ *
+ * \section sec_stream_configuration Configuration
+ *
+ * \subsection ssec_config_properties Stream Properties
+ *
+ * \subsection ssec_config_rules Stream Rules
+ *
+ * \section sec_stream_environment Environment Variables
+ *
+ * The environment variable PIPEWIRE_AUTOCONNECT can be used to override the
+ * flag and force apps to autoconnect or not.
+ *
  */
 /** \defgroup pw_stream Stream
  *
@@ -173,11 +184,20 @@ enum pw_stream_state {
 	PW_STREAM_STATE_STREAMING = 3		/**< streaming */
 };
 
+/** a buffer structure obtained from pw_stream_dequeue_buffer(). The size of this
+  * structure can grow as more field are added in the future */
 struct pw_buffer {
 	struct spa_buffer *buffer;	/**< the spa buffer */
 	void *user_data;		/**< user data attached to the buffer */
 	uint64_t size;			/**< This field is set by the user and the sum of
-					  *  all queued buffer is returned in the time info */
+					  *  all queued buffer is returned in the time info.
+					  *  For audio, it is advised to use the number of
+					  *  samples in the buffer for this field. */
+	uint64_t requested;		/**< For playback streams, this field contains the
+					  *  suggested amount of data to provide. For audio
+					  *  streams this will be the amount of samples
+					  *  required by the resampler. This field is 0
+					  *  when no suggestion is provided. Since 0.3.49 */
 };
 
 struct pw_stream_control {
@@ -191,18 +211,100 @@ struct pw_stream_control {
 	uint32_t max_values;		/**< max values that can be set on this control */
 };
 
-/** A time structure */
+/** A time structure.
+ *
+ * Use pw_stream_get_time_n() to get an updated time snapshot of the stream.
+ * The time snapshot can give information about the time in the driver of the
+ * graph, the delay to the edge of the graph and the internal queuing in the
+ * stream.
+ *
+ * pw_time.ticks gives a monotonic increasing counter of the time in the graph
+ * driver. I can be used to generate a timetime to schedule samples as well
+ * as detect discontinuities in the timeline caused by xruns.
+ *
+ * pw_time.delay is expressed as pw_time.rate, the time domain of the graph. This
+ * value, and pw_time.ticks, were captured at pw_time.now and can be extrapolated
+ * to the current time like this:
+ *
+ *    struct timespec ts;
+ *    clock_gettime(CLOCK_MONOTONIC, &ts);
+ *    int64_t diff = SPA_TIMESPEC_TO_NSEC(&ts) - pw_time.now;
+ *    int64_t elapsed = (pw_time.rate.denom * diff) / (pw_time.rate.num * SPA_NSEC_PER_SEC);
+ *
+ * pw_time.delay contains the total delay that a signal will travel through the
+ * graph. This includes the delay caused by filters in the graph as well as delays
+ * caused by the hardware. The delay is usually quite stable and should only change when
+ * the topology, quantum or samplerate of the graph changes.
+ *
+ * pw_time.queued and pw_time.buffered is expressed in the time domain of the stream,
+ * or the format that is used for the buffers of this stream.
+ *
+ * pw_time.queued is the sum of all the pw_buffer.size fields of the buffers that are
+ * currently queued in the stream but not yet processed. The application can choose
+ * the units of this value, for example, time, samples or bytes (below expressed
+ * as app.rate).
+ *
+ * pw_time.buffered is format dependent, for audio/raw it contains the number of samples
+ * that are buffered inside the resampler/converter.
+ *
+ * The total delay of data in a stream is the sum of the queued and buffered data
+ * (not yet processed data) and the delay to the edge of the graph, usually a
+ * playback or capture device.
+ *
+ * For an audio playback stream, if you were to queue a buffer, the total delay
+ * in milliseconds for the first sample in the newly queued buffer to be played
+ * by the hardware can be calculated as:
+ *
+ *  (pw_time.buffered * 1000 / stream.samplerate) +
+ *    (pw_time.queued * 1000 / app.rate) +
+ *     ((pw_time.delay - elapsed) * 1000 * pw_time.rate.num / pw_time.rate.denom)
+ *
+ * The current extrapolated time (in ms) in the source or sink can be calculated as:
+ *
+ *  (pw_time.ticks + elapsed) * 1000 * pw_time.rate.num / pw_time.rate.denom
+ *
+ *
+ *           stream time domain           graph time domain
+ *         /-----------------------\/-----------------------------\
+ *
+ * queue     +-+ +-+  +-----------+                 +--------+
+ * ---->     | | | |->| converter | ->   graph  ->  | kernel | -> speaker
+ * <----     +-+ +-+  +-----------+                 +--------+
+ * dequeue   buffers                \-------------------/\--------/
+ *                                     graph              internal
+ *                                    latency             latency
+ *         \--------/\-------------/\-----------------------------/
+ *           queued      buffered            delay
+ */
 struct pw_time {
-	int64_t now;			/**< the monotonic time in nanoseconds */
-	struct spa_fraction rate;	/**< the rate of \a ticks and delay */
+	int64_t now;			/**< the monotonic time in nanoseconds. This is the time
+					  *  when this time report was updated. It is usually
+					  *  updated every graph cycle. You can use the current
+					  *  monotonic time to calculate the elapsed time between
+					  *  this report and the current state and calculate
+					  *  updated ticks and delay values. */
+	struct spa_fraction rate;	/**< the rate of \a ticks and delay. This is usually
+					  *  expressed in 1/<samplerate>. */
 	uint64_t ticks;			/**< the ticks at \a now. This is the current time that
-					  *  the remote end is reading/writing. */
-	int64_t delay;			/**< delay to device, add to ticks to get the time of the
-					  *  device. Positive for INPUT streams and
-					  *  negative for OUTPUT streams. */
+					  *  the remote end is reading/writing. This is monotonicaly
+					  *  increasing. */
+	int64_t delay;			/**< delay to device. This is the time it will take for
+					  *  the next output sample of the stream to be presented by
+					  *  the playback device or the time a sample traveled
+					  *  from the capture device. This delay includes the
+					  *  delay introduced by all filters on the path between
+					  *  the stream and the device. The delay is normally
+					  *  constant in a graph and can change when the topology
+					  *  of the graph or the quantum changes. This delay does
+					  *  not include the delay caused by queued buffers. */
 	uint64_t queued;		/**< data queued in the stream, this is the sum
 					  *  of the size fields in the pw_buffer that are
 					  *  currently queued */
+	uint64_t buffered;		/**< for audio/raw streams, this contains the extra
+					  *  number of samples buffered in the resampler.
+					  *  Since 0.3.50. */
+	uint32_t queued_buffers;	/**< The number of buffers that are queued. Since 0.3.50 */
+	uint32_t avail_buffers;		/**< The number of buffers that can be dequeued. Since 0.3.50 */
 };
 
 #include <pipewire/port.h>
@@ -271,6 +373,18 @@ enum pw_stream_flags {
 	PW_STREAM_FLAG_ALLOC_BUFFERS	= (1 << 8),	/**< the application will allocate buffer
 							  *  memory. In the add_buffer event, the
 							  *  data of the buffer should be set */
+	PW_STREAM_FLAG_TRIGGER		= (1 << 9),	/**< the output stream will not be scheduled
+							  *  automatically but _trigger_process()
+							  *  needs to be called. This can be used
+							  *  when the output of the stream depends
+							  *  on input from other streams. */
+	PW_STREAM_FLAG_ASYNC		= (1 << 10),	/**< Buffers will not be dequeued/queued from
+							  *  the realtime process() function. This is
+							  *  assumed when RT_PROCESS is unset but can
+							  *  also be the case when the process() function
+							  *  does a trigger_process() that will then
+							  *  dequeue/queue a buffer from another process()
+							  *  function. since 0.3.73 */
 };
 
 /** Create a new unconneced \ref pw_stream
@@ -313,9 +427,16 @@ int pw_stream_update_properties(struct pw_stream *stream, const struct spa_dict 
 int
 pw_stream_connect(struct pw_stream *stream,		/**< a \ref pw_stream */
 		  enum pw_direction direction,		/**< the stream direction */
-		  uint32_t target_id,			/**< the target object id to connect to or
-							  *  PW_ID_ANY to let the manager
-							  *  select a target. */
+		  uint32_t target_id,			/**< should have the value PW_ID_ANY.
+							  * To select a specific target
+							  * node, specify the
+							  * PW_KEY_OBJECT_SERIAL or the
+							  * PW_KEY_NODE_NAME value of the target
+							  * node in the PW_KEY_TARGET_OBJECT
+							  * property of the stream.
+							  * Specifying target nodes by
+							  * their id is deprecated.
+							  */
 		  enum pw_stream_flags flags,		/**< stream flags */
 		  const struct spa_pod **params,	/**< an array with params. The params
 							  *  should ideally contain supported
@@ -336,12 +457,7 @@ int pw_stream_set_error(struct pw_stream *stream,	/**< a \ref pw_stream */
 			const char *error,		/**< an error message */
 			...) SPA_PRINTF_FUNC(3, 4);
 
-/** Complete the negotiation process with result code \a res
- *
- * This function should be called after notification of the format.
-
- * When \a res indicates success, \a params contain the parameters for the
- * allocation state.  */
+/** Update the param exposed on the stream. */
 int
 pw_stream_update_params(struct pw_stream *stream,	/**< a \ref pw_stream */
 			const struct spa_pod **params,	/**< an array of params. The params should
@@ -349,13 +465,26 @@ pw_stream_update_params(struct pw_stream *stream,	/**< a \ref pw_stream */
 							  *  buffer allocation. */
 			uint32_t n_params		/**< number of elements in \a params */);
 
+/**
+ * Set a parameter on the stream. This is like pw_stream_set_control() but with
+ * a complete spa_pod param. It can also be called from the param_changed event handler
+ * to intercept and modify the param for the adapter. Since 0.3.70 */
+int pw_stream_set_param(struct pw_stream *stream,	/**< a \ref pw_stream */
+			uint32_t id,			/**< the id of the param */
+			const struct spa_pod *param	/**< the params to set */);
+
 /** Get control values */
 const struct pw_stream_control *pw_stream_get_control(struct pw_stream *stream, uint32_t id);
 
 /** Set control values */
 int pw_stream_set_control(struct pw_stream *stream, uint32_t id, uint32_t n_values, float *values, ...);
 
-/** Query the time on the stream  */
+/** Query the time on the stream */
+int pw_stream_get_time_n(struct pw_stream *stream, struct pw_time *time, size_t size);
+
+/** Query the time on the stream, deprecated since 0.3.50,
+ * use pw_stream_get_time_n() to get the fields added since 0.3.50. */
+SPA_DEPRECATED
 int pw_stream_get_time(struct pw_stream *stream, struct pw_time *time);
 
 /** Get a buffer that can be filled for playback streams or consumed

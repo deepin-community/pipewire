@@ -5,8 +5,6 @@ manpage_conf.set('PACKAGE_URL', 'https://pipewire.org')
 manpage_conf.set('PACKAGE_BUGREPORT', 'https://gitlab.freedesktop.org/pipewire/pipewire/issues')
 manpage_conf.set('PIPEWIRE_CONFIG_DIR', pipewire_configdir)
 manpage_conf.set('PIPEWIRE_CONFDATADIR', pipewire_confdatadir)
-manpage_conf.set('top_srcdir', meson.source_root())
-manpage_conf.set('top_builddir', meson.build_root())
 
 manpages = [
   'pipewire.1.rst.in',
@@ -14,15 +12,22 @@ manpages = [
   'pipewire.conf.5.rst.in',
   'pw-cat.1.rst.in',
   'pw-cli.1.rst.in',
+  'pw-config.1.rst.in',
   'pw-dot.1.rst.in',
+  'pw-link.1.rst.in',
   'pw-metadata.1.rst.in',
   'pw-mididump.1.rst.in',
   'pw-mon.1.rst.in',
   'pw-profiler.1.rst.in',
+  'pw-top.1.rst.in',
 ]
 
-if not get_option('pipewire-jack').disabled()
+if get_option('pipewire-jack').allowed()
   manpages += 'pw-jack.1.rst.in'
+endif
+
+if not generate_manpages
+  subdir_done()
 endif
 
 foreach m : manpages

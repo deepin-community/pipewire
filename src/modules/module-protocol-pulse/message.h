@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PULSE_SERVER_MESSAGE_H
 #define PULSE_SERVER_MESSAGE_H
@@ -32,12 +12,10 @@
 #include <spa/support/log.h>
 
 struct impl;
-struct client;
-struct stats;
 
 struct message {
 	struct spa_list link;
-	struct stats *stat;
+	struct impl *impl;
 	uint32_t extra[4];
 	uint32_t channel;
 	uint32_t allocated;
@@ -69,7 +47,7 @@ enum {
 };
 
 struct message *message_alloc(struct impl *impl, uint32_t channel, uint32_t size);
-void message_free(struct impl *impl, struct message *msg, bool dequeue, bool destroy);
+void message_free(struct message *msg, bool dequeue, bool destroy);
 int message_get(struct message *m, ...);
 int message_put(struct message *m, ...);
 int message_dump(enum spa_log_level level, struct message *m);

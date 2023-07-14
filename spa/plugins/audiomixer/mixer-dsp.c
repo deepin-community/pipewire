@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <string.h>
@@ -46,9 +26,8 @@
 static struct spa_log_topic *log_topic = &SPA_LOG_TOPIC(0, "spa.mixer-dsp");
 
 #define MAX_BUFFERS	64
-#define MAX_PORTS	128
-#define MAX_SAMPLES	8192
-#define MAX_ALIGN	64
+#define MAX_PORTS	512
+#define MAX_ALIGN	MIX_OPS_MAX_ALIGN
 
 #define PORT_DEFAULT_VOLUME	1.0
 #define PORT_DEFAULT_MUTE	false
@@ -73,8 +52,6 @@ struct buffer {
 	struct spa_buffer *buffer;
 	struct spa_meta_header *h;
 	struct spa_buffer buf;
-        struct spa_data datas[1];
-        struct spa_chunk chunk[1];
 };
 
 struct port {
@@ -106,6 +83,9 @@ struct impl {
 	struct spa_log *log;
 	struct spa_cpu *cpu;
 	uint32_t cpu_flags;
+	uint32_t max_align;
+
+	uint32_t quantum_limit;
 
 	struct mix_ops ops;
 
@@ -117,8 +97,11 @@ struct impl {
 
 	uint32_t port_count;
 	uint32_t last_port;
-	struct port in_ports[MAX_PORTS];
+	struct port *in_ports[MAX_PORTS];
 	struct port out_ports[1];
+
+	struct buffer *mix_buffers[MAX_PORTS];
+	const void *mix_datas[MAX_PORTS];
 
 	int n_formats;
 	struct spa_audio_info format;
@@ -126,15 +109,14 @@ struct impl {
 
 	unsigned int have_format:1;
 	unsigned int started:1;
-
-	float empty[MAX_SAMPLES + MAX_ALIGN];
 };
 
-#define CHECK_FREE_IN_PORT(this,d,p) ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && !this->in_ports[(p)].valid)
-#define CHECK_IN_PORT(this,d,p)      ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && this->in_ports[(p)].valid)
+#define PORT_VALID(p)                ((p) != NULL && (p)->valid)
+#define CHECK_FREE_IN_PORT(this,d,p) ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && !PORT_VALID(this->in_ports[(p)]))
+#define CHECK_IN_PORT(this,d,p)      ((d) == SPA_DIRECTION_INPUT && (p) < MAX_PORTS && PORT_VALID(this->in_ports[(p)]))
 #define CHECK_OUT_PORT(this,d,p)     ((d) == SPA_DIRECTION_OUTPUT && (p) == 0)
 #define CHECK_PORT(this,d,p)         (CHECK_OUT_PORT(this,d,p) || CHECK_IN_PORT (this,d,p))
-#define GET_IN_PORT(this,p)          (&this->in_ports[p])
+#define GET_IN_PORT(this,p)          (this->in_ports[p])
 #define GET_OUT_PORT(this,p)         (&this->out_ports[p])
 #define GET_PORT(this,d,p)           (d == SPA_DIRECTION_INPUT ? GET_IN_PORT(this,p) : GET_OUT_PORT(this,p))
 
@@ -215,7 +197,7 @@ static int impl_node_add_listener(void *object,
 	emit_node_info(this, true);
 	emit_port_info(this, GET_OUT_PORT(this, 0), true);
 	for (i = 0; i < this->last_port; i++) {
-		if (this->in_ports[i].valid)
+		if (PORT_VALID(this->in_ports[i]))
 			emit_port_info(this, GET_IN_PORT(this, i), true);
 	}
 
@@ -242,6 +224,13 @@ static int impl_node_add_port(void *object, enum spa_direction direction, uint32
 	spa_return_val_if_fail(CHECK_FREE_IN_PORT(this, direction, port_id), -EINVAL);
 
 	port = GET_IN_PORT (this, port_id);
+	if (port == NULL) {
+		port = calloc(1, sizeof(struct port));
+		if (port == NULL)
+			return -errno;
+		this->in_ports[port_id] = port;
+	}
+
 	port->direction = direction;
 	port->id = port_id;
 
@@ -298,7 +287,7 @@ impl_node_remove_port(void *object, enum spa_direction direction, uint32_t port_
 		int i;
 
 		for (i = this->last_port - 1; i >= 0; i--)
-			if (GET_IN_PORT (this, i)->valid)
+			if (PORT_VALID(GET_IN_PORT(this, i)))
 				break;
 
 		this->last_port = i + 1;
@@ -392,11 +381,10 @@ next:
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-								MAX_SAMPLES * this->stride,
+								this->quantum_limit * this->stride,
 								16 * this->stride,
 								INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->stride),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->stride));
 		break;
 
 	case SPA_PARAM_Meta:
@@ -581,9 +569,12 @@ impl_node_port_use_buffers(void *object,
 
 	port = GET_PORT(this, direction, port_id);
 
-	spa_return_val_if_fail(port->have_format, -EIO);
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
@@ -594,12 +585,13 @@ impl_node_port_use_buffers(void *object,
 		b->flags = 0;
 		b->id = i;
 		b->h = spa_buffer_find_meta_data(buffers[i], SPA_META_Header, sizeof(*b->h));
+		b->buf = *buffers[i];
 
 		if (d[0].data == NULL) {
 			spa_log_error(this->log, "%p: invalid memory on buffer %d", this, i);
 			return -EINVAL;
 		}
-		if (!SPA_IS_ALIGNED(d[0].data, 16)) {
+		if (!SPA_IS_ALIGNED(d[0].data, this->max_align)) {
 			spa_log_warn(this->log, "%p: memory on buffer %d not aligned", this, i);
 		}
 		if (direction == SPA_DIRECTION_OUTPUT)
@@ -661,16 +653,16 @@ static int impl_node_process(void *object)
 	struct impl *this = object;
 	struct port *outport;
 	struct spa_io_buffers *outio;
-	uint32_t n_samples, n_buffers, i, maxsize;
-        struct buffer **buffers;
-        struct buffer *outb;
+	uint32_t n_buffers, i, maxsize;
+	struct buffer **buffers;
+	struct buffer *outb;
 	const void **datas;
 
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
 	outport = GET_OUT_PORT(this, 0);
-	outio = outport->io;
-	spa_return_val_if_fail(outio != NULL, -EIO);
+	if ((outio = outport->io) == NULL)
+		return -EIO;
 
 	spa_log_trace_fp(this->log, "%p: status %p %d %d",
 			this, outio, outio->status, outio->buffer_id);
@@ -684,24 +676,26 @@ static int impl_node_process(void *object)
 		outio->buffer_id = SPA_ID_INVALID;
 	}
 
-        buffers = alloca(MAX_PORTS * sizeof(struct buffer *));
-        datas = alloca(MAX_PORTS * sizeof(void *));
-        n_buffers = 0;
+	buffers = this->mix_buffers;
+	datas = this->mix_datas;
+	n_buffers = 0;
 
-	maxsize = MAX_SAMPLES * sizeof(float);
+	maxsize = UINT32_MAX;
 
 	for (i = 0; i < this->last_port; i++) {
 		struct port *inport = GET_IN_PORT(this, i);
 		struct spa_io_buffers *inio = NULL;
 		struct buffer *inb;
+		struct spa_data *bd;
+		uint32_t size, offs;
 
-		if (SPA_UNLIKELY(!inport->valid ||
+		if (SPA_UNLIKELY(!PORT_VALID(inport) ||
 		    (inio = inport->io) == NULL ||
 		    inio->buffer_id >= inport->n_buffers ||
 		    inio->status != SPA_STATUS_HAVE_DATA)) {
 			spa_log_trace_fp(this->log, "%p: skip input idx:%d valid:%d "
 					"io:%p status:%d buf_id:%d n_buffers:%d", this,
-				i, inport->valid, inio,
+				i, PORT_VALID(inport), inio,
 				inio ? inio->status : -1,
 				inio ? inio->buffer_id : SPA_ID_INVALID,
 				inport->n_buffers);
@@ -709,37 +703,49 @@ static int impl_node_process(void *object)
 		}
 
 		inb = &inport->buffers[inio->buffer_id];
-		maxsize = SPA_MIN(inb->buffer->datas[0].chunk->size, maxsize);
+		bd = &inb->buffer->datas[0];
 
-		spa_log_trace_fp(this->log, "%p: mix input %d %p->%p %d %d %d", this,
-				i, inio, outio, inio->status, inio->buffer_id, maxsize);
+		offs = SPA_MIN(bd->chunk->offset, bd->maxsize);
+		size = SPA_MIN(bd->maxsize - offs, bd->chunk->size);
+		maxsize = SPA_MIN(maxsize, size);
 
-		datas[n_buffers] = inb->buffer->datas[0].data;
-		buffers[n_buffers++] = inb;
+		spa_log_trace_fp(this->log, "%p: mix input %d %p->%p %d %d %d:%d/%d", this,
+				i, inio, outio, inio->status, inio->buffer_id,
+				offs, size, (int)sizeof(float));
+
+		if (!SPA_FLAG_IS_SET(bd->chunk->flags, SPA_CHUNK_FLAG_EMPTY)) {
+			datas[n_buffers] = SPA_PTROFF(bd->data, offs, void);
+			buffers[n_buffers++] = inb;
+		}
 		inio->status = SPA_STATUS_NEED_DATA;
 	}
 
 	outb = dequeue_buffer(this, outport);
-        if (SPA_UNLIKELY(outb == NULL)) {
-                spa_log_trace(this->log, "%p: out of buffers", this);
-                return -EPIPE;
-        }
-
-	n_samples = maxsize / sizeof(float);
+	if (SPA_UNLIKELY(outb == NULL)) {
+		if (outport->n_buffers > 0)
+			spa_log_warn(this->log, "%p: out of buffers (%d)", this,
+					outport->n_buffers);
+		return -EPIPE;
+	}
 
 	if (n_buffers == 1) {
 		*outb->buffer = *buffers[0]->buffer;
-	}
-	else {
-		outb->buffer->n_datas = 1;
-		outb->buffer->datas = outb->datas;
-		outb->datas[0].data = SPA_PTR_ALIGN(this->empty, MAX_ALIGN, void);
-		outb->datas[0].chunk = outb->chunk;
-		outb->datas[0].chunk->offset = 0;
-		outb->datas[0].chunk->size = n_samples * sizeof(float);
-		outb->datas[0].chunk->stride = sizeof(float);
+	} else {
+		struct spa_data *d = outb->buf.datas;
 
-		mix_ops_process(&this->ops, outb->datas[0].data, datas, n_buffers, n_samples);
+		*outb->buffer = outb->buf;
+
+		maxsize = SPA_MIN(maxsize, d[0].maxsize);
+
+		d[0].chunk->offset = 0;
+		d[0].chunk->size = maxsize;
+		d[0].chunk->stride = sizeof(float);
+		SPA_FLAG_UPDATE(d[0].chunk->flags, SPA_CHUNK_FLAG_EMPTY, n_buffers == 0);
+
+		spa_log_trace_fp(this->log, "%p: %d mix %d", this, n_buffers, maxsize);
+
+		mix_ops_process(&this->ops, d[0].data,
+				datas, n_buffers, maxsize / sizeof(float));
 	}
 
 	outio->buffer_id = outb->id;
@@ -785,6 +791,15 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 
 static int impl_clear(struct spa_handle *handle)
 {
+	struct impl *this;
+	uint32_t i;
+
+	spa_return_val_if_fail(handle != NULL, -EINVAL);
+
+	this = (struct impl *) handle;
+
+	for (i = 0; i < MAX_PORTS; i++)
+		free(this->in_ports[i]);
 	return 0;
 }
 
@@ -804,6 +819,7 @@ impl_init(const struct spa_handle_factory *factory,
 {
 	struct impl *this;
 	struct port *port;
+	uint32_t i;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
@@ -817,8 +833,17 @@ impl_init(const struct spa_handle_factory *factory,
 	spa_log_topic_init(this->log, log_topic);
 
 	this->cpu = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_CPU);
-	if (this->cpu)
+	if (this->cpu) {
 		this->cpu_flags = spa_cpu_get_flags(this->cpu);
+		this->max_align = SPA_MIN(MAX_ALIGN, spa_cpu_get_max_align(this->cpu));
+	}
+
+	for (i = 0; info && i < info->n_items; i++) {
+		const char *k = info->items[i].key;
+		const char *s = info->items[i].value;
+		if (spa_streq(k, "clock.quantum-limit"))
+			spa_atou32(s, &this->quantum_limit, 0);
+	}
 
 	spa_hook_list_init(&this->hooks);
 

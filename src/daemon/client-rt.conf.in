@@ -2,6 +2,11 @@
 #
 # Copy and edit this file in @PIPEWIRE_CONFIG_DIR@ for system-wide changes
 # or in ~/.config/pipewire for local changes.
+#
+# It is also possible to place a file with an updated section in
+# @PIPEWIRE_CONFIG_DIR@/client-rt.conf.d/ for system-wide changes or in
+# ~/.config/pipewire/client-rt.conf.d/ for local changes.
+#
 
 context.properties = {
     ## Configure properties in the system.
@@ -9,6 +14,8 @@ context.properties = {
     #mem.allow-mlock = true
     #mem.mlock-all   = false
     log.level        = 0
+
+    #default.clock.quantum-limit = 8192
 }
 
 context.spa-libs = {
@@ -24,21 +31,21 @@ context.spa-libs = {
 
 context.modules = [
     #{ name = <module-name>
-    #    [ args  = { <key> = <value> ... } ]
-    #    [ flags = [ [ ifexists ] [ nofail ] ]
+    #    ( args  = { <key> = <value> ... } )
+    #    ( flags = [ ( ifexists ) ( nofail ) ] )
+    #    ( condition = [ { <key> = <value> ... } ... ] )
     #}
     #
     # Loads a module with the given parameters.
     # If ifexists is given, the module is ignored when it is not found.
     # If nofail is given, module initialization failures are ignored.
     #
-    # Uses RTKit to boost the data thread priority.
-    { name = libpipewire-module-rtkit
+    # Uses realtime scheduling to boost the audio thread priorities
+    { name = libpipewire-module-rt
         args = {
-            #nice.level   = -11
             #rt.prio      = 88
-            #rt.time.soft = 2000000
-            #rt.time.hard = 2000000
+            #rt.time.soft = -1
+            #rt.time.hard = -1
         }
         flags = [ ifexists nofail ]
     }
@@ -77,6 +84,32 @@ stream.properties = {
     #resample.quality      = 4
     #channelmix.normalize  = false
     #channelmix.mix-lfe    = true
-    #channelmix.upmix      = false
-    #channelmix.lfe-cutoff = 0
+    #channelmix.upmix      = true
+    #channelmix.upmix-method = psd  # none, simple
+    #channelmix.lfe-cutoff = 150
+    #channelmix.fc-cutoff  = 12000
+    #channelmix.rear-delay = 12.0
+    #channelmix.stereo-widen = 0.0
+    #channelmix.hilbert-taps = 0
+    #dither.noise = 0
 }
+
+alsa.properties = {
+    #alsa.format = 0
+    #alsa.rate = 0
+    #alsa.channels = 0
+    #alsa.period-bytes = 0
+    #alsa.buffer-bytes = 0
+    #alsa.volume-method = cubic		# linear, cubic
+}
+
+# client specific properties
+alsa.rules = [
+    {   matches = [ { application.process.binary = "resolve" } ]
+        actions = {
+            update-props = {
+		alsa.buffer-bytes = 131072
+            }
+        }
+    }
+]

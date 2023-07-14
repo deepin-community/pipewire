@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2019 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_EXT_SESSION_MANAGER_INTERFACES_H
 #define PIPEWIRE_EXT_SESSION_MANAGER_INTERFACES_H
@@ -71,7 +51,7 @@ struct pw_session_events {
 	 *
 	 * \param info info about the session
 	 */
-	void (*info) (void *object, const struct pw_session_info *info);
+	void (*info) (void *data, const struct pw_session_info *info);
 
 	/**
 	 * Notify a session param
@@ -84,7 +64,7 @@ struct pw_session_events {
 	 * \param next the param index of the next param
 	 * \param param the parameter
 	 */
-	void (*param) (void *object, int seq,
+	void (*param) (void *data, int seq,
 		       uint32_t id, uint32_t index, uint32_t next,
 		       const struct spa_pod *param);
 };
@@ -173,7 +153,7 @@ struct pw_endpoint_events {
 	 *
 	 * \param info info about the endpoint
 	 */
-	void (*info) (void *object, const struct pw_endpoint_info *info);
+	void (*info) (void *data, const struct pw_endpoint_info *info);
 
 	/**
 	 * Notify a endpoint param
@@ -186,7 +166,7 @@ struct pw_endpoint_events {
 	 * \param next the param index of the next param
 	 * \param param the parameter
 	 */
-	void (*param) (void *object, int seq,
+	void (*param) (void *data, int seq,
 		       uint32_t id, uint32_t index, uint32_t next,
 		       const struct spa_pod *param);
 };
@@ -277,7 +257,7 @@ struct pw_endpoint_stream_events {
 	 *
 	 * \param info info about the endpoint stream
 	 */
-	void (*info) (void *object, const struct pw_endpoint_stream_info *info);
+	void (*info) (void *data, const struct pw_endpoint_stream_info *info);
 
 	/**
 	 * Notify a endpoint stream param
@@ -290,7 +270,7 @@ struct pw_endpoint_stream_events {
 	 * \param next the param index of the next param
 	 * \param param the parameter
 	 */
-	void (*param) (void *object, int seq,
+	void (*param) (void *data, int seq,
 		       uint32_t id, uint32_t index, uint32_t next,
 		       const struct spa_pod *param);
 };
@@ -377,7 +357,7 @@ struct pw_endpoint_link_events {
 	 *
 	 * \param info info about the endpoint link
 	 */
-	void (*info) (void *object, const struct pw_endpoint_link_info *info);
+	void (*info) (void *data, const struct pw_endpoint_link_info *info);
 
 	/**
 	 * Notify a endpoint link param
@@ -390,7 +370,7 @@ struct pw_endpoint_link_events {
 	 * \param next the param index of the next param
 	 * \param param the parameter
 	 */
-	void (*param) (void *object, int seq,
+	void (*param) (void *data, int seq,
 		       uint32_t id, uint32_t index, uint32_t next,
 		       const struct spa_pod *param);
 };

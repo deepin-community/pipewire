@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -46,7 +26,7 @@ PW_LOG_TOPIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
 #define FACTORY_USAGE	SPA_KEY_FACTORY_NAME"=<factory-name> " \
-			"["SPA_KEY_LIBRARY_NAME"=<library-name>] " \
+			"("SPA_KEY_LIBRARY_NAME"=<library-name>) " \
 			ADAPTER_USAGE
 
 static const struct spa_dict_item module_props[] = {
@@ -56,7 +36,8 @@ static const struct spa_dict_item module_props[] = {
 };
 
 struct factory_data {
-	struct pw_impl_factory *this;
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 
 	struct spa_list node_list;
 
@@ -70,6 +51,7 @@ struct node_data {
 	struct spa_list link;
 	struct pw_impl_node *adapter;
 	struct pw_impl_node *follower;
+	struct spa_handle *handle;
 	struct spa_hook adapter_listener;
 	struct pw_resource *resource;
 	struct pw_resource *bound_resource;
@@ -113,7 +95,10 @@ static void node_free(void *data)
 
 	spa_hook_remove(&nd->adapter_listener);
 
-	pw_impl_node_destroy(nd->follower);
+	if (nd->follower)
+		pw_impl_node_destroy(nd->follower);
+	if (nd->handle)
+		pw_unload_spa_handle(nd->handle);
 }
 
 static void node_initialized(void *data)
@@ -168,19 +153,26 @@ static void *create_object(void *_data,
 	struct factory_data *d = _data;
 	struct pw_impl_client *client;
 	struct pw_impl_node *adapter, *follower;
-	const char *str, *factory_name;
+	struct spa_node *spa_follower;
+	const char *str;
 	int res;
 	struct node_data *nd;
 	bool linger, do_register;
+	struct spa_handle *handle = NULL;
+	const struct pw_properties *p;
 
 	if (properties == NULL)
 		goto error_properties;
 
 	pw_properties_setf(properties, PW_KEY_FACTORY_ID, "%d",
-			pw_impl_factory_get_info(d->this)->id);
+			pw_impl_factory_get_info(d->factory)->id);
 
 	linger = pw_properties_get_bool(properties, PW_KEY_OBJECT_LINGER, false);
 	do_register = pw_properties_get_bool(properties, PW_KEY_OBJECT_REGISTER, true);
+
+	p = pw_context_get_properties(d->context);
+	pw_properties_set(properties, "clock.quantum-limit",
+			pw_properties_get(p, "default.clock.quantum-limit"));
 
 	client = resource ? pw_resource_get_client(resource): NULL;
 	if (client && !linger) {
@@ -189,29 +181,44 @@ static void *create_object(void *_data,
 	}
 
 	follower = NULL;
+	spa_follower = NULL;
 	str = pw_properties_get(properties, "adapt.follower.node");
 	if (str != NULL) {
 		if (sscanf(str, "pointer:%p", &follower) != 1)
 			goto error_properties;
-
-		pw_properties_setf(properties, "audio.adapt.follower", "pointer:%p", follower);
+		spa_follower = pw_impl_node_get_implementation(follower);
 	}
-	if (follower == NULL) {
+	str = pw_properties_get(properties, "adapt.follower.spa-node");
+	if (str != NULL) {
+		if (sscanf(str, "pointer:%p", &spa_follower) != 1)
+			goto error_properties;
+	}
+	if (spa_follower == NULL) {
+		void *iface;
+		const char *factory_name;
+
 		factory_name = pw_properties_get(properties, SPA_KEY_FACTORY_NAME);
 		if (factory_name == NULL)
 			goto error_properties;
 
-		follower = pw_spa_node_load(d->context,
-					factory_name,
-					PW_SPA_NODE_FLAG_ACTIVATE |
-					PW_SPA_NODE_FLAG_NO_REGISTER,
-					pw_properties_copy(properties), 0);
-		if (follower == NULL)
+		handle = pw_context_load_spa_handle(d->context,
+				factory_name,
+				&properties->dict);
+		if (handle == NULL)
 			goto error_errno;
+
+		if ((res = spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Node, &iface)) < 0)
+			goto error_res;
+
+		spa_follower = iface;
+	}
+	if (spa_follower == NULL) {
+		res = -EINVAL;
+		goto error_res;
 	}
 
 	adapter = pw_adapter_new(pw_impl_module_get_context(d->module),
-			follower,
+			spa_follower,
 			properties,
 			sizeof(struct node_data));
 	properties = NULL;
@@ -227,6 +234,7 @@ static void *create_object(void *_data,
 	nd->data = d;
 	nd->adapter = adapter;
 	nd->follower = follower;
+	nd->handle = handle;
 	nd->resource = resource;
 	nd->new_id = new_id;
 	nd->linger = linger;
@@ -243,24 +251,22 @@ static void *create_object(void *_data,
 
 error_properties:
 	res = -EINVAL;
-	pw_log_error("factory %p: usage: " FACTORY_USAGE, d->this);
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res, "usage: " FACTORY_USAGE);
+	pw_resource_errorf_id(resource, new_id, res, "usage: " FACTORY_USAGE);
 	goto error_cleanup;
 error_errno:
 	res = -errno;
-	pw_log_error("can't create node: %m");
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res, "can't create node: %s", spa_strerror(res));
+error_res:
+	pw_resource_errorf_id(resource, new_id, res, "can't create node: %s", spa_strerror(res));
 	goto error_cleanup;
 error_usage:
 	res = -EINVAL;
 	pw_log_error("usage: "ADAPTER_USAGE);
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res, "usage: "ADAPTER_USAGE);
+	pw_resource_errorf_id(resource, new_id, res, "usage: "ADAPTER_USAGE);
 	goto error_cleanup;
 error_cleanup:
 	pw_properties_free(properties);
+	if (handle)
+		pw_unload_spa_handle(handle);
 	errno = -res;
 	return NULL;
 }
@@ -270,25 +276,43 @@ static const struct pw_impl_factory_implementation impl_factory = {
 	.create_object = create_object,
 };
 
-static void module_destroy(void *data)
+static void factory_destroy(void *data)
 {
 	struct factory_data *d = data;
 	struct node_data *nd;
 
-	pw_log_debug("%p: destroy", d);
-	spa_hook_remove(&d->module_listener);
+	spa_hook_remove(&d->factory_listener);
 
 	spa_list_consume(nd, &d->node_list, link)
 		pw_impl_node_destroy(nd->adapter);
 
-	pw_impl_factory_destroy(d->this);
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
+}
+
+static const struct pw_impl_factory_events factory_events = {
+	PW_VERSION_IMPL_FACTORY_EVENTS,
+	.destroy = factory_destroy,
+};
+
+static void module_destroy(void *data)
+{
+	struct factory_data *d = data;
+
+	pw_log_debug("%p: destroy", d);
+	spa_hook_remove(&d->module_listener);
+	d->module = NULL;
+
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
 {
 	struct factory_data *d = data;
 	struct pw_impl_module *module = d->module;
-	struct pw_impl_factory *factory = d->this;
+	struct pw_impl_factory *factory = d->factory;
 	struct spa_dict_item items[1];
 	char id[16];
 	int res;
@@ -329,13 +353,15 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		return -errno;
 
 	data = pw_impl_factory_get_user_data(factory);
-	data->this = factory;
+	data->factory = factory;
 	data->context = context;
 	data->module = module;
 	spa_list_init(&data->node_list);
 
 	pw_log_debug("module %p: new", module);
 
+	pw_impl_factory_add_listener(factory, &data->factory_listener,
+			&factory_events, data);
 	pw_impl_factory_set_implementation(factory,
 				      &impl_factory,
 				      data);

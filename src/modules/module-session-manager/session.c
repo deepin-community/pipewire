@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2020 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <pipewire/impl.h>
 #include <pipewire/extensions/session-manager.h>
@@ -30,6 +10,7 @@
 #include <spa/utils/result.h>
 #include <spa/pod/builder.h>
 #include <spa/pod/filter.h>
+#include <spa/pod/dynamic.h>
 
 #define MAX_PARAMS 32
 
@@ -78,10 +59,11 @@ struct resource_data
 
 struct factory_data
 {
-	struct pw_impl_factory *this;
-
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
+
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 
 	struct pw_export_type export;
 };
@@ -103,8 +85,8 @@ static int method_enum_params(void *object, int seq,
 	struct param_data *pdata;
 	struct spa_pod *result;
 	struct spa_pod *param;
-	uint8_t buffer[1024];
-	struct spa_pod_builder b = { 0 };
+	uint8_t buffer[2048];
+	struct spa_pod_dynamic_builder b = { 0 };
 	uint32_t index;
 	uint32_t next = start;
 	uint32_t count = 0;
@@ -122,15 +104,15 @@ static int method_enum_params(void *object, int seq,
 
 			param = *pw_array_get_unchecked(&pdata->params, index, struct spa_pod*);
 
-			spa_pod_builder_init(&b, buffer, sizeof(buffer));
-			if (spa_pod_filter(&b, &result, param, filter) != 0)
-				continue;
+			spa_pod_dynamic_builder_init(&b, buffer, sizeof(buffer), 4096);
+			if (spa_pod_filter(&b.b, &result, param, filter) == 0) {
+				pw_log_debug(NAME" %p: %d param %u", impl, seq, index);
+				pw_session_resource_param(d->resource, seq, id, index, next, result);
+				count++;
+			}
+			spa_pod_dynamic_builder_clean(&b);
 
-			pw_log_debug(NAME" %p: %d param %u", impl, seq, index);
-
-			pw_session_resource_param(d->resource, seq, id, index, next, result);
-
-			if (++count == num)
+			if (count == num)
 				return 0;
 		}
 	}
@@ -174,10 +156,10 @@ static const struct pw_session_methods session_methods = {
 	.set_param = method_set_param,
 };
 
-static int global_bind(void *_data, struct pw_impl_client *client,
+static int global_bind(void *object, struct pw_impl_client *client,
 		uint32_t permissions, uint32_t version, uint32_t id)
 {
-	struct impl *impl = _data;
+	struct impl *impl = object;
 	struct pw_resource *resource;
 	struct resource_data *data;
 
@@ -274,9 +256,9 @@ static int emit_info(void *data, struct pw_resource *resource)
 	return 0;
 }
 
-static void event_info(void *object, const struct pw_session_info *info)
+static void event_info(void *data, const struct pw_session_info *info)
 {
-	struct impl *impl = object;
+	struct impl *impl = data;
 	uint32_t changed_ids[MAX_PARAMS], n_changed_ids = 0;
 	uint32_t i;
 
@@ -339,11 +321,11 @@ static int emit_param(void *_data, struct pw_resource *resource)
 	return 0;
 }
 
-static void event_param(void *object, int seq,
+static void event_param(void *data, int seq,
 		       uint32_t id, uint32_t index, uint32_t next,
 		       const struct spa_pod *param)
 {
-	struct impl *impl = object;
+	struct impl *impl = data;
 	struct param_data *pdata;
 	struct spa_pod **pod;
 	struct param_event_args args = { id, index, next, param };
@@ -378,6 +360,15 @@ static void *session_new(struct pw_context *context,
 			  struct pw_properties *properties)
 {
 	struct impl *impl;
+	char serial_str[32];
+	struct spa_dict_item items[1] = {
+		SPA_DICT_ITEM_INIT(PW_KEY_OBJECT_SERIAL, serial_str),
+	};
+	struct spa_dict extra_props = SPA_DICT_INIT_ARRAY(items);
+	static const char * const keys[] = {
+		PW_KEY_OBJECT_SERIAL,
+		NULL
+	};
 
 	impl = calloc(1, sizeof(*impl));
 	if (impl == NULL) {
@@ -395,6 +386,10 @@ static void *session_new(struct pw_context *context,
 		return NULL;
 	}
 	impl->resource = resource;
+
+	spa_scnprintf(serial_str, sizeof(serial_str), "%"PRIu64,
+			pw_global_get_serial(impl->global));
+	pw_global_update_keys(impl->global, &extra_props, keys);
 
 	spa_list_init(&impl->cached_params);
 
@@ -448,7 +443,7 @@ static void *create_object(void *data,
 	pw_properties_setf(properties, PW_KEY_CLIENT_ID, "%d",
 			pw_impl_client_get_info(client)->id);
 	pw_properties_setf(properties, PW_KEY_FACTORY_ID, "%d",
-			pw_impl_factory_get_info(d->this)->id);
+			pw_impl_factory_get_info(d->factory)->id);
 
 	result = session_new(pw_impl_client_get_context(client), impl_resource, properties);
 	if (result == NULL) {
@@ -478,20 +473,36 @@ static const struct pw_impl_factory_implementation impl_factory = {
 	.create_object = create_object,
 };
 
+static void factory_destroy(void *data)
+{
+	struct factory_data *d = data;
+	spa_hook_remove(&d->factory_listener);
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
+}
+
+static const struct pw_impl_factory_events factory_events = {
+	PW_VERSION_IMPL_FACTORY_EVENTS,
+	.destroy = factory_destroy,
+};
+
 static void module_destroy(void *data)
 {
 	struct factory_data *d = data;
 
 	spa_hook_remove(&d->module_listener);
 	spa_list_remove(&d->export.link);
-	pw_impl_factory_destroy(d->this);
+	d->module = NULL;
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
 {
 	struct factory_data *d = data;
 	struct pw_impl_module *module = d->module;
-	struct pw_impl_factory *factory = d->this;
+	struct pw_impl_factory *factory = d->factory;
 	struct spa_dict_item items[1];
 	char id[16];
 	int res;
@@ -516,6 +527,7 @@ int session_factory_init(struct pw_impl_module *module)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_impl_factory *factory;
 	struct factory_data *data;
+	int res;
 
 	factory = pw_context_create_factory(context,
 				 "session",
@@ -527,16 +539,21 @@ int session_factory_init(struct pw_impl_module *module)
 		return -errno;
 
 	data = pw_impl_factory_get_user_data(factory);
-	data->this = factory;
+	data->factory = factory;
 	data->module = module;
 
 	pw_impl_factory_set_implementation(factory, &impl_factory, data);
 
 	data->export.type = PW_TYPE_INTERFACE_Session;
 	data->export.func = pw_core_session_export;
-	pw_context_register_export_type(context, &data->export);
+	if ((res = pw_context_register_export_type(context, &data->export)) < 0)
+		goto error;
 
+	pw_impl_factory_add_listener(factory, &data->factory_listener, &factory_events, data);
 	pw_impl_module_add_listener(module, &data->module_listener, &module_events, data);
 
 	return 0;
+error:
+	pw_impl_factory_destroy(data->factory);
+	return res;
 }

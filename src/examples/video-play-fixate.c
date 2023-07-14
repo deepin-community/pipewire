@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 /*
  [title]
@@ -45,6 +25,7 @@
 #define HEIGHT  480
 
 #define MAX_BUFFERS	64
+#define MAX_MOD		8
 
 #include "sdl.h"
 
@@ -61,7 +42,7 @@ struct pw_version {
 struct modifier_info {
         uint32_t spa_format;
         uint32_t n_modifiers;
-        uint64_t *modifiers;
+        uint64_t modifiers[MAX_MOD];
 };
 
 struct data {
@@ -83,7 +64,7 @@ struct data {
 	struct spa_rectangle size;
 
 	uint32_t n_mod_info;
-	struct modifier_info mod_info[1];
+	struct modifier_info mod_info[2];
 
 	int counter;
 };
@@ -107,14 +88,12 @@ static void init_modifiers(struct data *data)
 	data->n_mod_info = 1;
 	data->mod_info[0].spa_format = SPA_VIDEO_FORMAT_RGB;
 	data->mod_info[0].n_modifiers = 2;
-	data->mod_info[0].modifiers = (uint64_t*)malloc(2*sizeof(uint32_t));
 	data->mod_info[0].modifiers[0] = DRM_FORMAT_MOD_LINEAR;
-	data->mod_info[0].modifiers[0] = DRM_FORMAT_MOD_INVALID;
+	data->mod_info[0].modifiers[1] = DRM_FORMAT_MOD_INVALID;
 }
 
 static void destroy_modifiers(struct data *data)
 {
-	free(data->mod_info[0].modifiers);
 	data->mod_info[0].n_modifiers = 0;
 }
 
@@ -258,6 +237,8 @@ on_process(void *_data)
 
 	/* copy video image in texture */
 	sstride = buf->datas[0].chunk->stride;
+	if (sstride == 0)
+		sstride = buf->datas[0].chunk->size / data->size.height;
 	ostride = SPA_MIN(sstride, dstride);
 
 	src = sdata;
@@ -341,6 +322,10 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 		pw_stream_set_error(stream, -EINVAL, "unknown pixel format");
 		return;
 	}
+	if (data->size.width == 0 || data->size.height == 0) {
+		pw_stream_set_error(stream, -EINVAL, "invalid size");
+		return;
+	}
 
 	data->texture = SDL_CreateTexture(data->renderer,
 					  sdl_format,
@@ -358,7 +343,6 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 		SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 		SPA_PARAM_BUFFERS_size,    SPA_POD_Int(data->stride * data->size.height),
 		SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(data->stride),
-		SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16),
 		SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1<<SPA_DATA_MemPtr) | (1<<SPA_DATA_DmaBuf)));
 
 	/* we are done */
@@ -421,6 +405,7 @@ int main(int argc, char *argv[])
 	const struct spa_pod *params[2];
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+	struct pw_properties *props;
 	int res, n_params;
 
 	pw_init(&argc, &argv);
@@ -442,18 +427,21 @@ int main(int argc, char *argv[])
 	 * you need to listen to is the process event where you need to consume
 	 * the data provided to you.
 	 */
+	props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Video",
+			PW_KEY_MEDIA_CATEGORY, "Capture",
+			PW_KEY_MEDIA_ROLE, "Camera",
+			NULL),
+	data.path = argc > 1 ? argv[1] : NULL;
+	if (data.path)
+		/* Set stream target if given on command line */
+		pw_properties_set(props, PW_KEY_TARGET_OBJECT, data.path);
+
 	data.stream = pw_stream_new_simple(
 			pw_main_loop_get_loop(data.loop),
-			"video-play-reneg",
-			pw_properties_new(
-				PW_KEY_MEDIA_TYPE, "Video",
-				PW_KEY_MEDIA_CATEGORY, "Capture",
-				PW_KEY_MEDIA_ROLE, "Camera",
-				NULL),
+			"video-play-fixate",
+			props,
 			&stream_events,
 			&data);
-
-	data.path = argc > 1 ? argv[1] : NULL;
 
 	if (SDL_Init(SDL_INIT_VIDEO) < 0) {
 		fprintf(stderr, "can't initialize SDL: %s\n", SDL_GetError());
@@ -479,7 +467,7 @@ int main(int argc, char *argv[])
 	 */
 	if ((res = pw_stream_connect(data.stream,
 			  PW_DIRECTION_INPUT,
-			  data.path ? (uint32_t)atoi(data.path) : PW_ID_ANY,
+			  PW_ID_ANY,
 			  PW_STREAM_FLAG_AUTOCONNECT |	/* try to automatically connect this stream */
 			  PW_STREAM_FLAG_MAP_BUFFERS,	/* mmap the buffer data for us */
 			  params, n_params))		/* extra parameters, see above */ < 0) {

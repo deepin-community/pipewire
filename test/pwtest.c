@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2021 Red Hat, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Red Hat, Inc. */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -36,10 +16,10 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
-#if HAVE_PIDFD_OPEN
+#ifdef HAVE_PIDFD_OPEN
 #include <sys/syscall.h>
 #endif
-#if HAVE_LIBCAP
+#ifdef HAVE_LIBCAP
 #include <sys/capability.h>
 #endif
 #include <sys/epoll.h>
@@ -128,11 +108,18 @@ struct pwtest_context {
 	struct spa_list suites;
 	unsigned int timeout;
 	bool no_fork;
+	bool terminate;
+	struct spa_list cleanup_pids;
 
 	const char *test_filter;
 	bool has_iteration_filter;
 	int iteration_filter;
 	char *xdg_dir;
+};
+
+struct cleanup_pid {
+	struct spa_list link;
+	pid_t pid;
 };
 
 struct pwtest_context *pwtest_get_context(struct pwtest_test *t)
@@ -175,9 +162,59 @@ static void restore_env(struct pwtest_test *t)
 	}
 }
 
+static int add_cleanup_pid(struct pwtest_context *ctx, pid_t pid)
+{
+	struct cleanup_pid *cpid;
+
+	if (pid == 0)
+		return -EINVAL;
+
+	cpid = calloc(1, sizeof(struct cleanup_pid));
+	if (cpid == NULL)
+		return -errno;
+
+	cpid->pid = pid;
+	spa_list_append(&ctx->cleanup_pids, &cpid->link);
+
+	return 0;
+}
+
+static void remove_cleanup_pid(struct pwtest_context *ctx, pid_t pid)
+{
+	struct cleanup_pid *cpid, *t;
+
+	spa_list_for_each_safe(cpid, t, &ctx->cleanup_pids, link) {
+		if (cpid->pid == pid) {
+			spa_list_remove(&cpid->link);
+			free(cpid);
+		}
+	}
+}
+
+static void terminate_cleanup_pids(struct pwtest_context *ctx)
+{
+	struct cleanup_pid *cpid;
+	spa_list_for_each(cpid, &ctx->cleanup_pids, link) {
+		/* Don't free here, to be signal-safe */
+		if (cpid->pid != 0) {
+			kill(cpid->pid, SIGTERM);
+			cpid->pid = 0;
+		}
+	}
+}
+
+static void free_cleanup_pids(struct pwtest_context *ctx)
+{
+	struct cleanup_pid *cpid;
+	spa_list_consume(cpid, &ctx->cleanup_pids, link) {
+		spa_list_remove(&cpid->link);
+		free(cpid);
+	}
+}
+
 static void pwtest_backtrace(pid_t p)
 {
-#if HAVE_GSTACK
+#ifdef HAVE_GSTACK
 	char pid[11];
 	pid_t parent, child;
 	int status;
@@ -301,16 +338,15 @@ pwtest_spa_plugin_new(void)
 void
 pwtest_spa_plugin_destroy(struct pwtest_spa_plugin *plugin)
 {
-	void **dll;
-	struct spa_handle **hnd;
-
-	SPA_FOR_EACH_ELEMENT(plugin->handles, hnd) {
-		if (*hnd)
+	SPA_FOR_EACH_ELEMENT_VAR(plugin->handles, hnd) {
+		if (*hnd) {
+			spa_handle_clear(*hnd);
 			free(*hnd);
+		}
 	}
-	SPA_FOR_EACH_ELEMENT(plugin->dlls, dll) {
+	SPA_FOR_EACH_ELEMENT_VAR(plugin->dlls, dll) {
 		if (*dll)
-			dlclose(dll);
+			dlclose(*dll);
 	}
 	free(plugin);
 }
@@ -362,12 +398,13 @@ pwtest_spa_plugin_try_load_interface(struct pwtest_spa_plugin *plugin,
 	r = spa_handle_factory_init(factory, handle, info, plugin->support, plugin->nsupport);
 	pwtest_neg_errno_ok(r);
 	if ((r = spa_handle_get_interface(handle, interface_name, &iface)) != 0) {
-		dlclose(hnd);
+		spa_handle_clear(handle);
 		free(handle);
+		dlclose(hnd);
 		return -ENOSYS;
 	}
 
-	plugin->handles[plugin->ndlls++] = hnd;
+	plugin->dlls[plugin->ndlls++] = hnd;
 	plugin->handles[plugin->nhandles++] = handle;
 	plugin->support[plugin->nsupport++] = SPA_SUPPORT_INIT(interface_name, iface);
 
@@ -402,6 +439,34 @@ pwtest_mkstemp(char path[PATH_MAX])
 	r = mkstemp(path);
 	if (r == -1)
 		pwtest_error_with_msg("Unable to create temporary file: %s", strerror(errno));
+}
+
+int
+pwtest_spawn(const char *file, char *const argv[])
+{
+	int r;
+	int status = -1;
+	pid_t pid;
+	const int fail_code = 121;
+
+	pid = fork();
+	if (pid == 0) {
+		/* child process */
+		execvp(file, (char **)argv);
+		exit(fail_code);
+	} else if (pid < 0)
+		pwtest_error_with_msg("Unable to fork: %s", strerror(errno));
+
+	add_cleanup_pid(ctx, pid);
+	r = waitpid(pid, &status, 0);
+	remove_cleanup_pid(ctx, pid);
+	if (r <= 0)
+		pwtest_error_with_msg("waitpid failed: %s", strerror(errno));
+
+	if (WEXITSTATUS(status) == fail_code)
+		pwtest_error_with_msg("exec %s failed", file);
+
+	return status;
 }
 
 void _pwtest_add(struct pwtest_context *ctx, struct pwtest_suite *suite,
@@ -458,6 +523,8 @@ void _pwtest_add(struct pwtest_context *ctx, struct pwtest_suite *suite,
 			pw_properties_set(t->args.env, key, value);
 			break;
 		case PWTEST_ARG_DAEMON:
+			if (RUNNING_ON_VALGRIND)
+				t->result = PWTEST_SKIP;
 			t->args.pw_daemon = true;
 			break;
 		}
@@ -565,6 +632,9 @@ static void cleanup(struct pwtest_context *ctx)
 {
 	struct pwtest_suite *c, *tmp;
 
+	terminate_cleanup_pids(ctx);
+	free_cleanup_pids(ctx);
+
 	spa_list_for_each_safe(c, tmp, &ctx->suites, link) {
 		free_suite(c);
 	}
@@ -582,13 +652,14 @@ static void sighandler(int signal)
 	sigaction(signal, &act, NULL);
 
 	pwtest_backtrace(0);
+	terminate_cleanup_pids(ctx);
 	raise(signal);
 }
 
 static inline void log_append(struct pw_array *buffer, int fd)
 {
 	int r = 0;
-	const int sz = 1024;
+	const int sz = 65536;
 
 	while (true) {
 		r = pw_array_ensure_size(buffer, sz);
@@ -643,6 +714,7 @@ static pid_t start_pwdaemon(struct pwtest_test *t, int stderr_fd, int log_fd)
 	pid_t pid;
 	char pw_remote[64];
 	int status;
+	int r;
 
 	spa_scnprintf(pw_remote, sizeof(pw_remote), "pwtest-pw-%u\n", count++);
 	replace_env(t, "PIPEWIRE_REMOTE", pw_remote);
@@ -650,14 +722,25 @@ static pid_t start_pwdaemon(struct pwtest_test *t, int stderr_fd, int log_fd)
 	pid = fork();
 	if (pid == 0) {
 		/* child */
-		setenv("PIPEWIRE_CORE", pw_remote, 1);
+		setpgid(0, 0);
 
-		dup2(stderr_fd, STDERR_FILENO);
-		setlinebuf(stderr);
+		setenv("PIPEWIRE_CORE", pw_remote, 1);
+		setenv("PIPEWIRE_DEBUG", "4", 0);
+		setenv("WIREPLUMBER_DEBUG", "4", 0);
+
+		r = dup2(stderr_fd, STDERR_FILENO);
+		spa_assert_se(r != -1);
+		r = dup2(stderr_fd, STDOUT_FILENO);
+		spa_assert_se(r != -1);
+
 		execl(daemon, daemon, (char*)NULL);
 		return -errno;
 
+	} else if (pid < 0) {
+		return pid;
 	}
+
+	add_cleanup_pid(ctx, -pid);
 
 	/* parent */
 	sleep(1); /* FIXME how to wait for pw to be ready? */
@@ -698,6 +781,7 @@ static void set_test_env(struct pwtest_context *ctx, struct pwtest_test *t)
 	replace_env(t, "TMPDIR", xdg_runtime_dir);
 
 	replace_env(t, "SPA_PLUGIN_DIR", BUILD_ROOT "/spa/plugins");
+	replace_env(t, "SPA_DATA_DIR", SOURCE_ROOT "/spa/plugins");
 	replace_env(t, "PIPEWIRE_CONFIG_DIR", BUILD_ROOT "/src/daemon");
 	replace_env(t, "PIPEWIRE_MODULE_DIR", BUILD_ROOT "/src/modules");
 	replace_env(t, "ACP_PATHS_DIR", SOURCE_ROOT "/spa/plugins/alsa/mixer/paths");
@@ -708,7 +792,8 @@ static void set_test_env(struct pwtest_context *ctx, struct pwtest_test *t)
 static void close_pipes(int fds[_FD_LAST])
 {
 	for (int i = 0; i < _FD_LAST; i++) {
-		close(fds[i]);
+		if (fds[i] >= 0)
+			close(fds[i]);
 		fds[i] = -1;
 	}
 }
@@ -717,20 +802,40 @@ static int init_pipes(int read_fds[_FD_LAST], int write_fds[_FD_LAST])
 {
 	int r;
 	int i;
+	int pipe_max_size = 4194304;
 
 	for (i = 0; i < _FD_LAST; i++) {
 		read_fds[i] = -1;
 		write_fds[i] = -1;
 	}
 
+#ifdef __linux__
+	{
+		FILE *f;
+		f = fopen("/proc/sys/fs/pipe-max-size", "re");
+		if (f) {
+			if (fscanf(f, "%d", &r) == 1)
+				pipe_max_size = SPA_MIN(r, pipe_max_size);
+			fclose(f);
+		}
+	}
+#endif
+
 	for (i = 0; i < _FD_LAST; i++) {
 		int pipe[2];
 
-		r = pipe2(pipe, O_NONBLOCK);
+		r = pipe2(pipe, O_CLOEXEC | O_NONBLOCK);
 		if (r < 0)
 			goto error;
 		read_fds[i] = pipe[0];
 		write_fds[i] = pipe[1];
+#ifdef __linux__
+		/* Max pipe buffers, to avoid scrambling if reading lags.
+		 * Can't use blocking write fds, since reading too slow
+		 * then affects execution.
+		 */
+		fcntl(write_fds[i], F_SETPIPE_SZ, pipe_max_size);
+#endif
 	}
 
 	return 0;
@@ -780,6 +885,9 @@ static int start_test_forked(struct pwtest_test *t, int read_fds[_FD_LAST], int 
 
 	close_pipes(read_fds);
 
+	/* Reset cleanup pid list */
+	free_cleanup_pids(ctx);
+
 	/* Catch any crashers so we can insert a backtrace */
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = 0;
@@ -820,7 +928,7 @@ static int monitor_test_forked(struct pwtest_test *t, pid_t pid, int read_fds[_F
 	size_t nevents = 0;
 	int r;
 
-#if HAVE_PIDFD_OPEN
+#ifdef HAVE_PIDFD_OPEN
 	pidfd = syscall(SYS_pidfd_open, pid, 0);
 #else
 	errno = ENOSYS;
@@ -960,18 +1068,26 @@ static void run_test(struct pwtest_context *ctx, struct pwtest_suite *c, struct 
 			errno = -r;
 			goto error;
 		}
+		add_cleanup_pid(ctx, pid);
 
 		r = monitor_test_forked(t, pid, read_fds);
 		if (r < 0) {
 			errno = -r;
 			goto error;
 		}
+		remove_cleanup_pid(ctx, pid);
 	}
 
 	errno = 0;
 error:
 	if (errno)
 		t->sig_or_errno = -errno;
+
+	if (ctx->terminate) {
+		char *buf = pw_array_add(&t->logs[FD_LOG], 64);
+		spa_scnprintf(buf, 64, "pwtest: tests terminated by signal\n");
+		t->result = PWTEST_SYSTEM_ERROR;
+	}
 
 	for (size_t i = 0; i < SPA_N_ELEMENTS(read_fds); i++) {
 		log_append(&t->logs[i], read_fds[i]);
@@ -980,8 +1096,16 @@ error:
 	if (pw_daemon > 0) {
 		int status;
 
-		kill(pw_daemon, SIGTERM);
-		r = waitpid(pw_daemon, &status, 0);
+		kill(-pw_daemon, SIGTERM);
+		remove_cleanup_pid(ctx, -pw_daemon);
+
+		/* blocking read. the other end closes when done */
+		close_pipes(write_fds);
+		fcntl(read_fds[FD_DAEMON], F_SETFL, O_CLOEXEC);
+		do {
+			log_append(&t->logs[FD_DAEMON], read_fds[FD_DAEMON]);
+		} while ((r = waitpid(pw_daemon, &status, WNOHANG)) == 0);
+
 		if (r > 0) {
 			/* write_fds are closed in the parent process, so we append directly */
 			char *buf = pw_array_add(&t->logs[FD_DAEMON], 64);
@@ -994,6 +1118,12 @@ error:
 					WTERMSIG(status), sigabbrev_np(WTERMSIG(status)));
 			}
 		}
+	}
+
+	for (size_t i = 0; i < SPA_N_ELEMENTS(t->logs); i++) {
+		char *e = pw_array_add(&t->logs[i], 1);
+		spa_assert_se(e);
+		*e = '\0';
 	}
 
 	close_pipes(read_fds);
@@ -1091,7 +1221,7 @@ static char* make_xdg_runtime_dir(void)
 	/* Marker file to avoid removing a random directory during cleanup */
 	r = spa_scnprintf(path, sizeof(path), "%s/pwtest.dir", dir);
 	spa_assert_se((size_t)r == strlen(dir) + 11);
-	fp = fopen(path, "w");
+	fp = fopen(path, "we");
 	spa_assert_se(fp);
 	fprintf(fp, "pwtest\n");
 	fclose(fp);
@@ -1138,6 +1268,11 @@ static int run_tests(struct pwtest_context *ctx)
 						r = EXIT_FAILURE;
 						break;
 				}
+
+				if (ctx->terminate) {
+					r = EXIT_FAILURE;
+					return r;
+				}
 			}
 		}
 	}
@@ -1162,7 +1297,7 @@ static void list_tests(struct pwtest_context *ctx)
 static bool is_debugger_attached(void)
 {
 	bool rc = false;
-#if HAVE_LIBCAP
+#ifdef HAVE_LIBCAP
 	int status;
 	int pid = fork();
 
@@ -1202,7 +1337,7 @@ static void usage(FILE *fp, const char *progname)
 		"  -h, --help		Show this help\n"
 		"  --verbose		Verbose output\n"
 		"  --list		List all available suites and tests\n"
-		"  --timeout=N		Set the test timeout to N seconds (default: 30)\n"
+		"  --timeout=N		Set the test timeout to N seconds (default: 15)\n"
 		"  --filter-test=glob	Run only tests matching the given glob\n"
 		"  --filter-suites=glob	Run only suites matching the given glob\n"
 		"  --filter-iteration=N	Run only iteration N\n"
@@ -1212,6 +1347,17 @@ static void usage(FILE *fp, const char *progname)
 		"used with --filter-test. A test that modifies the process state will affect\n"
 		"subsequent tests and invalidate test results.\n",
 		progname);
+}
+
+static void sigterm_handler(int signo)
+{
+	terminate_cleanup_pids(ctx);
+	ctx->terminate = true;
+	if (ctx->no_fork) {
+		signal(SIGTERM, SIG_DFL);
+		signal(SIGINT, SIG_DFL);
+		raise(signo);
+	}
 }
 
 int main(int argc, char **argv)
@@ -1240,7 +1386,7 @@ int main(int argc, char **argv)
 	};
 	struct pwtest_context test_ctx = {
 		.suites = SPA_LIST_INIT(&test_ctx.suites),
-		.timeout = 30,
+		.timeout = 15,
 		.has_iteration_filter = false,
 	};
 	enum {
@@ -1248,6 +1394,8 @@ int main(int argc, char **argv)
 		MODE_LIST,
 	} mode = MODE_TEST;
 	const char *suite_filter = NULL;
+
+	spa_list_init(&test_ctx.cleanup_pids);
 
 	ctx = &test_ctx;
 
@@ -1306,6 +1454,8 @@ int main(int argc, char **argv)
 		break;
 	case MODE_TEST:
 		setrlimit(RLIMIT_CORE, &((struct rlimit){0, 0}));
+		signal(SIGTERM, sigterm_handler);
+		signal(SIGINT, sigterm_handler);
 		r = run_tests(ctx);
 		break;
 	}

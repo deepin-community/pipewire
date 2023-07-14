@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2015 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2015 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stddef.h>
@@ -35,11 +15,14 @@
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
 #include <spa/node/io.h>
+#include <spa/node/type-info.h>
 #include <spa/pod/filter.h>
 #include <spa/utils/keys.h>
+#include <spa/utils/result.h>
+
+#define PW_ENABLE_DEPRECATED
 
 #include "pipewire/pipewire.h"
-#include "pipewire/private.h"
 
 #include "pipewire/context.h"
 #include "modules/spa/spa-node.h"
@@ -148,6 +131,7 @@ struct impl {
 	bool client_reuse;
 
 	struct pw_context *context;
+	struct pw_mempool *context_pool;
 
 	struct node node;
 
@@ -353,7 +337,7 @@ static inline void do_flush(struct node *this)
 
 static int send_clock_update(struct node *this)
 {
-	struct pw_impl_client *client = this->resource->client;
+	struct pw_impl_client *client = pw_resource_get_client(this->resource);
 	uint32_t type = pw_protocol_native0_name_to_v2(client, SPA_TYPE_INFO_NODE_COMMAND_BASE "ClockUpdate");
 	struct timespec ts;
 	int64_t now;
@@ -471,11 +455,22 @@ do_update_port(struct node *this,
 		for (i = 0; i < port->n_params; i++)
 			free(port->params[i]);
 		port->n_params = n_params;
-		port->params = realloc(port->params, port->n_params * sizeof(struct spa_pod *));
-
+		if (port->n_params == 0) {
+			free(port->params);
+			port->params = NULL;
+		} else {
+			void *p;
+			p = pw_reallocarray(port->params, port->n_params, sizeof(struct spa_pod *));
+			if (p == NULL) {
+				pw_log_error("%p: port %u can't realloc: %m", this, port_id);
+				free(port->params);
+				port->n_params = 0;
+			}
+			port->params = p;
+		}
 		for (i = 0; i < port->n_params; i++) {
 			port->params[i] = params[i] ?
-				pw_protocol_native0_pod_from_v2(this->resource->client, params[i]) : NULL;
+				pw_protocol_native0_pod_from_v2(pw_resource_get_client(this->resource), params[i]) : NULL;
 
 			if (port->params[i] && spa_pod_is_object_id(port->params[i], SPA_PARAM_Format))
 				port->have_format = true;
@@ -668,7 +663,7 @@ impl_node_port_set_io(void *object,
 
 
 	if (data) {
-		if ((mem = pw_mempool_find_ptr(impl->context->pool, data)) == NULL)
+		if ((mem = pw_mempool_find_ptr(impl->context_pool, data)) == NULL)
 			return -EINVAL;
 
 		mem_offset = SPA_PTRDIFF(data, mem->map->ptr);
@@ -751,7 +746,7 @@ impl_node_port_use_buffers(void *object,
 		else
 			return -EINVAL;
 
-		if ((mem = pw_mempool_find_ptr(impl->context->pool, baseptr)) == NULL)
+		if ((mem = pw_mempool_find_ptr(impl->context_pool, baseptr)) == NULL)
 			return -EINVAL;
 
 		data_size = 0;
@@ -917,8 +912,7 @@ static int impl_node_process(void *object)
 	struct node *this = object;
 	struct impl *impl = this->impl;
 	struct pw_impl_node *n = impl->this.node;
-
-	return impl_node_process_input(n->node);
+	return impl_node_process_input(pw_impl_node_get_implementation(n));
 }
 
 static int handle_node_message(struct node *this, struct pw_client_node0_message *message)
@@ -1033,8 +1027,19 @@ client_node0_update(void *data,
 		for (i = 0; i < this->n_params; i++)
 			free(this->params[i]);
 		this->n_params = n_params;
-		this->params = realloc(this->params, this->n_params * sizeof(struct spa_pod *));
-
+		if (this->n_params == 0) {
+			free(this->params);
+			this->params = NULL;
+		} else {
+			void *p;
+			p = pw_reallocarray(this->params, this->n_params, sizeof(struct spa_pod *));
+			if (p == NULL) {
+				pw_log_error("%p: can't realloc: %m", this);
+				free(this->params);
+				this->n_params = 0;
+			}
+			this->params = p;
+		}
 		for (i = 0; i < this->n_params; i++)
 			this->params[i] = params[i] ? spa_pod_copy(params[i]) : NULL;
 	}
@@ -1308,16 +1313,16 @@ static void convert_properties(struct pw_properties *properties)
 		const char *from, *to;
 	} props[] = {
 		{ "pipewire.autoconnect", PW_KEY_NODE_AUTOCONNECT, },
+		/* XXX deprecated */
 		{ "pipewire.target.node", PW_KEY_NODE_TARGET, }
 	};
 
-	uint32_t i;
 	const char *str;
 
-	for(i = 0; i < SPA_N_ELEMENTS(props); i++) {
-		if ((str = pw_properties_get(properties, props[i].from)) != NULL) {
-			pw_properties_set(properties, props[i].to, str);
-			pw_properties_set(properties, props[i].from, NULL);
+	SPA_FOR_EACH_ELEMENT_VAR(props, p) {
+		if ((str = pw_properties_get(properties, p->from)) != NULL) {
+			pw_properties_set(properties, p->to, str);
+			pw_properties_set(properties, p->from, NULL);
 		}
 	}
 }
@@ -1359,9 +1364,10 @@ struct pw_impl_client_node0 *pw_impl_client_node0_new(struct pw_resource *resour
 	}
 	convert_properties(properties);
 
-	pw_properties_setf(properties, PW_KEY_CLIENT_ID, "%d", client->global->id);
+	pw_properties_setf(properties, PW_KEY_CLIENT_ID, "%d", pw_global_get_id(pw_impl_client_get_global(client)));
 
 	impl->context = context;
+	impl->context_pool = pw_context_get_mempool(context);
 	impl->fds[0] = impl->fds[1] = -1;
 	pw_log_debug("client-node %p: new", impl);
 

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 /*
  [title]
@@ -34,6 +14,7 @@
 #define WIDTH   640
 #define HEIGHT  480
 #define BPP    3
+#define MAX_BUFFERS	32
 
 #include "sdl.h"
 
@@ -68,7 +49,7 @@ struct data {
 	struct spa_video_info_raw format;
 	int32_t stride;
 
-	struct spa_buffer *buffers[32];
+	struct spa_buffer *buffers[MAX_BUFFERS];
 	int n_buffers;
 
 	struct pw_proxy *out, *in, *link;
@@ -172,8 +153,7 @@ static int impl_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 1, 32),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_Int(d->stride * d->format.size.height),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(d->stride),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(d->stride));
 		break;
 
 	case SPA_PARAM_Meta:
@@ -208,28 +188,39 @@ static int port_set_format(void *object, enum spa_direction direction, uint32_t 
 	Uint32 sdl_format;
 	void *dest;
 
-	if (format == NULL)
-		return 0;
+	if (format == NULL) {
+		spa_zero(d->format);
+		SDL_DestroyTexture(d->texture);
+		d->texture = NULL;
+	} else {
+		spa_debug_format(0, NULL, format);
 
-	spa_debug_format(0, NULL, format);
+		spa_format_video_raw_parse(format, &d->format);
 
-	spa_format_video_raw_parse(format, &d->format);
+		sdl_format = id_to_sdl_format(d->format.format);
+		if (sdl_format == SDL_PIXELFORMAT_UNKNOWN)
+			return -EINVAL;
+		if (d->format.size.width == 0 ||
+		    d->format.size.height == 0)
+			return -EINVAL;
 
-	sdl_format = id_to_sdl_format(d->format.format);
-	if (sdl_format == SDL_PIXELFORMAT_UNKNOWN)
-		return -EINVAL;
-
-	d->texture = SDL_CreateTexture(d->renderer,
-				       sdl_format,
-				       SDL_TEXTUREACCESS_STREAMING,
-				       d->format.size.width,
-				       d->format.size.height);
-	SDL_LockTexture(d->texture, NULL, &dest, &d->stride);
-	SDL_UnlockTexture(d->texture);
+		d->texture = SDL_CreateTexture(d->renderer,
+					       sdl_format,
+					       SDL_TEXTUREACCESS_STREAMING,
+					       d->format.size.width,
+					       d->format.size.height);
+		SDL_LockTexture(d->texture, NULL, &dest, &d->stride);
+		SDL_UnlockTexture(d->texture);
+	}
 
 	d->info.change_mask = SPA_PORT_CHANGE_MASK_PARAMS;
-	d->params[1] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
-	d->params[2] = SPA_PARAM_INFO(SPA_PARAM_Buffers, SPA_PARAM_INFO_READ);
+	if (format) {
+		d->params[1] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
+		d->params[2] = SPA_PARAM_INFO(SPA_PARAM_Buffers, SPA_PARAM_INFO_READ);
+	} else {
+		d->params[1] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
+		d->params[2] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
+	}
 	spa_node_emit_port_info(&d->hooks, SPA_DIRECTION_INPUT, 0, &d->info);
 
 	return 0;
@@ -253,6 +244,9 @@ static int impl_port_use_buffers(void *object,
 {
 	struct data *d = object;
 	uint32_t i;
+
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++)
 		d->buffers[i] = buffers[i];

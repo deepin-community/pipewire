@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 /*
  [title]
@@ -130,24 +110,21 @@ static struct {
 
 static inline uint32_t sdl_format_to_id(Uint32 format)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(sdl_video_formats); i++) {
-		if (sdl_video_formats[i].format == format)
-			return sdl_video_formats[i].id;
+	SPA_FOR_EACH_ELEMENT_VAR(sdl_video_formats, f) {
+		if (f->format == format)
+			return f->id;
 	}
 	return SPA_VIDEO_FORMAT_UNKNOWN;
 }
 
 static inline Uint32 id_to_sdl_format(uint32_t id)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(sdl_video_formats); i++) {
-		if (sdl_video_formats[i].id == id)
-			return sdl_video_formats[i].format;
+	SPA_FOR_EACH_ELEMENT_VAR(sdl_video_formats, f) {
+		if (f->id == id)
+			return f->format;
 	}
 	return SDL_PIXELFORMAT_UNKNOWN;
 }
-
 
 static inline struct spa_pod *sdl_build_formats(SDL_RendererInfo *info, struct spa_pod_builder *b)
 {
@@ -178,8 +155,8 @@ static inline struct spa_pod *sdl_build_formats(SDL_RendererInfo *info, struct s
 		spa_pod_builder_id(b, id);
 	}
 	/* then all the other ones SDL can convert from/to */
-	for (i = 0; i < SPA_N_ELEMENTS(sdl_video_formats); i++) {
-		uint32_t id = sdl_video_formats[i].id;
+	SPA_FOR_EACH_ELEMENT_VAR(sdl_video_formats, f) {
+		uint32_t id = f->id;
 		if (id != SPA_VIDEO_FORMAT_UNKNOWN)
 			spa_pod_builder_id(b, id);
 	}

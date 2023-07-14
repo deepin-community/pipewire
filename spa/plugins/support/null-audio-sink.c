@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <stddef.h>
@@ -35,6 +15,7 @@
 #include <spa/utils/list.h>
 #include <spa/utils/keys.h>
 #include <spa/utils/json.h>
+#include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -42,6 +23,7 @@
 #include <spa/node/keys.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/debug/types.h>
+#include <spa/debug/mem.h>
 #include <spa/param/audio/type-info.h>
 #include <spa/param/param.h>
 #include <spa/pod/filter.h>
@@ -49,24 +31,33 @@
 
 #define NAME "null-audio-sink"
 
+#define DEFAULT_CLOCK_NAME	"clock.system.monotonic"
+
 struct props {
+	uint32_t format;
 	uint32_t channels;
 	uint32_t rate;
 	uint32_t n_pos;
 	uint32_t pos[SPA_AUDIO_MAX_CHANNELS];
+	char clock_name[64];
+	unsigned int debug:1;
+	unsigned int driver:1;
 };
 
 static void reset_props(struct props *props)
 {
+	props->format = 0;
 	props->channels = 0;
 	props->rate = 0;
 	props->n_pos = 0;
+	strncpy(props->clock_name, DEFAULT_CLOCK_NAME, sizeof(props->clock_name));
+	props->debug = false;
+	props->driver = true;
 }
 
 #define DEFAULT_CHANNELS	2
-#define DEFAULT_RATE		44100
+#define DEFAULT_RATE		48000
 
-#define MAX_SAMPLES	8192
 #define MAX_BUFFERS	16
 #define MAX_PORTS	1
 
@@ -102,6 +93,8 @@ struct impl {
 	struct spa_log *log;
 	struct spa_loop *data_loop;
 	struct spa_system *data_system;
+
+	uint32_t quantum_limit;
 
 	struct props props;
 
@@ -200,7 +193,7 @@ static int set_timers(struct impl *this)
 	    return res;
 	this->next_time = SPA_TIMESPEC_TO_NSEC(&now);
 
-	if (this->following) {
+	if (this->following || !this->started) {
 		set_timeout(this, 0);
 	} else {
 		set_timeout(this, this->next_time);
@@ -213,7 +206,7 @@ static inline bool is_following(struct impl *this)
 	return this->position && this->clock && this->position->clock.id != this->clock->id;
 }
 
-static int do_reassign_follower(struct spa_loop *loop,
+static int do_set_timers(struct spa_loop *loop,
 			    bool async,
 			    uint32_t seq,
 			    const void *data,
@@ -236,7 +229,7 @@ static int reassign_follower(struct impl *this)
 	if (following != this->following) {
 		spa_log_debug(this->log, NAME" %p: reassign follower %d->%d", this, this->following, following);
 		this->following = following;
-		spa_loop_invoke(this->data_loop, do_reassign_follower, 0, NULL, 0, true, this);
+		spa_loop_invoke(this->data_loop, do_set_timers, 0, NULL, 0, true, this);
 	}
 	return 0;
 }
@@ -252,6 +245,11 @@ static int impl_node_set_io(void *object, uint32_t id, void *data, size_t size)
 		if (size > 0 && size < sizeof(struct spa_io_clock))
 			return -EINVAL;
 		this->clock = data;
+		if (this->clock != NULL) {
+			spa_scnprintf(this->clock->name,
+					sizeof(this->clock->name),
+					"%s", this->props.clock_name);
+		}
 		break;
 	case SPA_IO_Position:
 		this->position = data;
@@ -269,21 +267,23 @@ static void on_timeout(struct spa_source *source)
 	struct impl *this = source->data;
 	uint64_t expirations, nsec, duration = 10;
 	uint32_t rate;
+	int res;
 
 	spa_log_trace(this->log, "timeout");
 
-	if (spa_system_timerfd_read(this->data_system,
-				this->timer_source.fd, &expirations) < 0) {
-		if (errno == EAGAIN)
-			return;
-		perror("read timerfd");
+	if ((res = spa_system_timerfd_read(this->data_system,
+				this->timer_source.fd, &expirations)) < 0) {
+		if (res != EAGAIN)
+			spa_log_error(this->log, NAME " %p: timerfd error: %s",
+					this, spa_strerror(res));
+		return;
 	}
 
 	nsec = this->next_time;
 
 	if (SPA_LIKELY(this->position)) {
-		duration = this->position->clock.duration;
-		rate = this->position->clock.rate.denom;
+		duration = this->position->clock.target_duration;
+		rate = this->position->clock.target_rate.denom;
 	} else {
 		duration = 1024;
 		rate = 48000;
@@ -293,7 +293,8 @@ static void on_timeout(struct spa_source *source)
 
 	if (SPA_LIKELY(this->clock)) {
 		this->clock->nsec = nsec;
-		this->clock->position += duration;
+		this->clock->rate = this->clock->target_rate;
+		this->clock->position += this->clock->duration;
 		this->clock->duration = duration;
 		this->clock->delay = 0;
 		this->clock->rate_diff = 1.0;
@@ -311,8 +312,8 @@ static int do_start(struct impl *this)
 		return 0;
 
 	this->following = is_following(this);
-	set_timers(this);
 	this->started = true;
+	spa_loop_invoke(this->data_loop, do_set_timers, 0, NULL, 0, true, this);
 	return 0;
 }
 
@@ -321,7 +322,7 @@ static int do_stop(struct impl *this)
 	if (!this->started)
 		return 0;
 	this->started = false;
-	set_timeout(this, 0);
+	spa_loop_invoke(this->data_loop, do_set_timers, 0, NULL, 0, true, this);
 	return 0;
 }
 
@@ -357,9 +358,6 @@ static int impl_node_send_command(void *object, const struct spa_command *comman
 	return 0;
 }
 
-static const struct spa_dict_item node_info_items[] = {
-	{ SPA_KEY_NODE_DRIVER, "true" },
-};
 
 static void emit_node_info(struct impl *this, bool full)
 {
@@ -367,6 +365,9 @@ static void emit_node_info(struct impl *this, bool full)
 	if (full)
 		this->info.change_mask = this->info_all;
 	if (this->info.change_mask) {
+		const struct spa_dict_item node_info_items[] = {
+			{ SPA_KEY_NODE_DRIVER, this->props.driver ? "true" : "false" },
+		};
 		this->info.props = &SPA_DICT_INIT_ARRAY(node_info_items);
 		spa_node_emit_info(&this->hooks, &this->info);
 		this->info.change_mask = old;
@@ -436,11 +437,19 @@ port_enum_formats(struct impl *this,
 		spa_pod_builder_add(builder,
 			SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_audio),
 			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-			SPA_FORMAT_AUDIO_format,   SPA_POD_CHOICE_ENUM_Id(3,
-								SPA_AUDIO_FORMAT_F32P,
-								SPA_AUDIO_FORMAT_F32P,
-								SPA_AUDIO_FORMAT_F32),
 			0);
+		if (this->props.format != 0) {
+			spa_pod_builder_add(builder,
+				SPA_FORMAT_AUDIO_format,   SPA_POD_Id(this->props.format),
+				0);
+		} else {
+			spa_pod_builder_add(builder,
+				SPA_FORMAT_AUDIO_format,   SPA_POD_CHOICE_ENUM_Id(3,
+									SPA_AUDIO_FORMAT_F32P,
+									SPA_AUDIO_FORMAT_F32P,
+									SPA_AUDIO_FORMAT_F32),
+				0);
+		}
 
 		if (this->props.rate != 0) {
 			spa_pod_builder_add(builder,
@@ -529,11 +538,10 @@ impl_node_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(port->blocks),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-							MAX_SAMPLES * port->bpf,
+							this->quantum_limit * port->bpf,
 							16 * port->bpf,
 							INT32_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->bpf),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->bpf));
 		break;
 	case SPA_PARAM_IO:
 		switch (result.index) {
@@ -572,6 +580,33 @@ static int clear_buffers(struct impl *this, struct port *port)
 	return 0;
 }
 
+static int calc_width(struct spa_audio_info *info)
+{
+	switch (info->info.raw.format) {
+	case SPA_AUDIO_FORMAT_U8:
+	case SPA_AUDIO_FORMAT_U8P:
+	case SPA_AUDIO_FORMAT_S8:
+	case SPA_AUDIO_FORMAT_S8P:
+	case SPA_AUDIO_FORMAT_ULAW:
+	case SPA_AUDIO_FORMAT_ALAW:
+		return 1;
+	case SPA_AUDIO_FORMAT_S16P:
+	case SPA_AUDIO_FORMAT_S16:
+	case SPA_AUDIO_FORMAT_S16_OE:
+		return 2;
+	case SPA_AUDIO_FORMAT_S24P:
+	case SPA_AUDIO_FORMAT_S24:
+	case SPA_AUDIO_FORMAT_S24_OE:
+		return 3;
+	case SPA_AUDIO_FORMAT_F64P:
+	case SPA_AUDIO_FORMAT_F64:
+	case SPA_AUDIO_FORMAT_F64_OE:
+		return 8;
+	default:
+		return 4;
+	}
+}
+
 static int
 port_set_format(struct impl *this,
 		enum spa_direction direction,
@@ -598,15 +633,26 @@ port_set_format(struct impl *this,
 		if (spa_format_audio_raw_parse(format, &info.info.raw) < 0)
 			return -EINVAL;
 
-		if (info.info.raw.format == SPA_AUDIO_FORMAT_F32) {
-			port->bpf = 4 * info.info.raw.channels;
-			port->blocks = 1;
-		} else if (info.info.raw.format == SPA_AUDIO_FORMAT_F32P) {
-			port->bpf = 4;
-			port->blocks = info.info.raw.channels;
-		} else
+		if (info.info.raw.rate == 0 ||
+		    info.info.raw.channels == 0 ||
+		    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
 			return -EINVAL;
 
+		if (this->props.format != 0) {
+			if (this->props.format != info.info.raw.format)
+				return -EINVAL;
+		} else if (info.info.raw.format != SPA_AUDIO_FORMAT_F32P &&
+		    info.info.raw.format != SPA_AUDIO_FORMAT_F32) {
+			return -EINVAL;
+		}
+
+		port->bpf = calc_width(&info);
+		if (SPA_AUDIO_FORMAT_IS_PLANAR(info.info.raw.format)) {
+			port->blocks = info.info.raw.channels;
+		} else {
+			port->blocks = 1;
+			port->bpf *= info.info.raw.channels;
+		}
 		port->current_format = info;
 		port->have_format = true;
 	}
@@ -665,10 +711,12 @@ impl_node_port_use_buffers(void *object,
 
 	port = &this->port;
 
-	if (!port->have_format)
-		return -EIO;
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
@@ -725,15 +773,28 @@ static int impl_node_process(void *object)
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
 	port = &this->port;
-
-	io = port->io;
-	spa_return_val_if_fail(io != NULL, -EIO);
+	if ((io = port->io) == NULL)
+		return -EIO;
 
 	if (io->status != SPA_STATUS_HAVE_DATA)
 		return io->status;
 	if (io->buffer_id >= port->n_buffers) {
 		io->status = -EINVAL;
 		return io->status;
+	}
+	if (this->props.debug) {
+		struct buffer *b;
+		uint32_t i;
+
+		b = &port->buffers[io->buffer_id];
+		for (i = 0; i < b->outbuf->n_datas; i++) {
+			uint32_t offs, size;
+			struct spa_data *d = b->outbuf->datas;
+
+			offs = SPA_MIN(d->chunk->offset, d->maxsize);
+			size = SPA_MIN(d->maxsize - offs, d->chunk->size);
+			spa_debug_mem(i, SPA_PTROFF(d[i].data, offs, void), SPA_MIN(16u, size));;
+		}
 	}
 	io->status = SPA_STATUS_OK;
 	return SPA_STATUS_HAVE_DATA;
@@ -770,6 +831,13 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 	return 0;
 }
 
+static int do_remove_timer(struct spa_loop *loop, bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct impl *this = user_data;
+	spa_loop_remove_source(this->data_loop, &this->timer_source);
+	return 0;
+}
+
 static int impl_clear(struct spa_handle *handle)
 {
 	struct impl *this;
@@ -778,7 +846,7 @@ static int impl_clear(struct spa_handle *handle)
 
 	this = (struct impl *) handle;
 
-	spa_loop_remove_source(this->data_loop, &this->timer_source);
+	spa_loop_invoke(this->data_loop, do_remove_timer, 0, NULL, 0, true, this);
 	spa_system_close(this->data_system, this->timer_source.fd);
 
 	return 0;
@@ -789,6 +857,16 @@ impl_get_size(const struct spa_handle_factory *factory,
 	      const struct spa_dict *params)
 {
 	return sizeof(struct impl);
+}
+
+static uint32_t format_from_name(const char *name)
+{
+	int i;
+	for (i = 0; spa_type_audio_format[i].name; i++) {
+		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_format[i].name)))
+			return spa_type_audio_format[i].type;
+	}
+	return SPA_AUDIO_FORMAT_UNKNOWN;
 }
 
 static uint32_t channel_from_name(const char *name)
@@ -848,7 +926,6 @@ impl_init(const struct spa_handle_factory *factory,
 		spa_log_error(this->log, "a data_system is needed");
 		return -EINVAL;
 	}
-
 	spa_hook_list_init(&this->hooks);
 
 	this->node.iface = SPA_INTERFACE_INIT(
@@ -896,12 +973,22 @@ impl_init(const struct spa_handle_factory *factory,
 	for (i = 0; info && i < info->n_items; i++) {
 		const char *k = info->items[i].key;
 		const char *s = info->items[i].value;
-		if (spa_streq(k, SPA_KEY_AUDIO_CHANNELS)) {
+		if (spa_streq(k, "clock.quantum-limit")) {
+			spa_atou32(s, &this->quantum_limit, 0);
+		} else if (spa_streq(k, SPA_KEY_AUDIO_FORMAT)) {
+			this->props.format = format_from_name(s);
+		} else if (spa_streq(k, SPA_KEY_AUDIO_CHANNELS)) {
 			this->props.channels = atoi(s);
 		} else if (spa_streq(k, SPA_KEY_AUDIO_RATE)) {
 			this->props.rate = atoi(s);
+		} else if (spa_streq(k, SPA_KEY_NODE_DRIVER)) {
+			this->props.driver = spa_atob(s);
 		} else if (spa_streq(k, SPA_KEY_AUDIO_POSITION)) {
 			parse_position(this, s, strlen(s));
+		} else if (spa_streq(k, "clock.name")) {
+			spa_scnprintf(this->props.clock_name,
+					sizeof(this->props.clock_name),
+					"%s", s);
 		}
 	}
 	if (this->props.n_pos > 0)

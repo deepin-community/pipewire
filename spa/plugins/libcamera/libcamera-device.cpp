@@ -1,30 +1,8 @@
-/* Spa libcamera Device
- *
- * Copyright (C) 2020, Collabora Ltd.
- *     Author: Raghavendra Rao Sidlagatta <raghavendra.rao@collabora.com>
- * Copyright (C) 2021 Wim Taymans <wim.taymans@gmail.com>
- *
- * libcamera-device.cpp
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa libcamera device */
+/* SPDX-FileCopyrightText: Copyright © 2020 Collabora Ltd. */
+/*                         @author Raghavendra Rao Sidlagatta <raghavendra.rao@collabora.com> */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <sys/types.h>
@@ -44,7 +22,7 @@
 #include <spa/pod/builder.h>
 #include <spa/monitor/device.h>
 #include <spa/monitor/utils.h>
-#include <spa/debug/pod.h>
+#include <spa/param/param.h>
 
 #include "libcamera.h"
 #include "libcamera-manager.hpp"
@@ -54,60 +32,56 @@
 
 using namespace libcamera;
 
-struct props {
-	char device[128];
-	char device_name[128];
-};
-
-static void reset_props(struct props *props)
-{
-	spa_zero(*props);
-}
+namespace {
 
 struct impl {
 	struct spa_handle handle;
-	struct spa_device device;
+	struct spa_device device = {};
 
 	struct spa_log *log;
 
-	struct props props;
+	std::string device_id;
 
 	struct spa_hook_list hooks;
 
-	CameraManager *manager;
+	std::shared_ptr<CameraManager> manager;
 	std::shared_ptr<Camera> camera;
+
+	impl(spa_log *log,
+	     std::shared_ptr<CameraManager> manager,
+	     std::shared_ptr<Camera> camera,
+	     std::string device_id);
 };
 
-std::string cameraDesc(const Camera *camera)
-{
-	const ControlList &props = camera->properties();
-	bool addModel = true;
-	std::string name;
-
-        if (props.contains(properties::Location)) {
-		switch (props.get(properties::Location)) {
-		case properties::CameraLocationFront:
-			addModel = false;
-			name = "Internal front camera ";
-		break;
-		case properties::CameraLocationBack:
-			addModel = false;
-			name = "Internal back camera ";
-		break;
-		case properties::CameraLocationExternal:
-			name = "External camera ";
-			break;
-		}
-	}
-	if (addModel) {
-		if (props.contains(properties::Model))
-			name = "" + props.get(properties::Model);
-		else
-			name = "" + camera->id();
-	}
-        return name;
 }
 
+static std::string cameraModel(const Camera *camera)
+{
+	const ControlList &props = camera->properties();
+
+	if (auto model = props.get(properties::Model))
+		return std::move(model.value());
+
+	return camera->id();
+}
+
+static const char *cameraLoc(const Camera *camera)
+{
+	const ControlList &props = camera->properties();
+
+	if (auto location = props.get(properties::Location)) {
+		switch (location.value()) {
+		case properties::CameraLocationFront:
+			return "front";
+		case properties::CameraLocationBack:
+			return "back";
+		case properties::CameraLocationExternal:
+			return "external";
+		}
+	}
+
+	return nullptr;
+}
 
 static int emit_info(struct impl *impl, bool full)
 {
@@ -116,21 +90,26 @@ static int emit_info(struct impl *impl, bool full)
 	uint32_t n_items = 0;
 	struct spa_device_info info;
 	struct spa_param_info params[2];
-	char path[256], desc[256], name[256];
+	char path[256], model[256], name[256];
 
 	info = SPA_DEVICE_INFO_INIT();
 
 	info.change_mask = SPA_DEVICE_CHANGE_MASK_PROPS;
 
 #define ADD_ITEM(key, value) items[n_items++] = SPA_DICT_ITEM_INIT(key, value)
-	snprintf(path, sizeof(path), "libcamera:%s", impl->props.device);
+	snprintf(path, sizeof(path), "libcamera:%s", impl->device_id.c_str());
 	ADD_ITEM(SPA_KEY_OBJECT_PATH, path);
 	ADD_ITEM(SPA_KEY_DEVICE_API, "libcamera");
 	ADD_ITEM(SPA_KEY_MEDIA_CLASS, "Video/Device");
-	ADD_ITEM(SPA_KEY_API_LIBCAMERA_PATH, (char *)impl->props.device);
-	snprintf(desc, sizeof(desc), "%s", cameraDesc(impl->camera.get()).c_str());
-	ADD_ITEM(SPA_KEY_DEVICE_DESCRIPTION, desc);
-	snprintf(name, sizeof(name), "libcamera_device.%s", impl->props.device);
+	ADD_ITEM(SPA_KEY_API_LIBCAMERA_PATH, impl->device_id.c_str());
+
+	if (auto location = cameraLoc(impl->camera.get()))
+		ADD_ITEM(SPA_KEY_API_LIBCAMERA_LOCATION, location);
+
+	snprintf(model, sizeof(model), "%s", cameraModel(impl->camera.get()).c_str());
+	ADD_ITEM(SPA_KEY_DEVICE_PRODUCT_NAME, model);
+	ADD_ITEM(SPA_KEY_DEVICE_DESCRIPTION, model);
+	snprintf(name, sizeof(name), "libcamera_device.%s", impl->device_id.c_str());
 	ADD_ITEM(SPA_KEY_DEVICE_NAME, name);
 #undef ADD_ITEM
 
@@ -233,11 +212,28 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 
 static int impl_clear(struct spa_handle *handle)
 {
-	struct impl *impl = (struct impl *) handle;
-	if (impl->manager)
-		libcamera_manager_release(impl->manager);
-	impl->manager = NULL;
+	std::destroy_at(reinterpret_cast<impl *>(handle));
 	return 0;
+}
+
+impl::impl(spa_log *log,
+	   std::shared_ptr<CameraManager> manager,
+	   std::shared_ptr<Camera> camera,
+	   std::string device_id)
+	: handle({ SPA_VERSION_HANDLE, impl_get_interface, impl_clear }),
+	  log(log),
+	  device_id(std::move(device_id)),
+	  manager(std::move(manager)),
+	  camera(std::move(camera))
+{
+	libcamera_log_topic_init(log);
+
+	spa_hook_list_init(&hooks);
+
+	device.iface = SPA_INTERFACE_INIT(
+			SPA_TYPE_INTERFACE_Device,
+			SPA_VERSION_DEVICE,
+			&impl_device, this);
 }
 
 static size_t
@@ -254,44 +250,32 @@ impl_init(const struct spa_handle_factory *factory,
 	  const struct spa_support *support,
 	  uint32_t n_support)
 {
-	struct impl *impl;
 	const char *str;
 	int res;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
 
-	handle->get_interface = impl_get_interface;
-	handle->clear = impl_clear, impl = (struct impl *) handle;
+	auto log = static_cast<spa_log *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log));
 
-	impl->log = (struct spa_log*) spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
-	libcamera_log_topic_init(impl->log);
-
-	spa_hook_list_init(&impl->hooks);
-
-	impl->device.iface = SPA_INTERFACE_INIT(
-			SPA_TYPE_INTERFACE_Device,
-			SPA_VERSION_DEVICE,
-			&impl_device, impl);
-
-	reset_props(&impl->props);
-
-	if (info && (str = spa_dict_lookup(info, SPA_KEY_API_LIBCAMERA_PATH)))
-		strncpy(impl->props.device, str, sizeof(impl->props.device));
-
-	impl->manager = libcamera_manager_acquire();
-	if (impl->manager == NULL) {
-		res = -errno;
-		spa_log_error(impl->log, "can't start camera manager: %s", spa_strerror(res));
-                return res;
+	auto manager = libcamera_manager_acquire(res);
+	if (!manager) {
+		spa_log_error(log, "can't start camera manager: %s", spa_strerror(res));
+		return res;
 	}
 
-	impl->camera = impl->manager->get(impl->props.device);
-	if (impl->camera == NULL) {
-		spa_log_error(impl->log, "unknown camera id %s", impl->props.device);
-		libcamera_manager_release(impl->manager);
+	std::string device_id;
+	if (info && (str = spa_dict_lookup(info, SPA_KEY_API_LIBCAMERA_PATH)))
+		device_id = str;
+
+	auto camera = manager->get(device_id);
+	if (!camera) {
+		spa_log_error(log, "unknown camera id %s", device_id.c_str());
 		return -ENOENT;
 	}
+
+	new (handle) impl(log, std::move(manager), std::move(camera), std::move(device_id));
+
 	return 0;
 }
 

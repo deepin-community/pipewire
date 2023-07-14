@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -35,7 +15,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/file.h>
-#if HAVE_PWD_H
+#ifdef HAVE_PWD_H
 #include <pwd.h>
 #endif
 
@@ -49,12 +29,11 @@ PW_LOG_TOPIC_EXTERN(mod_topic);
 static const char *
 get_remote(const struct spa_dict *props)
 {
-	const char *name = NULL;
+	const char *name;
 
-	if (props)
+	name = getenv("PIPEWIRE_REMOTE");
+	if ((name == NULL || name[0] == '\0') && props)
 		name = spa_dict_lookup(props, PW_KEY_REMOTE_NAME);
-	if (name == NULL || name[0] == '\0')
-		name = getenv("PIPEWIRE_REMOTE");
 	if (name == NULL || name[0] == '\0')
 		name = PW_DEFAULT_REMOTE;
 	return name;

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <spa/param/props.h>
 #include <spa/pod/builder.h>
@@ -58,19 +38,31 @@ struct pw_manager_object *select_object(struct pw_manager *m, struct selector *s
 			continue;
 		if (o->id == s->id)
 			return o;
+		if (o->index == s->index)
+			return o;
 		if (s->accumulate)
 			s->accumulate(s, o);
 		if (o->props && s->key != NULL && s->value != NULL &&
 		    (str = pw_properties_get(o->props, s->key)) != NULL &&
 		    spa_streq(str, s->value))
 			return o;
-		if (s->value != NULL && (uint32_t)atoi(s->value) == o->id)
+		if (s->value != NULL && (uint32_t)atoi(s->value) == o->index)
 			return o;
 	}
 	return s->best;
 }
 
-bool collect_is_linked(struct pw_manager *m, uint32_t obj_id, enum pw_direction direction)
+uint32_t id_to_index(struct pw_manager *m, uint32_t id)
+{
+	struct pw_manager_object *o;
+	spa_list_for_each(o, &m->object_list, link) {
+		if (o->id == id)
+			return o->index;
+	}
+	return SPA_ID_INVALID;
+}
+
+bool collect_is_linked(struct pw_manager *m, uint32_t id, enum pw_direction direction)
 {
 	struct pw_manager_object *o;
 	uint32_t in_node, out_node;
@@ -83,36 +75,48 @@ bool collect_is_linked(struct pw_manager *m, uint32_t obj_id, enum pw_direction 
                     pw_properties_fetch_uint32(o->props, PW_KEY_LINK_INPUT_NODE, &in_node) != 0)
                         continue;
 
-		if ((direction == PW_DIRECTION_OUTPUT && obj_id == out_node) ||
-		    (direction == PW_DIRECTION_INPUT && obj_id == in_node))
+		if ((direction == PW_DIRECTION_OUTPUT && id == out_node) ||
+		    (direction == PW_DIRECTION_INPUT && id == in_node))
 			return true;
 	}
 	return false;
 }
 
-struct pw_manager_object *find_linked(struct pw_manager *m, uint32_t obj_id, enum pw_direction direction)
+struct pw_manager_object *find_peer_for_link(struct pw_manager *m,
+		struct pw_manager_object *o, uint32_t id, enum pw_direction direction)
 {
-	struct pw_manager_object *o, *p;
+	struct pw_manager_object *p;
 	uint32_t in_node, out_node;
 
+	if (o->props == NULL)
+		return NULL;
+
+	if (pw_properties_fetch_uint32(o->props, PW_KEY_LINK_OUTPUT_NODE, &out_node) != 0 ||
+	    pw_properties_fetch_uint32(o->props, PW_KEY_LINK_INPUT_NODE, &in_node) != 0)
+		return NULL;
+
+	if (direction == PW_DIRECTION_OUTPUT && id == out_node) {
+		struct selector sel = { .id = in_node, .type = pw_manager_object_is_sink, };
+		if ((p = select_object(m, &sel)) != NULL)
+			return p;
+	}
+	if (direction == PW_DIRECTION_INPUT && id == in_node) {
+		struct selector sel = { .id = out_node, .type = pw_manager_object_is_recordable, };
+		if ((p = select_object(m, &sel)) != NULL)
+			return p;
+	}
+	return NULL;
+}
+
+struct pw_manager_object *find_linked(struct pw_manager *m, uint32_t id, enum pw_direction direction)
+{
+	struct pw_manager_object *o, *p;
+
 	spa_list_for_each(o, &m->object_list, link) {
-		if (o->props == NULL || !pw_manager_object_is_link(o))
+		if (!pw_manager_object_is_link(o))
 			continue;
-
-		if (pw_properties_fetch_uint32(o->props, PW_KEY_LINK_OUTPUT_NODE, &out_node) != 0 ||
-                    pw_properties_fetch_uint32(o->props, PW_KEY_LINK_INPUT_NODE, &in_node) != 0)
-                        continue;
-
-		if (direction == PW_DIRECTION_OUTPUT && obj_id == out_node) {
-			struct selector sel = { .id = in_node, .type = pw_manager_object_is_sink, };
-			if ((p = select_object(m, &sel)) != NULL)
-				return p;
-		}
-		if (direction == PW_DIRECTION_INPUT && obj_id == in_node) {
-			struct selector sel = { .id = out_node, .type = pw_manager_object_is_recordable, };
-			if ((p = select_object(m, &sel)) != NULL)
-				return p;
-		}
+		if ((p = find_peer_for_link(m, o, id, direction)) != NULL)
+			return p;
 	}
 	return NULL;
 }
@@ -157,7 +161,7 @@ uint32_t collect_profile_info(struct pw_manager_object *card, struct card_info *
 
 		if (spa_pod_parse_object(p->param,
 				SPA_TYPE_OBJECT_ParamProfile, NULL,
-				SPA_PARAM_PROFILE_index, SPA_POD_Int(&pi->id),
+				SPA_PARAM_PROFILE_index, SPA_POD_Int(&pi->index),
 				SPA_PARAM_PROFILE_name,  SPA_POD_String(&pi->name),
 				SPA_PARAM_PROFILE_description,  SPA_POD_OPT_String(&pi->description),
 				SPA_PARAM_PROFILE_priority,  SPA_POD_OPT_Int(&pi->priority),
@@ -167,7 +171,7 @@ uint32_t collect_profile_info(struct pw_manager_object *card, struct card_info *
 		}
 		if (pi->description == NULL)
 			pi->description = pi->name;
-		if (pi->id == card_info->active_profile)
+		if (pi->index == card_info->active_profile)
 			card_info->active_profile_name = pi->name;
 
 		if (classes != NULL) {
@@ -198,12 +202,12 @@ uint32_t collect_profile_info(struct pw_manager_object *card, struct card_info *
 	return n;
 }
 
-uint32_t find_profile_id(struct pw_manager_object *card, const char *name)
+uint32_t find_profile_index(struct pw_manager_object *card, const char *name)
 {
 	struct pw_manager_param *p;
 
 	spa_list_for_each(p, &card->param_list, link) {
-		uint32_t id;
+		uint32_t index;
 		const char *test_name;
 
 		if (p->id != SPA_PARAM_EnumProfile)
@@ -211,12 +215,12 @@ uint32_t find_profile_id(struct pw_manager_object *card, const char *name)
 
 		if (spa_pod_parse_object(p->param,
 				SPA_TYPE_OBJECT_ParamProfile, NULL,
-				SPA_PARAM_PROFILE_index, SPA_POD_Int(&id),
+				SPA_PARAM_PROFILE_index, SPA_POD_Int(&index),
 				SPA_PARAM_PROFILE_name,  SPA_POD_String(&test_name)) < 0)
 			continue;
 
 		if (spa_streq(test_name, name))
-			return id;
+			return index;
 
 	}
 	return SPA_ID_INVALID;
@@ -229,7 +233,7 @@ void collect_device_info(struct pw_manager_object *device, struct pw_manager_obj
 
 	if (card && !monitor) {
 		spa_list_for_each(p, &card->param_list, link) {
-			uint32_t id, dev;
+			uint32_t index, dev;
 			struct spa_pod *props;
 
 			if (p->id != SPA_PARAM_Route)
@@ -237,13 +241,13 @@ void collect_device_info(struct pw_manager_object *device, struct pw_manager_obj
 
 			if (spa_pod_parse_object(p->param,
 					SPA_TYPE_OBJECT_ParamRoute, NULL,
-					SPA_PARAM_ROUTE_index, SPA_POD_Int(&id),
+					SPA_PARAM_ROUTE_index, SPA_POD_Int(&index),
 					SPA_PARAM_ROUTE_device,  SPA_POD_Int(&dev),
 					SPA_PARAM_ROUTE_props,  SPA_POD_OPT_Pod(&props)) < 0)
 				continue;
 			if (dev != dev_info->device)
 				continue;
-			dev_info->active_port = id;
+			dev_info->active_port = index;
 			if (props) {
 				volume_parse_param(props, &dev_info->volume_info, monitor);
 				dev_info->have_volume = true;
@@ -257,13 +261,13 @@ void collect_device_info(struct pw_manager_object *device, struct pw_manager_obj
 		{
 			struct spa_pod *copy = spa_pod_copy(p->param);
 			spa_pod_fixate(copy);
-			format_parse_param(copy, &dev_info->ss, &dev_info->map,
+			format_parse_param(copy, true, &dev_info->ss, &dev_info->map,
 					&defs->sample_spec, &defs->channel_map);
 			free(copy);
 			break;
 		}
 		case SPA_PARAM_Format:
-			format_parse_param(p->param, &dev_info->ss, &dev_info->map,
+			format_parse_param(p->param, true, &dev_info->ss, &dev_info->map,
 					NULL, NULL);
 			break;
 
@@ -316,7 +320,7 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
 
 		if (spa_pod_parse_object(p->param,
 				SPA_TYPE_OBJECT_ParamRoute, NULL,
-				SPA_PARAM_ROUTE_index, SPA_POD_Int(&pi->id),
+				SPA_PARAM_ROUTE_index, SPA_POD_Int(&pi->index),
 				SPA_PARAM_ROUTE_direction, SPA_POD_Id(&pi->direction),
 				SPA_PARAM_ROUTE_name,  SPA_POD_String(&pi->name),
 				SPA_PARAM_ROUTE_description,  SPA_POD_OPT_String(&pi->description),
@@ -341,7 +345,7 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
 				continue;
 			if (!array_contains(pi->devices, pi->n_devices, dev_info->device))
 				continue;
-			if (pi->id == dev_info->active_port)
+			if (pi->index == dev_info->active_port)
 				dev_info->active_port_name = pi->name;
 		}
 
@@ -377,12 +381,12 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
 	return n;
 }
 
-uint32_t find_port_id(struct pw_manager_object *card, uint32_t direction, const char *port_name)
+uint32_t find_port_index(struct pw_manager_object *card, uint32_t direction, const char *port_name)
 {
 	struct pw_manager_param *p;
 
 	spa_list_for_each(p, &card->param_list, link) {
-		uint32_t id, dir;
+		uint32_t index, dir;
 		const char *name;
 
 		if (p->id != SPA_PARAM_EnumRoute)
@@ -390,14 +394,14 @@ uint32_t find_port_id(struct pw_manager_object *card, uint32_t direction, const 
 
 		if (spa_pod_parse_object(p->param,
 				SPA_TYPE_OBJECT_ParamRoute, NULL,
-				SPA_PARAM_ROUTE_index, SPA_POD_Int(&id),
+				SPA_PARAM_ROUTE_index, SPA_POD_Int(&index),
 				SPA_PARAM_ROUTE_direction, SPA_POD_Id(&dir),
 				SPA_PARAM_ROUTE_name, SPA_POD_String(&name)) < 0)
 			continue;
 		if (dir != direction)
 			continue;
 		if (spa_streq(name, port_name))
-			return id;
+			return index;
 
 	}
 	return SPA_ID_INVALID;

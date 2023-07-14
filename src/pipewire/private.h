@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PIPEWIRE_PRIVATE_H
 #define PIPEWIRE_PRIVATE_H
@@ -37,21 +17,18 @@ extern "C" {
 #include <spa/support/plugin.h>
 #include <spa/pod/builder.h>
 #include <spa/param/latency-utils.h>
+#include <spa/utils/ratelimit.h>
 #include <spa/utils/result.h>
 #include <spa/utils/type-info.h>
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
 struct ucred {
 };
 #endif
 
-#ifndef spa_debug
-#define spa_debug(...) pw_log_trace(__VA_ARGS__)
-#endif
-
-#define MAX_RATES				16u
+#define MAX_RATES				32u
 #define CLOCK_MIN_QUANTUM			4u
-#define CLOCK_MAX_QUANTUM			8192u
+#define CLOCK_MAX_QUANTUM			65536u
 
 struct settings {
 	uint32_t log_level;
@@ -61,12 +38,15 @@ struct settings {
 	uint32_t clock_quantum;			/* default quantum */
 	uint32_t clock_min_quantum;		/* min quantum */
 	uint32_t clock_max_quantum;		/* max quantum */
+	uint32_t clock_quantum_limit;		/* quantum limit */
 	struct spa_rectangle video_size;
 	struct spa_fraction video_rate;
 	uint32_t link_max_buffers;
 	unsigned int mem_warn_mlock:1;
 	unsigned int mem_allow_mlock:1;
 	unsigned int clock_power_of_two_quantum:1;
+	unsigned int check_quantum:1;
+	unsigned int check_rate:1;
 #define CLOCK_RATE_UPDATE_MODE_HARD 0
 #define CLOCK_RATE_UPDATE_MODE_SOFT 1
 	int clock_rate_update_mode;
@@ -74,33 +54,11 @@ struct settings {
 	uint32_t clock_force_quantum;		/* force a quantum */
 };
 
-struct ratelimit {
-	uint64_t interval;
-	uint64_t begin;
-	unsigned burst;
-	unsigned n_printed, n_missed;
-};
-
-static inline bool ratelimit_test(struct ratelimit *r, uint64_t now, enum spa_log_level level)
-{
-	if (r->begin + r->interval < now) {
-		if (r->n_missed)
-			pw_log(level, "%u events suppressed", r->n_missed);
-		r->begin = now;
-		r->n_printed = 0;
-		r->n_missed = 0;
-	} else if (r->n_printed >= r->burst) {
-		r->n_missed++;
-		return false;
-	}
-	r->n_printed++;
-	return true;
-}
-
 #define MAX_PARAMS	32
 
 struct pw_param {
 	uint32_t id;
+	int32_t seq;
 	struct spa_list link;
 	struct spa_pod *param;
 };
@@ -120,7 +78,7 @@ static inline uint32_t pw_param_clear(struct spa_list *param_list, uint32_t id)
 	return count;
 }
 
-static inline struct pw_param *pw_param_add(struct spa_list *params,
+static inline struct pw_param *pw_param_add(struct spa_list *params, int32_t seq,
 		uint32_t id, const struct spa_pod *param)
 {
 	struct pw_param *p;
@@ -137,6 +95,7 @@ static inline struct pw_param *pw_param_add(struct spa_list *params,
 		return NULL;
 
 	p->id = id;
+	p->seq = seq;
 	if (param != NULL) {
 		p->param = SPA_PTROFF(p, sizeof(*p), struct spa_pod);
 		memcpy(p->param, param, SPA_POD_SIZE(param));
@@ -148,10 +107,22 @@ static inline struct pw_param *pw_param_add(struct spa_list *params,
 	return p;
 }
 
-static inline void pw_param_update(struct spa_list *param_list, struct spa_list *pending_list)
+static inline void pw_param_update(struct spa_list *param_list, struct spa_list *pending_list,
+			uint32_t n_params, struct spa_param_info *params)
 {
-	struct pw_param *p;
+	struct pw_param *p, *t;
+	uint32_t i;
 
+	for (i = 0; i < n_params; i++) {
+		spa_list_for_each_safe(p, t, pending_list, link) {
+			if (p->id == params[i].id &&
+			    p->seq != params[i].seq &&
+			    p->param != NULL) {
+				spa_list_remove(&p->link);
+				free(p);
+			}
+		}
+	}
 	spa_list_consume(p, pending_list, link) {
 		spa_list_remove(&p->link);
 		if (p->param == NULL) {
@@ -174,7 +145,7 @@ static inline struct spa_param_info *pw_param_info_find(struct spa_param_info in
 	return NULL;
 }
 
-#define pw_protocol_emit_destroy(p) spa_hook_list_call(&p->listener_list, struct pw_protocol_events, destroy, 0)
+#define pw_protocol_emit_destroy(p) spa_hook_list_call(&(p)->listener_list, struct pw_protocol_events, destroy, 0)
 
 struct pw_protocol {
 	struct spa_list link;                   /**< link in context protocol_list */
@@ -209,22 +180,6 @@ typedef uint32_t (*pw_permission_func_t) (struct pw_global *global,
 #define pw_impl_client_emit_resource_impl(o,r)		pw_impl_client_emit(o, resource_impl, 0, r)
 #define pw_impl_client_emit_resource_removed(o,r)	pw_impl_client_emit(o, resource_removed, 0, r)
 #define pw_impl_client_emit_busy_changed(o,b)		pw_impl_client_emit(o, busy_changed, 0, b)
-
-enum spa_node0_event {
-	SPA_NODE0_EVENT_START	= SPA_TYPE_VENDOR_PipeWire,
-	SPA_NODE0_EVENT_RequestClockUpdate,
-};
-
-enum spa_node0_command {
-	SPA_NODE0_COMMAND_START	= SPA_TYPE_VENDOR_PipeWire,
-	SPA_NODE0_COMMAND_ClockUpdate,
-};
-
-struct protocol_compat_v2 {
-	/* v2 typemap */
-	struct pw_map types;
-	unsigned int send_types:1;
-};
 
 #define pw_impl_core_emit(s,m,v,...) spa_hook_list_call(&s->listener_list, struct pw_impl_core_events, m, v, ##__VA_ARGS__)
 
@@ -296,6 +251,8 @@ struct pw_impl_client {
 	struct pw_protocol *protocol;	/**< protocol in use */
 	int recv_seq;			/**< last received sequence number */
 	int send_seq;			/**< last sender sequence number */
+	uint64_t recv_generation;	/**< last received registry generation */
+	uint64_t sent_generation;	/**< last sent registry generation */
 
 	void *user_data;		/**< extra user data */
 
@@ -303,6 +260,9 @@ struct pw_impl_client {
 	unsigned int registered:1;
 	unsigned int ucred_valid:1;	/**< if the ucred member is valid */
 	unsigned int busy:1;
+	unsigned int destroyed:1;
+
+	int refcount;
 
 	/* v2 compatibility data */
 	void *compat_v2;
@@ -330,6 +290,8 @@ struct pw_global {
 
 	pw_global_bind_func_t func;	/**< bind function */
 	void *object;			/**< object associated with the interface */
+	uint64_t serial;		/**< increasing serial number */
+	uint64_t generation;		/**< registry generation number */
 
 	struct spa_list resource_list;	/**< The list of resources of this global */
 
@@ -346,6 +308,7 @@ struct pw_global {
 #define pw_core_resource_bound_id(r,...)	pw_core_resource(r,bound_id,0,__VA_ARGS__)
 #define pw_core_resource_add_mem(r,...)		pw_core_resource(r,add_mem,0,__VA_ARGS__)
 #define pw_core_resource_remove_mem(r,...)	pw_core_resource(r,remove_mem,0,__VA_ARGS__)
+#define pw_core_resource_bound_props(r,...)	pw_core_resource(r,bound_props,1,__VA_ARGS__)
 
 static inline SPA_PRINTF_FUNC(5,0) void
 pw_core_resource_errorv(struct pw_resource *resource, uint32_t id, int seq,
@@ -356,7 +319,11 @@ pw_core_resource_errorv(struct pw_resource *resource, uint32_t id, int seq,
 	buffer[1023] = '\0';
 	pw_log_debug("resource %p: id:%d seq:%d res:%d (%s) msg:\"%s\"",
 			resource, id, seq, res, spa_strerror(res), buffer);
-	pw_core_resource_error(resource, id, seq, res, buffer);
+	if (resource)
+		pw_core_resource_error(resource, id, seq, res, buffer);
+	else
+		pw_log_error("id:%d seq:%d res:%d (%s) msg:\"%s\"",
+				id, seq, res, spa_strerror(res), buffer);
 }
 
 static inline SPA_PRINTF_FUNC(5,6) void
@@ -368,6 +335,29 @@ pw_core_resource_errorf(struct pw_resource *resource, uint32_t id, int seq,
 	pw_core_resource_errorv(resource, id, seq, res, message, args);
 	va_end(args);
 }
+
+struct pw_loop_callbacks {
+#define PW_VERSION_LOOP_CALLBACKS	0
+	uint32_t version;
+
+	int (*check) (void *data, struct pw_loop *loop);
+};
+
+void
+pw_loop_set_callbacks(struct pw_loop *loop, const struct pw_loop_callbacks *cb, void *data);
+
+int pw_loop_check(struct pw_loop *loop);
+
+#define ensure_loop(loop,...) ({							\
+	int res = pw_loop_check(loop);							\
+	if (res != 1) {									\
+		pw_log_warn("%s called from wrong context, check thread and locking: %s",	\
+				__func__, res < 0 ? spa_strerror(res) : "Not in loop");	\
+		fprintf(stderr, "*** %s called from wrong context, check thread and locking: %s\n",\
+				__func__, res < 0 ? spa_strerror(res) : "Not in loop");	\
+		/* __VA_ARGS__ */							\
+	}										\
+})
 
 #define pw_context_driver_emit(c,m,v,...) spa_hook_list_call_simple(&c->driver_listener_list, struct pw_context_driver_events, m, v, ##__VA_ARGS__)
 #define pw_context_driver_emit_start(c,n)	pw_context_driver_emit(c, start, 0, n)
@@ -395,6 +385,13 @@ struct pw_context_driver_events {
 	void (*complete) (void *data, struct pw_impl_node *node);
 };
 
+void pw_context_driver_add_listener(struct pw_context *context,
+			  struct spa_hook *listener,
+			  const struct pw_context_driver_events *events,
+			  void *data);
+void pw_context_driver_remove_listener(struct pw_context *context,
+			  struct spa_hook *listener);
+
 #define pw_registry_resource(r,m,v,...) pw_resource_call(r, struct pw_registry_events,m,v,##__VA_ARGS__)
 #define pw_registry_resource_global(r,...)        pw_registry_resource(r,global,0,__VA_ARGS__)
 #define pw_registry_resource_global_remove(r,...) pw_registry_resource(r,global_remove,0,__VA_ARGS__)
@@ -420,6 +417,9 @@ struct pw_context {
 
 	struct pw_mempool *pool;		/**< global memory pool */
 
+	uint64_t stamp;
+	uint64_t serial;
+	uint64_t generation;			/**< registry generation number */
 	struct pw_map globals;			/**< map of globals */
 
 	struct spa_list core_impl_list;		/**< list of core_imp */
@@ -441,9 +441,9 @@ struct pw_context {
 	struct spa_hook_list driver_listener_list;
 	struct spa_hook_list listener_list;
 
+	struct spa_thread_utils *thread_utils;
 	struct pw_loop *main_loop;		/**< main loop for control */
 	struct pw_loop *data_loop;		/**< data loop for data passing */
-	struct pw_data_loop *data_loop_impl;
 	struct spa_system *data_system;		/**< data system for data passing */
 	struct pw_work_queue *work_queue;	/**< work queue */
 
@@ -468,9 +468,11 @@ struct pw_data_loop {
 	struct pw_loop *loop;
 
 	struct spa_hook_list listener_list;
-	struct spa_source *event;
+
+	struct spa_thread_utils *thread_utils;
 
 	pthread_t thread;
+	unsigned int cancel:1;
 	unsigned int created:1;
 	unsigned int running:1;
 };
@@ -482,7 +484,6 @@ struct pw_main_loop {
         struct pw_loop *loop;
 
 	struct spa_hook_list listener_list;
-	struct spa_source *event;
 
 	unsigned int created:1;
 	unsigned int running:1;
@@ -552,12 +553,27 @@ static inline void pw_node_activation_state_reset(struct pw_node_activation_stat
 
 struct pw_node_target {
 	struct spa_list link;
+#define PW_NODE_TARGET_NONE	0
+#define PW_NODE_TARGET_PEER	1
+	uint32_t flags;
+	uint32_t id;
+	char name[128];
 	struct pw_impl_node *node;
 	struct pw_node_activation *activation;
-	int (*signal) (void *data);
-	void *data;
+	struct spa_system *system;
+	int fd;
 	unsigned int active:1;
 };
+
+static inline void copy_target(struct pw_node_target *dst, const struct pw_node_target *src)
+{
+	dst->id = src->id;
+	memcpy(dst->name, src->name, sizeof(dst->name));
+	dst->node = src->node;
+	dst->activation = src->activation;
+	dst->system = src->system;
+	dst->fd = src->fd;
+}
 
 struct pw_node_activation {
 #define PW_NODE_ACTIVATION_NOT_TRIGGERED	0
@@ -584,9 +600,13 @@ struct pw_node_activation {
 							 * used when driver segment_owner has this node id */
 
 	/* for drivers, shared with all nodes */
-	uint32_t segment_owner[32];			/* id of owners for each segment info struct.
+	uint32_t segment_owner[16];			/* id of owners for each segment info struct.
 							 * nodes that want to update segment info need to
 							 * CAS their node id in this array. */
+	uint32_t padding[15];
+#define PW_NODE_ACTIVATION_FLAG_NONE		0
+#define PW_NODE_ACTIVATION_FLAG_PROFILER	(1<<0)	/* the profiler is running */
+	uint32_t flags;					/* extra flags */
 	struct spa_io_position position;		/* contains current position and segment info.
 							 * extra info is updated by nodes that have set
 							 * themselves as owner in the segment structs */
@@ -663,7 +683,8 @@ struct pw_impl_node {
 	char *name;				/** for debug */
 
 	uint32_t priority_driver;	/** priority for being driver */
-	char group[128];		/** group to schedule this node in */
+	char *group;			/** group to schedule this node in */
+	char *link_group;		/** group this node is linked to */
 	uint64_t spa_flags;
 
 	unsigned int registered:1;
@@ -676,13 +697,25 @@ struct pw_impl_node {
 					  *  is selected to drive the graph */
 	unsigned int visited:1;		/**< for sorting */
 	unsigned int want_driver:1;	/**< this node wants to be assigned to a driver */
-	unsigned int passive:1;		/**< driver graph only has passive links */
+	unsigned int in_passive:1;	/**< node input links should be passive */
+	unsigned int out_passive:1;	/**< node output links should be passive */
+	unsigned int runnable:1;	/**< node is runnable */
 	unsigned int freewheel:1;	/**< if this is the freewheel driver */
 	unsigned int loopchecked:1;	/**< for feedback loop checking */
 	unsigned int always_process:1;	/**< this node wants to always be processing, even when idle */
 	unsigned int lock_quantum:1;	/**< don't change graph quantum */
 	unsigned int lock_rate:1;	/**< don't change graph rate */
 	unsigned int transport_sync:1;	/**< supports transport sync */
+	unsigned int target_pending:1;	/**< a quantum/rate update is pending */
+	unsigned int moved:1;		/**< the node was moved drivers */
+	unsigned int added:1;		/**< the node was add to graph */
+	unsigned int pause_on_idle:1;	/**< Pause processing when IDLE */
+	unsigned int suspend_on_idle:1;
+	unsigned int reconfigure:1;
+	unsigned int forced_rate:1;
+	unsigned int trigger:1;		/**< has the TRIGGER property and needs an extra
+					  *  trigger to start processing. */
+	unsigned int can_suspend:1;
 
 	uint32_t port_user_data_size;	/**< extra size for port user data */
 
@@ -692,6 +725,8 @@ struct pw_impl_node {
 	struct spa_list follower_link;
 
 	struct spa_list sort_link;	/**< link used to sort nodes */
+
+	struct spa_list peer_list;	/* list of peers */
 
 	struct spa_node *node;		/**< SPA node implementation */
 	struct spa_hook listener;
@@ -704,16 +739,19 @@ struct pw_impl_node {
 	struct spa_hook_list listener_list;
 
 	struct pw_loop *data_loop;		/**< the data loop for this node */
+	struct spa_system *data_system;
 
 	struct spa_fraction latency;		/**< requested latency */
 	struct spa_fraction max_latency;	/**< maximum latency */
 	struct spa_fraction rate;		/**< requested rate */
+	uint32_t force_quantum;			/**< forced quantum */
+	uint32_t force_rate;			/**< forced rate */
+	uint32_t stamp;				/**< stamp of last update */
 	struct spa_source source;		/**< source to remotely trigger this node */
 	struct pw_memblock *activation;
 	struct {
 		struct spa_io_clock *clock;	/**< io area of the clock or NULL */
 		struct spa_io_position *position;
-		struct pw_node_activation *activation;
 
 		struct spa_list target_list;		/* list of targets to signal after
 							 * this node */
@@ -725,10 +763,14 @@ struct pw_impl_node {
 							   driver */
 		struct spa_list driver_link;		/* our link in driver */
 
-		struct ratelimit rate_limit;
+		struct spa_ratelimit rate_limit;
 	} rt;
+	struct spa_fraction target_rate;
+	uint64_t target_quantum;
 
-        void *user_data;                /**< extra user data */
+	uint64_t driver_start;
+
+	void *user_data;                /**< extra user data */
 };
 
 struct pw_impl_port_mix {
@@ -743,6 +785,7 @@ struct pw_impl_port_mix {
 	uint32_t id;
 	uint32_t peer_id;
 	unsigned int have_buffers:1;
+	unsigned int active:1;
 };
 
 struct pw_impl_port_implementation {
@@ -778,7 +821,7 @@ struct pw_impl_port_implementation {
 #define pw_impl_port_emit_param_changed(p,i)		pw_impl_port_emit(p, param_changed, 1, i)
 #define pw_impl_port_emit_latency_changed(p)		pw_impl_port_emit(p, latency_changed, 2)
 
-#define PW_IMPL_PORT_IS_CONTROL(port)	SPA_FLAG_MASK(port->flags, \
+#define PW_IMPL_PORT_IS_CONTROL(port)	SPA_FLAG_MASK((port)->flags, \
 						PW_IMPL_PORT_FLAG_BUFFERS|PW_IMPL_PORT_FLAG_CONTROL,\
 						PW_IMPL_PORT_FLAG_CONTROL)
 struct pw_impl_port {
@@ -831,16 +874,16 @@ struct pw_impl_port {
 
 	struct {
 		struct spa_io_buffers io;	/**< io area of the port */
-		struct spa_io_clock clock;	/**< io area of the clock */
-		struct spa_list mix_list;
 		struct spa_list node_link;
 	} rt;					/**< data only accessed from the data thread */
 	unsigned int added:1;
 	unsigned int destroying:1;
+	unsigned int passive:1;
 	int busy_count;
 
 	struct spa_latency_info latency[2];	/**< latencies */
 	unsigned int have_latency_param:1;
+	unsigned int ignore_latency:1;
 
 	void *owner_data;		/**< extra owner data */
 	void *user_data;                /**< extra user data */
@@ -854,6 +897,14 @@ struct pw_control_link {
 	uint32_t out_port;
 	uint32_t in_port;
 	unsigned int valid:1;
+};
+
+struct pw_node_peer {
+	int ref;
+	int active_count;
+	struct spa_list link;			/**< link in peer list */
+	struct pw_impl_node *output;		/**< the output node */
+	struct pw_node_target target;		/**< target of the input node */
 };
 
 #define pw_impl_link_emit(o,m,v,...) spa_hook_list_call(&o->listener_list, struct pw_impl_link_events, m, v, ##__VA_ARGS__)
@@ -887,10 +938,11 @@ struct pw_impl_link {
 	struct pw_control_link control;
 	struct pw_control_link notify;
 
+	struct pw_node_peer *peer;
+
 	struct {
 		struct pw_impl_port_mix out_mix;	/**< port added to the output mixer */
 		struct pw_impl_port_mix in_mix;		/**< port added to the input mixer */
-		struct pw_node_target target;		/**< target to trigger the input node */
 	} rt;
 
 	void *user_data;
@@ -900,6 +952,7 @@ struct pw_impl_link {
 	unsigned int preparing:1;
 	unsigned int prepared:1;
 	unsigned int passive:1;
+	unsigned int destroyed:1;
 };
 
 #define pw_resource_emit(o,m,v,...) spa_hook_list_call(&o->listener_list, struct pw_resource_events, m, v, ##__VA_ARGS__)
@@ -922,8 +975,10 @@ struct pw_resource {
 	const char *type;		/**< type of the client interface */
 	uint32_t version;		/**< version of the client interface */
 	uint32_t bound_id;		/**< global id we are bound to */
+	int refcount;
 
 	unsigned int removed:1;		/**< resource was removed from server */
+	unsigned int destroyed:1;	/**< resource was destroyed */
 
 	struct spa_hook_list listener_list;
 	struct spa_hook_list object_listener_list;
@@ -939,6 +994,7 @@ struct pw_resource {
 #define pw_proxy_emit_removed(p)	pw_proxy_emit(p, removed, 0)
 #define pw_proxy_emit_done(p,s)		pw_proxy_emit(p, done, 0, s)
 #define pw_proxy_emit_error(p,s,r,m)	pw_proxy_emit(p, error, 0, s, r, m)
+#define pw_proxy_emit_bound_props(p,g,r) pw_proxy_emit(p, bound_props, 1, g, r)
 
 struct pw_proxy {
 	struct spa_interface impl;	/**< object implementation */
@@ -972,7 +1028,6 @@ struct pw_core {
 	struct pw_properties *properties;	/**< extra properties */
 
 	struct pw_mempool *pool;		/**< memory pool */
-	struct pw_core *core;			/**< proxy for the core object */
 	struct spa_hook core_listener;
 	struct spa_hook proxy_core_listener;
 
@@ -986,6 +1041,7 @@ struct pw_core {
 	struct pw_protocol_client *conn;	/**< the protocol client connection */
 	int recv_seq;				/**< last received sequence number */
 	int send_seq;				/**< last protocol result code */
+	uint64_t recv_generation;		/**< last received registry generation */
 
 	unsigned int removed:1;
 	unsigned int destroyed:1;
@@ -1020,12 +1076,14 @@ struct pw_stream {
 						  *  CONFIGURE state and higher */
 	enum pw_stream_state state;		/**< stream state */
 	char *error;				/**< error reason when state is in error */
+	int error_res;				/**< error code when in error */
 
 	struct spa_hook_list listener_list;
 
 	struct pw_proxy *proxy;
 	struct spa_hook proxy_listener;
 
+	struct pw_impl_node *node;
 	struct spa_hook node_listener;
 
 	struct spa_list controls;
@@ -1056,11 +1114,15 @@ struct pw_filter {
 						  *  CONFIGURE state and higher */
 	enum pw_filter_state state;		/**< filter state */
 	char *error;				/**< error reason when state is in error */
+	int error_res;				/**< error code when in error */
 
 	struct spa_hook_list listener_list;
 
 	struct pw_proxy *proxy;
 	struct spa_hook proxy_listener;
+
+	struct pw_impl_node *node;
+	struct spa_hook node_listener;
 
 	struct spa_list controls;
 };
@@ -1124,23 +1186,11 @@ int pw_context_find_format(struct pw_context *context,
 			struct spa_pod_builder *builder,
 			char **error);
 
-/** Find a ports compatible with \a other_port and the format filters */
-struct pw_impl_port *
-pw_context_find_port(struct pw_context *context,
-		  struct pw_impl_port *other_port,
-		  uint32_t id,
-		  struct pw_properties *props,
-		  uint32_t n_format_filters,
-		  struct spa_pod **format_filters,
-		  char **error);
-
 int pw_context_debug_port_params(struct pw_context *context,
 		struct spa_node *node, enum spa_direction direction,
 		uint32_t port_id, uint32_t id, int err, const char *debug, ...);
 
-const struct pw_export_type *pw_context_find_export_type(struct pw_context *context, const char *type);
-
-int pw_proxy_init(struct pw_proxy *proxy, const char *type, uint32_t version);
+int pw_proxy_init(struct pw_proxy *proxy, struct pw_core *core, const char *type, uint32_t version);
 
 void pw_proxy_remove(struct pw_proxy *proxy);
 
@@ -1212,12 +1262,12 @@ int pw_impl_port_recalc_latency(struct pw_impl_port *port);
 /** Change the state of the node */
 int pw_impl_node_set_state(struct pw_impl_node *node, enum pw_node_state state);
 
-int pw_impl_node_set_param(struct pw_impl_node *node,
-		uint32_t id, uint32_t flags, const struct spa_pod *param);
 
 int pw_impl_node_update_ports(struct pw_impl_node *node);
 
 int pw_impl_node_set_driver(struct pw_impl_node *node, struct pw_impl_node *driver);
+
+int pw_impl_node_trigger(struct pw_impl_node *node);
 
 /** Prepare a link
   * Starts the negotiation of formats and buffers on \a link */
@@ -1242,26 +1292,36 @@ int pw_control_remove_link(struct pw_control_link *link);
 
 void pw_control_destroy(struct pw_control *control);
 
-#define PW_LOG_OBJECT_POD	(1<<0)
-void pw_log_log_object(enum spa_log_level level, const char *file, int line,
-	   const char *func, uint32_t flags, const void *object);
+void pw_impl_client_unref(struct pw_impl_client *client);
 
-#define pw_log_object(lev,fl,obj)						\
-({										\
-	if (SPA_UNLIKELY(pw_log_level_enabled (lev)))				\
-		pw_log_log_object(lev,__FILE__,__LINE__,__func__,(fl),(obj));	\
+#define PW_LOG_OBJECT_POD	(1<<0)
+#define PW_LOG_OBJECT_FORMAT	(1<<1)
+void pw_log_log_object(enum spa_log_level level, const struct spa_log_topic *topic,
+		const char *file, int line, const char *func, uint32_t flags,
+		const void *object);
+
+#define pw_log_object(lev,t,fl,obj)				\
+({								\
+	if (SPA_UNLIKELY(pw_log_topic_enabled(lev,t)))		\
+		pw_log_log_object(lev,t,__FILE__,__LINE__,	\
+				__func__,(fl),(obj));		\
 })
 
-#define pw_log_pod(lev,pod) pw_log_object(lev,PW_LOG_OBJECT_POD,pod)
-#define pw_log_format(lev,pod) pw_log_object(lev,PW_LOG_OBJECT_POD,pod)
+#define pw_log_pod(lev,pod) pw_log_object(lev,PW_LOG_TOPIC_DEFAULT,PW_LOG_OBJECT_POD,pod)
+#define pw_log_format(lev,pod) pw_log_object(lev,PW_LOG_TOPIC_DEFAULT,PW_LOG_OBJECT_FORMAT,pod)
 
 bool pw_log_is_default(void);
 
 void pw_log_init(void);
 void pw_log_deinit(void);
 
-int pw_settings_init(struct pw_context *context);
+void pw_random_init(void);
+
+void pw_settings_init(struct pw_context *context);
+int pw_settings_expose(struct pw_context *context);
 void pw_settings_clean(struct pw_context *context);
+
+pthread_attr_t *pw_thread_fill_attr(const struct spa_dict *props, pthread_attr_t *attr);
 
 /** \endcond */
 

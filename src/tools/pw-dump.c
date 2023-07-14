@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <unistd.h>
@@ -30,6 +10,12 @@
 #include <getopt.h>
 #include <limits.h>
 #include <math.h>
+#include <fnmatch.h>
+#include <locale.h>
+
+#if !defined(FNM_EXTMATCH)
+#define FNM_EXTMATCH 0
+#endif
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -37,6 +23,7 @@
 #include <spa/debug/types.h>
 #include <spa/utils/json.h>
 #include <spa/utils/ansi.h>
+#include <spa/utils/string.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -65,7 +52,7 @@ struct data {
 
 	struct spa_list object_list;
 
-	uint32_t id;
+	const char *pattern;
 
 	FILE *out;
 	int level;
@@ -81,6 +68,7 @@ struct data {
 
 struct param {
 	uint32_t id;
+	int32_t seq;
 	struct spa_list link;
 	struct spa_pod *param;
 };
@@ -93,6 +81,7 @@ struct class {
 	const void *events;
 	void (*destroy) (struct object *object);
 	void (*dump) (struct object *object);
+	const char *name_key;
 };
 
 struct object {
@@ -108,6 +97,8 @@ struct object {
 
 	const struct class *class;
 	void *info;
+	struct spa_param_info *params;
+	uint32_t n_params;
 
 	int changed;
 	struct spa_list param_list;
@@ -140,7 +131,8 @@ static uint32_t clear_params(struct spa_list *param_list, uint32_t id)
 	return count;
 }
 
-static struct param *add_param(struct spa_list *params, uint32_t id, const struct spa_pod *param)
+static struct param *add_param(struct spa_list *params, int seq,
+		uint32_t id, const struct spa_pod *param)
 {
 	struct param *p;
 
@@ -157,6 +149,7 @@ static struct param *add_param(struct spa_list *params, uint32_t id, const struc
 		return NULL;
 
 	p->id = id;
+	p->seq = seq;
 	if (param != NULL) {
 		p->param = SPA_PTROFF(p, sizeof(*p), struct spa_pod);
 		memcpy(p->param, param, SPA_POD_SIZE(param));
@@ -179,17 +172,30 @@ static struct object *find_object(struct data *d, uint32_t id)
 	return NULL;
 }
 
-static void object_update_params(struct object *o)
+static void object_update_params(struct spa_list *param_list, struct spa_list *pending_list,
+		uint32_t n_params, struct spa_param_info *params)
 {
-	struct param *p;
+	struct param *p, *t;
+	uint32_t i;
 
-	spa_list_consume(p, &o->pending_list, link) {
+	for (i = 0; i < n_params; i++) {
+		spa_list_for_each_safe(p, t, pending_list, link) {
+			if (p->id == params[i].id &&
+			    p->seq != params[i].seq &&
+			    p->param != NULL) {
+				spa_list_remove(&p->link);
+				free(p);
+			}
+		}
+	}
+
+	spa_list_consume(p, pending_list, link) {
 		spa_list_remove(&p->link);
 		if (p->param == NULL) {
-			clear_params(&o->param_list, p->id);
+			clear_params(param_list, p->id);
 			free(p);
 		} else {
-			spa_list_append(&o->param_list, &p->link);
+			spa_list_append(param_list, &p->link);
 		}
 	}
 }
@@ -271,13 +277,15 @@ static void put_int(struct data *d, const char *key, int64_t val)
 
 static void put_double(struct data *d, const char *key, double val)
 {
-	put_fmt(d, key, "%s%f%s", NUMBER, val, NORMAL);
+	char buf[128];
+	put_fmt(d, key, "%s%s%s", NUMBER,
+			spa_json_format_float(buf, sizeof(buf), val), NORMAL);
 }
 
 static void put_value(struct data *d, const char *key, const char *val)
 {
 	int64_t li;
-	double dv;
+	float fv;
 
 	if (val == NULL)
 		put_literal(d, key, "null");
@@ -285,8 +293,8 @@ static void put_value(struct data *d, const char *key, const char *val)
 		put_literal(d, key, val);
 	else if (spa_atoi64(val, &li, 10))
 		put_int(d, key, li);
-	else if (spa_atod(val, &dv))
-		put_double(d, key, dv);
+	else if (spa_json_parse_float(val, strlen(val), &fv))
+		put_double(d, key, fv);
 	else
 		put_string(d, key, val);
 }
@@ -294,6 +302,7 @@ static void put_value(struct data *d, const char *key, const char *val)
 static void put_dict(struct data *d, const char *key, struct spa_dict *dict)
 {
 	const struct spa_dict_item *it;
+	spa_dict_qsort(dict);
 	put_begin(d, key, "{", 0);
 	spa_dict_for_each(it, dict)
 		put_value(d, it->key, it->value);
@@ -552,6 +561,7 @@ static const struct class core_class = {
 	.type = PW_TYPE_INTERFACE_Core,
 	.version = PW_VERSION_CORE,
 	.dump = core_dump,
+	.name_key = PW_KEY_CORE_NAME,
 };
 
 /* client */
@@ -571,14 +581,16 @@ static void client_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void client_event_info(void *object, const struct pw_client_info *info)
+static void client_event_info(void *data, const struct pw_client_info *info)
 {
-	struct object *o = object;
+	struct object *o = data;
 	int changed = 0;
 
-        pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
+	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
-        info = o->info = pw_client_info_update(o->info, info);
+	info = o->info = pw_client_info_update(o->info, info);
+	if (info == NULL)
+		return;
 
 	if (info->change_mask & PW_CLIENT_CHANGE_MASK_PROPS)
 		changed++;
@@ -608,6 +620,7 @@ static const struct class client_class = {
 	.events = &client_events,
 	.destroy = client_destroy,
 	.dump = client_dump,
+	.name_key = PW_KEY_APP_NAME,
 };
 
 /* module */
@@ -630,14 +643,16 @@ static void module_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void module_event_info(void *object, const struct pw_module_info *info)
+static void module_event_info(void *data, const struct pw_module_info *info)
 {
-        struct object *o = object;
+	struct object *o = data;
 	int changed = 0;
 
-        pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
+	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
-        info = o->info = pw_module_info_update(o->info, info);
+	info = o->info = pw_module_info_update(o->info, info);
+	if (info == NULL)
+		return;
 
 	if (info->change_mask & PW_MODULE_CHANGE_MASK_PROPS)
 		changed++;
@@ -667,6 +682,7 @@ static const struct class module_class = {
 	.events = &module_events,
 	.destroy = module_destroy,
 	.dump = module_dump,
+	.name_key = PW_KEY_MODULE_NAME,
 };
 
 /* factory */
@@ -689,14 +705,16 @@ static void factory_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void factory_event_info(void *object, const struct pw_factory_info *info)
+static void factory_event_info(void *data, const struct pw_factory_info *info)
 {
-        struct object *o = object;
+	struct object *o = data;
 	int changed = 0;
 
-        pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
+	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
-        info = o->info = pw_factory_info_update(o->info, info);
+	info = o->info = pw_factory_info_update(o->info, info);
+	if (info == NULL)
+		return;
 
 	if (info->change_mask & PW_FACTORY_CHANGE_MASK_PROPS)
 		changed++;
@@ -726,6 +744,7 @@ static const struct class factory_class = {
 	.events = &factory_events,
 	.destroy = factory_destroy,
 	.dump = factory_dump,
+	.name_key = PW_KEY_FACTORY_NAME,
 };
 
 /* device */
@@ -747,14 +766,20 @@ static void device_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void device_event_info(void *object, const struct pw_device_info *info)
+static void device_event_info(void *data, const struct pw_device_info *info)
 {
-	struct object *o = object;
+	struct object *o = data;
 	uint32_t i, changed = 0;
+	int res;
 
 	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
 	info = o->info = pw_device_info_update(o->info, info);
+	if (info == NULL)
+		return;
+
+	o->params = info->params;
+	o->n_params = info->n_params;
 
 	if (info->change_mask & PW_DEVICE_CHANGE_MASK_PROPS)
 		changed++;
@@ -768,12 +793,14 @@ static void device_event_info(void *object, const struct pw_device_info *info)
 			info->params[i].user = 0;
 
 			changed++;
-			clear_params(&o->pending_list, id);
+			add_param(&o->pending_list, 0, id, NULL);
 			if (!(info->params[i].flags & SPA_PARAM_INFO_READ))
 				continue;
 
-			pw_device_enum_params((struct pw_device*)o->proxy,
-					0, id, 0, -1, NULL);
+			res = pw_device_enum_params((struct pw_device*)o->proxy,
+					++info->params[i].seq, id, 0, -1, NULL);
+			if (SPA_RESULT_IS_ASYNC(res))
+				info->params[i].seq = res;
 		}
 	}
 	if (changed) {
@@ -782,12 +809,12 @@ static void device_event_info(void *object, const struct pw_device_info *info)
 	}
 }
 
-static void device_event_param(void *object, int seq,
+static void device_event_param(void *data, int seq,
 		uint32_t id, uint32_t index, uint32_t next,
 		const struct spa_pod *param)
 {
-	struct object *o = object;
-	add_param(&o->pending_list, id, param);
+	struct object *o = data;
+	add_param(&o->pending_list, seq, id, param);
 }
 
 static const struct pw_device_events device_events = {
@@ -810,6 +837,7 @@ static const struct class device_class = {
 	.events = &device_events,
 	.destroy = device_destroy,
 	.dump = device_dump,
+	.name_key = PW_KEY_DEVICE_NAME,
 };
 
 /* node */
@@ -840,14 +868,20 @@ static void node_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void node_event_info(void *object, const struct pw_node_info *info)
+static void node_event_info(void *data, const struct pw_node_info *info)
 {
-	struct object *o = object;
+	struct object *o = data;
 	uint32_t i, changed = 0;
+	int res;
 
 	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
 	info = o->info = pw_node_info_update(o->info, info);
+	if (info == NULL)
+		return;
+
+	o->params = info->params;
+	o->n_params = info->n_params;
 
 	if (info->change_mask & PW_NODE_CHANGE_MASK_STATE)
 		changed++;
@@ -864,12 +898,14 @@ static void node_event_info(void *object, const struct pw_node_info *info)
 			info->params[i].user = 0;
 
 			changed++;
-			add_param(&o->pending_list, id, NULL);
+			add_param(&o->pending_list, 0, id, NULL);
 			if (!(info->params[i].flags & SPA_PARAM_INFO_READ))
 				continue;
 
-			pw_node_enum_params((struct pw_node*)o->proxy,
-					0, id, 0, -1, NULL);
+			res = pw_node_enum_params((struct pw_node*)o->proxy,
+					++info->params[i].seq, id, 0, -1, NULL);
+			if (SPA_RESULT_IS_ASYNC(res))
+				info->params[i].seq = res;
 		}
 	}
 	if (changed) {
@@ -878,12 +914,12 @@ static void node_event_info(void *object, const struct pw_node_info *info)
 	}
 }
 
-static void node_event_param(void *object, int seq,
+static void node_event_param(void *data, int seq,
 		uint32_t id, uint32_t index, uint32_t next,
 		const struct spa_pod *param)
 {
-	struct object *o = object;
-	add_param(&o->pending_list, id, param);
+	struct object *o = data;
+	add_param(&o->pending_list, seq, id, param);
 }
 
 static const struct pw_node_events node_events = {
@@ -906,6 +942,7 @@ static const struct class node_class = {
 	.events = &node_events,
 	.destroy = node_destroy,
 	.dump = node_dump,
+	.name_key = PW_KEY_NODE_NAME,
 };
 
 /* port */
@@ -928,14 +965,20 @@ static void port_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void port_event_info(void *object, const struct pw_port_info *info)
+static void port_event_info(void *data, const struct pw_port_info *info)
 {
-	struct object *o = object;
+	struct object *o = data;
 	uint32_t i, changed = 0;
+	int res;
 
 	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
 	info = o->info = pw_port_info_update(o->info, info);
+	if (info == NULL)
+		return;
+
+	o->params = info->params;
+	o->n_params = info->n_params;
 
 	if (info->change_mask & PW_PORT_CHANGE_MASK_PROPS)
 		changed++;
@@ -949,12 +992,14 @@ static void port_event_info(void *object, const struct pw_port_info *info)
 			info->params[i].user = 0;
 
 			changed++;
-			add_param(&o->pending_list, id, NULL);
+			add_param(&o->pending_list, 0, id, NULL);
 			if (!(info->params[i].flags & SPA_PARAM_INFO_READ))
 				continue;
 
-			pw_port_enum_params((struct pw_port*)o->proxy,
-					0, id, 0, -1, NULL);
+			res = pw_port_enum_params((struct pw_port*)o->proxy,
+					++info->params[i].seq, id, 0, -1, NULL);
+			if (SPA_RESULT_IS_ASYNC(res))
+				info->params[i].seq = res;
 		}
 	}
 	if (changed) {
@@ -963,12 +1008,12 @@ static void port_event_info(void *object, const struct pw_port_info *info)
 	}
 }
 
-static void port_event_param(void *object, int seq,
+static void port_event_param(void *data, int seq,
 		uint32_t id, uint32_t index, uint32_t next,
 		const struct spa_pod *param)
 {
-	struct object *o = object;
-	add_param(&o->pending_list, id, param);
+	struct object *o = data;
+	add_param(&o->pending_list, seq, id, param);
 }
 
 static const struct pw_port_events port_events = {
@@ -991,6 +1036,7 @@ static const struct class port_class = {
 	.events = &port_events,
 	.destroy = port_destroy,
 	.dump = port_dump,
+	.name_key = PW_KEY_PORT_NAME,
 };
 
 /* link */
@@ -1019,14 +1065,16 @@ static void link_dump(struct object *o)
 	put_end(d, "}", 0);
 }
 
-static void link_event_info(void *object, const struct pw_link_info *info)
+static void link_event_info(void *data, const struct pw_link_info *info)
 {
-	struct object *o = object;
+	struct object *o = data;
 	uint32_t changed = 0;
 
 	pw_log_debug("object %p: id:%d change-mask:%08"PRIx64, o, o->id, info->change_mask);
 
 	info = o->info = pw_link_info_update(o->info, info);
+	if (info == NULL)
+		return;
 
 	if (info->change_mask & PW_LINK_CHANGE_MASK_STATE)
 		changed++;
@@ -1146,13 +1194,13 @@ static struct metadata_entry *metadata_find(struct object *o, uint32_t subject, 
 	return NULL;
 }
 
-static int metadata_property(void *object,
+static int metadata_property(void *data,
 			uint32_t subject,
 			const char *key,
 			const char *type,
 			const char *value)
 {
-	struct object *o = object;
+	struct object *o = data;
 	struct metadata_entry *e;
 
 	while ((e = metadata_find(o, subject, key)) != NULL) {
@@ -1206,6 +1254,7 @@ static const struct class metadata_class = {
 	.events = &metadata_events,
 	.destroy = metadata_destroy,
 	.dump = metadata_dump,
+	.name_key = PW_KEY_METADATA_NAME,
 };
 
 static const struct class *classes[] =
@@ -1223,11 +1272,10 @@ static const struct class *classes[] =
 
 static const struct class *find_class(const char *type, uint32_t version)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(classes); i++) {
-		if (spa_streq(classes[i]->type, type) &&
-		    classes[i]->version <= version)
-			return classes[i];
+	SPA_FOR_EACH_ELEMENT_VAR(classes, c) {
+		if (spa_streq((*c)->type, type) &&
+		    (*c)->version <= version)
+			return *c;
 	}
 	return NULL;
 }
@@ -1314,13 +1362,54 @@ bind_failed:
 	return;
 }
 
-static void registry_event_global_remove(void *object, uint32_t id)
+static bool object_matches(struct object *o, const char *pattern)
 {
-	struct data *d = object;
+	uint32_t id;
+	const char *str;
+
+	if (spa_atou32(pattern, &id, 0) && o->id == id)
+		return true;
+
+	if (o->props == NULL)
+		return false;
+
+	if (strstr(o->type, pattern) != NULL)
+		return true;
+	if ((str = pw_properties_get(o->props, PW_KEY_OBJECT_PATH)) != NULL &&
+	    fnmatch(pattern, str, FNM_EXTMATCH) == 0)
+		return true;
+	if ((str = pw_properties_get(o->props, PW_KEY_OBJECT_SERIAL)) != NULL &&
+	    spa_streq(pattern, str))
+		return true;
+	if (o->class != NULL && o->class->name_key != NULL &&
+	    (str = pw_properties_get(o->props, o->class->name_key)) != NULL &&
+	    fnmatch(pattern, str, FNM_EXTMATCH) == 0)
+		return true;
+	return false;
+}
+
+static void registry_event_global_remove(void *data, uint32_t id)
+{
+	struct data *d = data;
 	struct object *o;
 
 	if ((o = find_object(d, id)) == NULL)
 		return;
+
+	d->state = STATE_FIRST;
+	if (d->pattern != NULL && !object_matches(o, d->pattern))
+		return;
+	if (d->state == STATE_FIRST)
+		put_begin(d, NULL, "[", 0);
+	put_begin(d, NULL, "{", 0);
+	put_int(d, "id", o->id);
+	if (o->class && o->class->dump)
+		put_value(d, "info", NULL);
+	else if (o->props)
+		put_value(d, "props", NULL);
+	put_end(d, "}", 0);
+	if (d->state != STATE_FIRST)
+		put_end(d, "]\n", 0);
 
 	object_destroy(o);
 }
@@ -1345,7 +1434,7 @@ static void dump_objects(struct data *d)
 
 	d->state = STATE_FIRST;
 	spa_list_for_each(o, &d->object_list, link) {
-		if (d->id != SPA_ID_INVALID && d->id != o->id)
+		if (d->pattern != NULL && !object_matches(o, d->pattern))
 			continue;
 		if (o->changed == 0)
 			continue;
@@ -1396,7 +1485,8 @@ static void on_core_done(void *data, uint32_t id, int seq)
 		pw_log_debug("sync end %u/%u", d->sync_seq, seq);
 
 		spa_list_for_each(o, &d->object_list, link)
-			object_update_params(o);
+			object_update_params(&o->param_list, &o->pending_list,
+					o->n_params, o->params);
 
 		dump_objects(d);
 		if (!d->monitor)
@@ -1417,9 +1507,9 @@ static void do_quit(void *data, int signal_number)
 	pw_main_loop_quit(d->loop);
 }
 
-static void show_help(struct data *data, const char *name)
+static void show_help(struct data *data, const char *name, bool error)
 {
-        fprintf(stdout, "%s [options] [<id>]\n"
+	fprintf(error ? stderr : stdout, "%s [options] [<id>]\n"
 		"  -h, --help                            Show this help\n"
 		"      --version                         Show version\n"
 		"  -r, --remote                          Remote daemon name\n"
@@ -1446,19 +1536,21 @@ int main(int argc, char *argv[])
 	};
 	int c;
 
+	setlocale(LC_ALL, "");
 	pw_init(&argc, &argv);
 
 	data.out = stdout;
 	if (isatty(fileno(data.out)) && getenv("NO_COLOR") == NULL)
 		colors = true;
+	setlinebuf(data.out);
 
 	while ((c = getopt_long(argc, argv, "hVr:mNC", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h' :
-			show_help(&data, argv[0]);
+			show_help(&data, argv[0], false);
 			return 0;
 		case 'V' :
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -1483,20 +1575,19 @@ int main(int argc, char *argv[])
 			else if (!strcmp(optarg, "always"))
 				colors = true;
 			else {
-				show_help(&data, argv[0]);
+				fprintf(stderr, "Unknown color: %s\n", optarg);
+				show_help(&data, argv[0], true);
 				return -1;
 			}
 			break;
 		default:
-			show_help(&data, argv[0]);
+			show_help(&data, argv[0], true);
 			return -1;
 		}
 	}
 
-	data.id = SPA_ID_INVALID;
-	if (optind < argc) {
-		spa_atou32(argv[optind++], &data.id, 0);
-	}
+	if (optind < argc)
+		data.pattern = argv[optind++];
 
 	data.loop = pw_main_loop_new(NULL);
 	if (data.loop == NULL) {
@@ -1542,7 +1633,9 @@ int main(int argc, char *argv[])
 	if (data.info)
 		pw_core_info_free(data.info);
 
+	spa_hook_remove(&data.registry_listener);
 	pw_proxy_destroy((struct pw_proxy*)data.registry);
+	spa_hook_remove(&data.core_listener);
 	pw_context_destroy(data.context);
 	pw_main_loop_destroy(data.loop);
 	pw_deinit();

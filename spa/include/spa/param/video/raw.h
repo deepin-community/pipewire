@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_VIDEO_RAW_H
 #define SPA_VIDEO_RAW_H
@@ -34,7 +14,7 @@ extern "C" {
  * \{
  */
 
-#include <spa/utils/defs.h>
+#include <spa/param/format.h>
 #include <spa/param/video/chroma.h>
 #include <spa/param/video/color.h>
 #include <spa/param/video/multiview.h>
@@ -137,6 +117,15 @@ enum spa_video_format {
 	SPA_VIDEO_FORMAT_RGBA_F16,
 	SPA_VIDEO_FORMAT_RGBA_F32,
 
+	SPA_VIDEO_FORMAT_xRGB_210LE,	/**< 32-bit x:R:G:B 2:10:10:10 little endian */
+	SPA_VIDEO_FORMAT_xBGR_210LE,	/**< 32-bit x:B:G:R 2:10:10:10 little endian */
+	SPA_VIDEO_FORMAT_RGBx_102LE,	/**< 32-bit R:G:B:x 10:10:10:2 little endian */
+	SPA_VIDEO_FORMAT_BGRx_102LE,	/**< 32-bit B:G:R:x 10:10:10:2 little endian */
+	SPA_VIDEO_FORMAT_ARGB_210LE,	/**< 32-bit A:R:G:B 2:10:10:10 little endian */
+	SPA_VIDEO_FORMAT_ABGR_210LE,	/**< 32-bit A:B:G:R 2:10:10:10 little endian */
+	SPA_VIDEO_FORMAT_RGBA_102LE,	/**< 32-bit R:G:B:A 10:10:10:2 little endian */
+	SPA_VIDEO_FORMAT_BGRA_102LE,	/**< 32-bit B:G:R:A 10:10:10:2 little endian */
+
 	/* Aliases */
 	SPA_VIDEO_FORMAT_DSP_F32 = SPA_VIDEO_FORMAT_RGBA_F32,
 };
@@ -149,6 +138,7 @@ enum spa_video_flags {
 	SPA_VIDEO_FLAG_VARIABLE_FPS = (1 << 0),		/**< a variable fps is selected, fps_n and fps_d
 							 *   denote the maximum fps of the video */
 	SPA_VIDEO_FLAG_PREMULTIPLIED_ALPHA = (1 << 1),  /**< Each color has been scaled by the alpha value. */
+	SPA_VIDEO_FLAG_MODIFIER = (1 << 2),		/**< use the format modifier */
 };
 
 /**
@@ -177,7 +167,8 @@ enum spa_video_interlace_mode {
  */
 struct spa_video_info_raw {
 	enum spa_video_format format;				/**< the format */
-	int64_t modifier;					/**< format modifier
+	uint32_t flags;						/**< extra video flags */
+	uint64_t modifier;					/**< format modifier
 								  * only used with DMA-BUF */
 	struct spa_rectangle size;				/**< the frame size of the video */
 	struct spa_fraction framerate;				/**< the framerate of the video, 0/1 means variable rate */
@@ -197,14 +188,7 @@ struct spa_video_info_raw {
 	enum spa_video_color_primaries color_primaries;		/**< color primaries. used to convert between R'G'B' and CIE XYZ */
 };
 
-#define SPA_VIDEO_INFO_RAW_INIT(...)	(struct spa_video_info_raw) { __VA_ARGS__ }
-
-struct spa_video_info_dsp {
-	enum spa_video_format format;
-	int64_t modifier;
-};
-
-#define SPA_VIDEO_INFO_DSP_INIT(...)	(struct spa_video_info_dsp) { __VA_ARGS__ }
+#define SPA_VIDEO_INFO_RAW_INIT(...)	((struct spa_video_info_raw) { __VA_ARGS__ })
 
 /**
  * \}

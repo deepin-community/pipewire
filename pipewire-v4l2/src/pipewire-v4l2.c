@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "config.h"
 
@@ -28,6 +8,7 @@
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -57,6 +38,7 @@ PW_LOG_TOPIC_STATIC(v4l2_log_topic, "v4l2");
 #define DEFAULT_CARD		"PipeWire Camera"
 #define DEFAULT_BUS_INFO	"PipeWire"
 
+#define MAX_DEV		32
 struct file_map {
 	void *addr;
 	struct file *file;
@@ -64,6 +46,8 @@ struct file_map {
 
 struct fd_map {
 	int fd;
+#define FD_MAP_DUP	(1<<0)
+	uint32_t flags;
 	struct file *file;
 };
 
@@ -73,6 +57,7 @@ struct globals {
 	pthread_mutex_t lock;
 	struct pw_array fd_maps;
 	struct pw_array file_maps;
+	uint32_t dev_map[MAX_DEV];
 };
 
 static struct globals globals;
@@ -92,6 +77,9 @@ struct buffer {
 
 struct file {
 	int ref;
+
+	uint32_t dev_id;
+	uint32_t serial;
 
 	struct pw_properties *props;
 	struct pw_thread_loop *loop;
@@ -114,22 +102,26 @@ struct file {
 	struct pw_stream *stream;
 	struct spa_hook stream_listener;
 
+	enum v4l2_priority priority;
+
 	struct v4l2_format v4l2_format;
 	uint32_t reqbufs;
 
+	int reqbufs_fd;
 	struct buffer buffers[MAX_BUFFERS];
 	uint32_t n_buffers;
 	uint32_t size;
+
+	uint32_t sequence;
 
 	struct pw_array buffer_maps;
 
 	uint32_t last_fourcc;
 
 	unsigned int running:1;
+	unsigned int closed:1;
 	int fd;
 };
-
-#define MAX_PARAMS	32
 
 struct global_info {
 	const char *type;
@@ -156,8 +148,8 @@ struct global {
 
 	int changed;
 	void *info;
+	struct spa_list pending_list;
 	struct spa_list param_list;
-	int param_seq[MAX_PARAMS];
 
 	union {
 		struct {
@@ -173,6 +165,7 @@ struct global {
 struct param {
 	struct spa_list link;
 	uint32_t id;
+	int32_t seq;
 	struct spa_pod *param;
 };
 
@@ -192,7 +185,7 @@ static uint32_t clear_params(struct spa_list *param_list, uint32_t id)
 }
 
 static struct param *add_param(struct spa_list *params,
-		int seq, int *param_seq, uint32_t id, const struct spa_pod *param)
+		int seq, uint32_t id, const struct spa_pod *param)
 {
 	struct param *p;
 
@@ -204,24 +197,12 @@ static struct param *add_param(struct spa_list *params,
 		id = SPA_POD_OBJECT_ID(param);
 	}
 
-	if (id >= MAX_PARAMS) {
-		pw_log_error("too big param id %d", id);
-		errno = EINVAL;
-		return NULL;
-	}
-
-	if (seq != param_seq[id]) {
-		pw_log_debug("ignoring param %d, seq:%d != current_seq:%d",
-				id, seq, param_seq[id]);
-		errno = EBUSY;
-		return NULL;
-	}
-
 	p = malloc(sizeof(*p) + (param != NULL ? SPA_POD_SIZE(param) : 0));
 	if (p == NULL)
 		return NULL;
 
 	p->id = id;
+	p->seq = seq;
 	if (param != NULL) {
 		p->param = SPA_PTROFF(p, sizeof(*p), struct spa_pod);
 		memcpy(p->param, param, SPA_POD_SIZE(param));
@@ -234,6 +215,39 @@ static struct param *add_param(struct spa_list *params,
 	return p;
 }
 
+static void update_params(struct file *file)
+{
+	struct param *p, *t;
+	struct global *node;
+	struct pw_node_info *info;
+	uint32_t i;
+
+	if ((node = file->node) == NULL)
+		return;
+	if ((info = node->info) == NULL)
+		return;
+
+	for (i = 0; i < info->n_params; i++) {
+		spa_list_for_each_safe(p, t, &node->pending_list, link) {
+			if (p->id == info->params[i].id &&
+			    p->seq != info->params[i].seq &&
+			    p->param != NULL) {
+				spa_list_remove(&p->link);
+				free(p);
+			}
+		}
+	}
+
+	spa_list_consume(p, &node->pending_list, link) {
+		spa_list_remove(&p->link);
+		if (p->param == NULL) {
+			clear_params(&node->param_list, p->id);
+			free(p);
+		} else {
+			spa_list_append(&node->param_list, &p->link);
+		}
+	}
+}
 #define ATOMIC_DEC(s)                   __atomic_sub_fetch(&(s), 1, __ATOMIC_SEQ_CST)
 #define ATOMIC_INC(s)                   __atomic_add_fetch(&(s), 1, __ATOMIC_SEQ_CST)
 
@@ -247,6 +261,8 @@ static struct file *make_file(void)
 
 	file->ref = 1;
 	file->fd = -1;
+	file->reqbufs_fd = -1;
+	file->priority = V4L2_PRIORITY_DEFAULT;
 	spa_list_init(&file->globals);
 	pw_array_init(&file->buffer_maps, sizeof(struct buffer_map) * MAX_BUFFERS);
 	return file;
@@ -254,6 +270,8 @@ static struct file *make_file(void)
 
 static void free_file(struct file *file)
 {
+	pw_log_info("file:%d", file->fd);
+
 	if (file->loop)
 		pw_thread_loop_stop(file->loop);
 
@@ -282,49 +300,99 @@ static void free_file(struct file *file)
 
 static void unref_file(struct file *file)
 {
+	pw_log_debug("file:%d ref:%d", file->fd, file->ref);
 	if (ATOMIC_DEC(file->ref) <= 0)
 		free_file(file);
 }
 
-static int add_fd_map(int fd, struct file *file)
+static int add_fd_map(int fd, struct file *file, uint32_t flags)
 {
 	struct fd_map *map;
 	pthread_mutex_lock(&globals.lock);
 	map = pw_array_add(&globals.fd_maps, sizeof(*map));
 	if (map != NULL) {
 		map->fd = fd;
+		map->flags = flags;
 		map->file = file;
 		ATOMIC_INC(file->ref);
+		pw_log_debug("fd:%d -> file:%d ref:%d", fd, file->fd, file->ref);
 	}
 	pthread_mutex_unlock(&globals.lock);
 	return 0;
+}
+
+static uint32_t find_dev_for_serial(uint32_t serial)
+{
+	uint32_t i, res = SPA_ID_INVALID;
+	pthread_mutex_lock(&globals.lock);
+	for (i = 0; i < SPA_N_ELEMENTS(globals.dev_map); i++) {
+		if (globals.dev_map[i] == serial) {
+			res = i;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&globals.lock);
+	return res;
+}
+
+static bool add_dev_for_serial(uint32_t dev, uint32_t serial)
+{
+	pthread_mutex_lock(&globals.lock);
+	globals.dev_map[dev] = serial;
+	pthread_mutex_unlock(&globals.lock);
+	return true;
 }
 
 /* must be called with `globals.lock` held */
 static struct fd_map *find_fd_map_unlocked(int fd)
 {
 	struct fd_map *map;
-
 	pw_array_for_each(map, &globals.fd_maps) {
 		if (map->fd == fd) {
 			ATOMIC_INC(map->file->ref);
+			pw_log_debug("fd:%d find:%d ref:%d", map->fd, fd, map->file->ref);
 			return map;
 		}
 	}
-
 	return NULL;
 }
 
-static struct file *find_file(int fd)
+static struct file *find_file(int fd, uint32_t *flags)
 {
 	pthread_mutex_lock(&globals.lock);
 
 	struct fd_map *map = find_fd_map_unlocked(fd);
 	struct file *file = NULL;
 
+	if (map != NULL) {
+		file = map->file;
+		*flags = map->flags;
+	}
+
+	pthread_mutex_unlock(&globals.lock);
+
+	return file;
+}
+
+static struct file *find_file_by_dev(uint32_t dev)
+{
+	struct fd_map *map = NULL, *tmp;
+	struct file *file = NULL;
+
+	pthread_mutex_lock(&globals.lock);
+	pw_array_for_each(tmp, &globals.fd_maps) {
+		if (tmp->file->dev_id == dev) {
+			if (tmp->file->closed)
+				tmp->file->fd = tmp->fd;
+			ATOMIC_INC(tmp->file->ref);
+			map = tmp;
+			pw_log_debug("dev:%d find:%d ref:%d",
+					tmp->file->dev_id, dev, tmp->file->ref);
+			break;
+		}
+	}
 	if (map != NULL)
 		file = map->file;
-
 	pthread_mutex_unlock(&globals.lock);
 
 	return file;
@@ -339,6 +407,7 @@ static struct file *remove_fd_map(int fd)
 
 	if (map != NULL) {
 		file = map->file;
+		pw_log_debug("fd:%d find:%d", map->fd, fd);
 		pw_array_remove(&globals.fd_maps, map);
 	}
 
@@ -350,7 +419,7 @@ static struct file *remove_fd_map(int fd)
 	return file;
 }
 
-static int add_file_map(void *addr, struct file *file)
+static int add_file_map(struct file *file, void *addr)
 {
 	struct file_map *map;
 	pthread_mutex_lock(&globals.lock);
@@ -448,15 +517,17 @@ static void on_sync_reply(void *data, uint32_t id, int seq)
 		return;
 
 	file->last_seq = seq;
-	if (file->pending_seq == seq)
+	if (file->pending_seq == seq) {
+		update_params(file);
 		pw_thread_loop_signal(file->loop, false);
+	}
 }
 
 static void on_error(void *data, uint32_t id, int seq, int res, const char *message)
 {
 	struct file *file = data;
 
-	pw_log_warn("%p: error id:%u seq:%d res:%d (%s): %s", file,
+	pw_log_warn("file:%d: error id:%u seq:%d res:%d (%s): %s", file->fd,
 			id, seq, res, spa_strerror(res), message);
 
 	if (id == PW_ID_CORE) {
@@ -485,6 +556,8 @@ static void node_event_info(void *object, const struct pw_node_info *info)
 	uint32_t i;
 
 	info = g->info = pw_node_info_merge(g->info, info, g->changed == 0);
+	if (info == NULL)
+		return;
 
 	pw_log_debug("update %d %"PRIu64, g->id, info->change_mask);
 
@@ -512,21 +585,14 @@ static void node_event_info(void *object, const struct pw_node_info *info)
 				continue;
 			info->params[i].user = 0;
 
-			if (id >= MAX_PARAMS) {
-				pw_log_error("too big param id %d", id);
-				continue;
-			}
-
-			if (id != SPA_PARAM_EnumFormat)
-				continue;
-
+			add_param(&g->pending_list, info->params[i].seq, id, NULL);
 			if (!(info->params[i].flags & SPA_PARAM_INFO_READ))
 				continue;
 
 			res = pw_node_enum_params((struct pw_node*)g->proxy,
-					++g->param_seq[id], id, 0, -1, NULL);
+					++info->params[i].seq, id, 0, -1, NULL);
 			if (SPA_RESULT_IS_ASYNC(res))
-				g->param_seq[id] = res;
+				info->params[i].seq = res;
 		}
 	}
 	do_resync(file);
@@ -538,8 +604,8 @@ static void node_event_param(void *object, int seq,
 {
 	struct global *g = object;
 
-	pw_log_debug("update param %d %d %d %d", g->id, id, seq, g->param_seq[id]);
-	add_param(&g->param_list, seq, g->param_seq, id, param);
+	pw_log_debug("update param %d %d %d", g->id, id, seq);
+	add_param(&g->pending_list, seq, id, param);
 }
 
 static const struct pw_node_events node_events = {
@@ -566,6 +632,10 @@ static void proxy_destroy(void *data)
 	struct global *g = data;
 	spa_list_remove(&g->link);
 	g->proxy = NULL;
+	if (g->file)
+		g->file->node = NULL;
+	clear_params(&g->param_list, SPA_ID_INVALID);
+	clear_params(&g->pending_list, SPA_ID_INVALID);
 }
 
 static const struct pw_proxy_events proxy_events = {
@@ -582,20 +652,36 @@ static void registry_event_global(void *data, uint32_t id,
 	const struct global_info *info = NULL;
 	struct pw_proxy *proxy;
 	const char *str;
-
-	pw_log_debug("got %d %s", id, type);
+	uint32_t serial = SPA_ID_INVALID, dev, req_serial;
 
 	if (spa_streq(type, PW_TYPE_INTERFACE_Node)) {
+
 		if (file->node != NULL)
 			return;
 
-		if (props == NULL ||
-		    ((str = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS)) == NULL) ||
+		pw_log_info("got %d %s", id, type);
+
+		if (props == NULL)
+			return;
+		if (((str = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS)) == NULL) ||
 		    ((!spa_streq(str, "Video/Sink")) &&
 		     (!spa_streq(str, "Video/Source"))))
 			return;
 
-		pw_log_debug("found node %d type:%s", id, str);
+		if (((str = spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL)) == NULL) ||
+		    !spa_atou32(str, &serial, 10))
+			return;
+
+		if ((str = getenv("PIPEWIRE_V4L2_TARGET")) != NULL
+				&& spa_atou32(str, &req_serial, 10)
+				&& req_serial != serial)
+			return;
+
+		dev = find_dev_for_serial(serial);
+		if (dev != SPA_ID_INVALID && dev != file->dev_id)
+			return;
+
+		pw_log_info("found node:%d serial:%d type:%s", id, serial, str);
 		info = &node_info;
 	}
 	if (info) {
@@ -612,6 +698,7 @@ static void registry_event_global(void *data, uint32_t id,
 		g->permissions = permissions;
 		g->props = props ? pw_properties_new_dict(props) : NULL;
 		g->proxy = proxy;
+		spa_list_init(&g->pending_list);
 		spa_list_init(&g->param_list);
 		spa_list_append(&file->globals, &g->link);
 
@@ -627,6 +714,7 @@ static void registry_event_global(void *data, uint32_t id,
 		if (info->init)
 			info->init(g);
 
+		file->serial = serial;
 		file->node = g;
 
 		do_resync(file);
@@ -660,17 +748,69 @@ static const struct pw_registry_events registry_events = {
 	.global_remove = registry_event_global_remove,
 };
 
-static int v4l2_openat(int dirfd, const char *path, int oflag, mode_t mode)
+static int do_dup(int oldfd, uint32_t flags)
 {
 	int res;
 	struct file *file;
+	uint32_t fl;
 
-	if (!spa_strstartswith(path, "/dev/video0"))
+	res = globals.old_fops.dup(oldfd);
+	if (res < 0)
+		return res;
+
+	if ((file = find_file(oldfd, &fl)) != NULL) {
+		add_fd_map(res, file, flags | fl);
+		unref_file(file);
+		pw_log_info("fd:%d %08x -> %d (%s)", oldfd, flags,
+				res, strerror(res < 0 ? errno : 0));
+	}
+	return res;
+}
+
+static int v4l2_dup(int oldfd)
+{
+	return do_dup(oldfd, FD_MAP_DUP);
+}
+
+static int v4l2_openat(int dirfd, const char *path, int oflag, mode_t mode)
+{
+	int res, flags;
+	struct file *file;
+	bool passthrough = true;
+	uint32_t dev_id = SPA_ID_INVALID;
+	char *real_path;
+
+	real_path = realpath(path, NULL);
+	if (!real_path)
+		real_path = (char *)path;
+
+	if (spa_strstartswith(real_path, "/dev/video")) {
+		if (spa_atou32(real_path+10, &dev_id, 10) && dev_id < MAX_DEV)
+			passthrough = false;
+	}
+
+	if (real_path && real_path != path)
+		free(real_path);
+
+	if (passthrough)
 		return globals.old_fops.openat(dirfd, path, oflag, mode);
+
+	pw_log_info("path:%s oflag:%d mode:%d", path, oflag, mode);
+
+	if ((file = find_file_by_dev(dev_id)) != NULL) {
+		res = do_dup(file->fd, 0);
+		unref_file(file);
+		if (res < 0)
+			return res;
+		if (fcntl(res, F_SETFL, oflag) < 0)
+			pw_log_warn("fd:%d failed to set flags: %m", res);
+		return res;
+	}
 
 	if ((file = make_file()) == NULL)
 		goto error;
 
+	file->dev_id = dev_id;
 	file->props = pw_properties_new(
 			PW_KEY_CLIENT_API, "v4l2",
 			NULL);
@@ -711,47 +851,43 @@ static int v4l2_openat(int dirfd, const char *path, int oflag, mode_t mode)
 		goto error_unlock;
 	}
 	if (file->node == NULL) {
-		errno = -ENOENT;
+		errno = ENOENT;
 		goto error_unlock;
 	}
 	pw_thread_loop_unlock(file->loop);
 
-	res = file->fd = spa_system_eventfd_create(file->l->system,
-		SPA_FD_CLOEXEC | SPA_FD_NONBLOCK);
+	flags = SPA_FD_CLOEXEC;
+	if (oflag & O_NONBLOCK)
+		flags |= SPA_FD_NONBLOCK;
+
+	res = spa_system_eventfd_create(file->l->system, flags);
 	if (res < 0)
 		goto error;
+
+	file->fd = res;
 
 	pw_log_info("path:%s oflag:%d mode:%d -> %d (%s)", path, oflag, mode,
 			res, strerror(res < 0 ? errno : 0));
 
-	add_fd_map(res, file);
+	add_fd_map(res, file, 0);
+	add_dev_for_serial(file->dev_id, file->serial);
+	unref_file(file);
 
 	return res;
 
 error_unlock:
 	pw_thread_loop_unlock(file->loop);
 error:
+	res = -errno;
 	if (file)
 		free_file(file);
+
+	pw_log_info("path:%s oflag:%d mode:%d -> %d (%s)", path, oflag, mode,
+			-1, spa_strerror(res));
+
+	errno = -res;
+
 	return -1;
-}
-
-static int v4l2_dup(int oldfd)
-{
-	int res;
-	struct file *file;
-
-	res = globals.old_fops.dup(oldfd);
-	if (res < 0)
-		return res;
-
-	if ((file = find_file(oldfd)) != NULL) {
-		add_fd_map(res, file);
-		unref_file(file);
-		pw_log_info("fd:%d -> %d (%s)", oldfd,
-				res, strerror(res < 0 ? errno : 0));
-	}
-	return res;
 }
 
 static int v4l2_close(int fd)
@@ -761,9 +897,12 @@ static int v4l2_close(int fd)
 	if ((file = remove_fd_map(fd)) == NULL)
 		return globals.old_fops.close(fd);
 
+	pw_log_info("fd:%d file:%d", fd, file->fd);
+
 	if (fd != file->fd)
 		spa_system_close(file->l->system, fd);
 
+	file->closed = true;
 	unref_file(file);
 
 	return 0;
@@ -774,10 +913,24 @@ static int v4l2_close(int fd)
 static int vidioc_querycap(struct file *file, struct v4l2_capability *arg)
 {
 	int res = 0;
+	const char *str = NULL;
+	struct pw_node_info *info;
+
+	if (file->node == NULL)
+		return -EIO;
+
+	info = file->node->info;
+
+	if (info != NULL && info->props != NULL) {
+		str = spa_dict_lookup(info->props, PW_KEY_NODE_DESCRIPTION);
+	}
+	if (str == NULL)
+		str = DEFAULT_CARD;
 
 	spa_scnprintf((char*)arg->driver, sizeof(arg->driver), "%s", DEFAULT_DRIVER);
-	spa_scnprintf((char*)arg->card, sizeof(arg->card), "%s", DEFAULT_CARD);
-	spa_scnprintf((char*)arg->bus_info, sizeof(arg->bus_info), "%s:%d", DEFAULT_BUS_INFO, 1);
+	spa_scnprintf((char*)arg->card, sizeof(arg->card), "%s", str);
+	spa_scnprintf((char*)arg->bus_info, sizeof(arg->bus_info), "platform:%s-%d",
+			DEFAULT_BUS_INFO, file->node->id);
 
 	arg->version = KERNEL_VERSION(5, 2, 0);
 	arg->device_caps = V4L2_CAP_VIDEO_CAPTURE
@@ -786,7 +939,7 @@ static int vidioc_querycap(struct file *file, struct v4l2_capability *arg)
 	arg->capabilities = arg->device_caps | V4L2_CAP_DEVICE_CAPS;
 	memset(arg->reserved, 0, sizeof(arg->reserved));
 
-	pw_log_info("file:%p -> %d (%s)", file, res, spa_strerror(res));
+	pw_log_info("file:%d -> %d (%s)", file->fd, res, spa_strerror(res));
 	return res;
 }
 
@@ -799,17 +952,17 @@ struct format_info {
 	const char *desc;
 };
 
-#define MAKE_FORMAT(fcc,mt,mst,bpp,fmt)	\
-	{ V4L2_PIX_FMT_ ## fcc, SPA_MEDIA_TYPE_ ## mt, SPA_MEDIA_SUBTYPE_ ## mst, SPA_VIDEO_FORMAT_ ## fmt, bpp, #fcc }
+#define MAKE_FORMAT(fcc,mt,mst,bpp,fmt,...)	\
+	{ V4L2_PIX_FMT_ ## fcc, SPA_MEDIA_TYPE_ ## mt, SPA_MEDIA_SUBTYPE_ ## mst, SPA_VIDEO_FORMAT_ ## fmt, bpp, __VA_ARGS__ }
 
 static const struct format_info format_info[] = {
 	/* RGB formats */
-	MAKE_FORMAT(RGB332, video, raw, 4, UNKNOWN),
+	MAKE_FORMAT(RGB332, video, raw, 4, UNKNOWN, "8-bit RGB 3-3-2"),
 	MAKE_FORMAT(ARGB555, video, raw, 4, UNKNOWN),
-	MAKE_FORMAT(XRGB555, video, raw, 4, RGB15),
+	MAKE_FORMAT(XRGB555, video, raw, 4, RGB15, "16-bit XRGB 1-5-5-5"),
 	MAKE_FORMAT(ARGB555X, video, raw, 4, UNKNOWN),
-	MAKE_FORMAT(XRGB555X, video, raw, 4, BGR15),
-	MAKE_FORMAT(RGB565, video, raw, 4, RGB16),
+	MAKE_FORMAT(XRGB555X, video, raw, 4, BGR15, "16-bit XRGB 1-5-5-5 BE"),
+	MAKE_FORMAT(RGB565, video, raw, 4, RGB16, "16-bit RGB 5-6-5"),
 	MAKE_FORMAT(RGB565X, video, raw, 4, UNKNOWN),
 	MAKE_FORMAT(BGR666, video, raw, 4, UNKNOWN),
 	MAKE_FORMAT(BGR24, video, raw, 4, BGR),
@@ -843,13 +996,13 @@ static const struct format_info format_info[] = {
 	MAKE_FORMAT(UV8, video, raw, 2, UNKNOWN),
 
 	/* Luminance+Chrominance formats */
-	MAKE_FORMAT(YVU410, video, raw, 1, YVU9),
-	MAKE_FORMAT(YVU420, video, raw, 1, YV12),
+	MAKE_FORMAT(YVU410, video, raw, 1, YVU9, "Planar YVU 4:1:0"),
+	MAKE_FORMAT(YVU420, video, raw, 1, YV12, "Planar YVU 4:2:0"),
 	MAKE_FORMAT(YVU420M, video, raw, 1, UNKNOWN),
-	MAKE_FORMAT(YUYV, video, raw, 2, YUY2),
+	MAKE_FORMAT(YUYV, video, raw, 2, YUY2, "YUYV 4:2:2"),
 	MAKE_FORMAT(YYUV, video, raw, 2, UNKNOWN),
-	MAKE_FORMAT(YVYU, video, raw, 2, YVYU),
-	MAKE_FORMAT(UYVY, video, raw, 2, UYVY),
+	MAKE_FORMAT(YVYU, video, raw, 2, YVYU, "YVYU 4:2:2"),
+	MAKE_FORMAT(UYVY, video, raw, 2, UYVY, "UYVY 4:2:2"),
 	MAKE_FORMAT(VYUY, video, raw, 2, UNKNOWN),
 	MAKE_FORMAT(YUV422P, video, raw, 1, Y42B),
 	MAKE_FORMAT(YUV411P, video, raw, 1, Y41B),
@@ -859,24 +1012,24 @@ static const struct format_info format_info[] = {
 	MAKE_FORMAT(YUV565, video, raw, 1, UNKNOWN),
 	MAKE_FORMAT(YUV32, video, raw, 1, UNKNOWN),
 	MAKE_FORMAT(YUV410, video, raw, 1, YUV9),
-	MAKE_FORMAT(YUV420, video, raw, 1, I420),
-	MAKE_FORMAT(YUV420M, video, raw, 1, I420),
+	MAKE_FORMAT(YUV420, video, raw, 1, I420, "Planar YUV 4:2:0"),
+	MAKE_FORMAT(YUV420M, video, raw, 1, I420, "Planar YUV 4:2:0 (N-C)"),
 	MAKE_FORMAT(HI240, video, raw, 1, UNKNOWN),
 	MAKE_FORMAT(HM12, video, raw, 1, UNKNOWN),
 	MAKE_FORMAT(M420, video, raw, 1, UNKNOWN),
 
 	/* two planes -- one Y, one Cr + Cb interleaved  */
-	MAKE_FORMAT(NV12, video, raw, 1, NV12),
-	MAKE_FORMAT(NV12M, video, raw, 1,  NV12),
-	MAKE_FORMAT(NV12MT, video, raw, 1,  NV12_64Z32),
+	MAKE_FORMAT(NV12, video, raw, 1, NV12, "Y/CbCr 4:2:0"),
+	MAKE_FORMAT(NV12M, video, raw, 1,  NV12, "Y/CbCr 4:2:0 (N-C)"),
+	MAKE_FORMAT(NV12MT, video, raw, 1,  NV12_64Z32, "Y/CbCr 4:2:0 (64x32 MB, N-C)"),
 	MAKE_FORMAT(NV12MT_16X16, video, raw, 1, UNKNOWN),
-	MAKE_FORMAT(NV21, video, raw, 1, NV21),
-	MAKE_FORMAT(NV21M, video, raw, 1, NV21),
-	MAKE_FORMAT(NV16, video, raw, 1, NV16),
-	MAKE_FORMAT(NV16M, video, raw, 1, NV16),
-	MAKE_FORMAT(NV61, video, raw, 1, NV61),
-	MAKE_FORMAT(NV61M, video, raw, 1, NV61),
-	MAKE_FORMAT(NV24, video, raw, 1, NV24),
+	MAKE_FORMAT(NV21, video, raw, 1, NV21, "Y/CrCb 4:2:0"),
+	MAKE_FORMAT(NV21M, video, raw, 1, NV21, "Y/CrCb 4:2:0 (N-C)"),
+	MAKE_FORMAT(NV16, video, raw, 1, NV16, "Y/CbCr 4:2:2"),
+	MAKE_FORMAT(NV16M, video, raw, 1, NV16, "Y/CbCr 4:2:2 (N-C)"),
+	MAKE_FORMAT(NV61, video, raw, 1, NV61, "Y/CrCb 4:2:2"),
+	MAKE_FORMAT(NV61M, video, raw, 1, NV61, "Y/CrCb 4:2:2 (N-C)"),
+	MAKE_FORMAT(NV24, video, raw, 1, NV24, "Y/CbCr 4:4:4"),
 	MAKE_FORMAT(NV42, video, raw, 1, UNKNOWN),
 
 	/* Bayer formats - see http://www.siliconimaging.com/RGB%20Bayer.htm */
@@ -886,14 +1039,14 @@ static const struct format_info format_info[] = {
 	MAKE_FORMAT(SRGGB8, video, bayer, 1, UNKNOWN),
 
 	/* compressed formats */
-	MAKE_FORMAT(MJPEG, video, mjpg, 1, ENCODED),
-	MAKE_FORMAT(JPEG, video, mjpg, 1, ENCODED),
-	MAKE_FORMAT(PJPG, video, mjpg, 1, ENCODED),
+	MAKE_FORMAT(MJPEG, video, mjpg, 1, ENCODED, "Motion-JPEG"),
+	MAKE_FORMAT(JPEG, video, mjpg, 1, ENCODED, "JFIF JPEG"),
+	MAKE_FORMAT(PJPG, video, mjpg, 1, ENCODED, "GSPCA PJPG"),
 	MAKE_FORMAT(DV, video, dv, 1, ENCODED),
 	MAKE_FORMAT(MPEG, video, mpegts, 1, ENCODED),
-	MAKE_FORMAT(H264, video, h264, 1, ENCODED),
-	MAKE_FORMAT(H264_NO_SC, video, h264, 1, ENCODED),
-	MAKE_FORMAT(H264_MVC, video, h264, 1, ENCODED),
+	MAKE_FORMAT(H264, video, h264, 1, ENCODED, "H.264"),
+	MAKE_FORMAT(H264_NO_SC, video, h264, 1, ENCODED, "H.264 (No Start Codes)"),
+	MAKE_FORMAT(H264_MVC, video, h264, 1, ENCODED, "H.264 MVC"),
 	MAKE_FORMAT(H263, video, h263, 1, ENCODED),
 	MAKE_FORMAT(MPEG1, video, mpeg1, 1, ENCODED),
 	MAKE_FORMAT(MPEG2, video, mpeg2, 1, ENCODED),
@@ -913,23 +1066,19 @@ static const struct format_info format_info[] = {
 static const struct format_info *format_info_from_media_type(uint32_t type,
 		uint32_t subtype, uint32_t format)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(format_info); i++) {
-		if ((format_info[i].media_type == type) &&
-		    (format_info[i].media_subtype == subtype) &&
-		    (format == 0 || format_info[i].format == format))
-			return &format_info[i];
-	}
+	SPA_FOR_EACH_ELEMENT_VAR(format_info, i)
+		if ((i->media_type == type) &&
+		    (i->media_subtype == subtype) &&
+		    (format == 0 || i->format == format))
+			return i;
 	return NULL;
 }
 
 static const struct format_info *format_info_from_fourcc(uint32_t fourcc)
 {
-	size_t i;
-	for (i = 0; i < SPA_N_ELEMENTS(format_info); i++) {
-		if (format_info[i].fourcc == fourcc)
-			return &format_info[i];
-	}
+	SPA_FOR_EACH_ELEMENT_VAR(format_info, i)
+		if (i->fourcc == fourcc)
+			return i;
 	return NULL;
 }
 
@@ -940,7 +1089,7 @@ static int format_to_info(const struct v4l2_format *arg, struct spa_video_info *
 	pw_log_info("type: %u", arg->type);
 	pw_log_info("width: %u", arg->fmt.pix.width);
 	pw_log_info("height: %u", arg->fmt.pix.height);
-	pw_log_info("fmt: %u", arg->fmt.pix.pixelformat);
+	pw_log_info("fmt: %.4s", (char*)&arg->fmt.pix.pixelformat);
 
 	if (arg->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1064,22 +1213,30 @@ static int info_to_fmt(const struct spa_video_info *info, struct v4l2_format *fm
 	case SPA_MEDIA_SUBTYPE_raw:
 		fmt->fmt.pix.width = info->info.raw.size.width;
 		fmt->fmt.pix.height = info->info.raw.size.height;
+		fmt->fmt.pix.colorspace = V4L2_COLORSPACE_SRGB;
 		break;
 	case SPA_MEDIA_SUBTYPE_mjpg:
 	case SPA_MEDIA_SUBTYPE_jpeg:
 		fmt->fmt.pix.width = info->info.mjpg.size.width;
 		fmt->fmt.pix.height = info->info.mjpg.size.height;
+		fmt->fmt.pix.colorspace = V4L2_COLORSPACE_JPEG;
 		break;
 	case SPA_MEDIA_SUBTYPE_h264:
 		fmt->fmt.pix.width = info->info.h264.size.width;
 		fmt->fmt.pix.height = info->info.h264.size.height;
+		fmt->fmt.pix.colorspace = V4L2_COLORSPACE_SRGB;
 		break;
 	default:
 		return -EINVAL;
 	}
+	if (fmt->fmt.pix.width == 0 ||
+	    fmt->fmt.pix.height == 0)
+		return -EINVAL;
+
 	fmt->fmt.pix.bytesperline = SPA_ROUND_UP_N(fmt->fmt.pix.width, 4) * fi->bpp;
 	fmt->fmt.pix.sizeimage = fmt->fmt.pix.bytesperline *
 		SPA_ROUND_UP_N(fmt->fmt.pix.height, 2);
+
 	return 0;
 }
 
@@ -1108,7 +1265,7 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
 	uint32_t n_params = 0;
 	uint8_t buffer[4096];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-	uint32_t buffers, size;
+	uint32_t buffers, size, stride;
 	struct v4l2_format fmt;
 
 	if (param == NULL || id != SPA_PARAM_Format)
@@ -1119,17 +1276,19 @@ static void on_stream_param_changed(void *data, uint32_t id, const struct spa_po
 
 	file->v4l2_format = fmt;
 
-	buffers = file->reqbufs;
-	size = 0;
+	buffers = SPA_CLAMP(file->reqbufs, 1u, MAX_BUFFERS);
+	size = fmt.fmt.pix.sizeimage;
+	stride = fmt.fmt.pix.bytesperline;
 
 	params[n_params++] = spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-			SPA_PARAM_BUFFERS_buffers, SPA_POD_Int(buffers),
+			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(buffers,
+							1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(size, 0, INT_MAX),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_CHOICE_RANGE_Int(0, 0, INT_MAX),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16),
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_CHOICE_RANGE_Int(stride, 0, INT_MAX),
 			SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1<<SPA_DATA_MemFd)));
+
 
 	pw_stream_update_params(file->stream, params, n_params);
 
@@ -1140,7 +1299,7 @@ static void on_stream_state_changed(void *data, enum pw_stream_state old,
 {
 	struct file *file = data;
 
-	pw_log_info("%p: state %s", file, pw_stream_state_as_string(state));
+	pw_log_info("file:%d: state %s", file->fd, pw_stream_state_as_string(state));
 
 	switch (state) {
 	case PW_STREAM_STATE_ERROR:
@@ -1165,7 +1324,8 @@ static void on_stream_add_buffer(void *data, struct pw_buffer *b)
 
 	file->size = d->maxsize;
 
-	pw_log_info("%p: id:%d fd:%"PRIi64" size:%u", file, id, d->fd, file->size);
+	pw_log_info("file:%d: id:%d fd:%"PRIi64" size:%u offset:%u", file->fd,
+			id, d->fd, file->size, id * file->size);
 
 	spa_zero(vb);
 	vb.index = id;
@@ -1192,7 +1352,8 @@ static void on_stream_remove_buffer(void *data, struct pw_buffer *b)
 static void on_stream_process(void *data)
 {
 	struct file *file = data;
-        spa_system_eventfd_write(file->l->system, file->fd, 1);
+	pw_log_debug("file:%d", file->fd);
+	spa_system_eventfd_write(file->l->system, file->fd, 1);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -1251,7 +1412,7 @@ static int vidioc_enum_framesizes(struct file *file, struct v4l2_frmsizeenum *ar
 		arg->discrete.width = size.width;
 		arg->discrete.height = size.height;
 
-		pw_log_debug("count:%d %d %dx%d", count, fi->fourcc,
+		pw_log_debug("count:%d %.4s %dx%d", count, (char*)&fi->fourcc,
 				size.width, size.height);
 		if (count == arg->index) {
 			found = true;
@@ -1327,10 +1488,13 @@ static int vidioc_enum_fmt(struct file *file, struct v4l2_fmtdesc *arg)
 
 		if (fi->fourcc == last_fourcc)
 			continue;
-		pw_log_info("count:%d %d %d", count, fi->fourcc, last_fourcc);
+		pw_log_info("count:%d fourcc:%.4s last:%.4s", count,
+				(char*)&fi->fourcc, (char*)&last_fourcc);
 
 		arg->flags = fi->format == SPA_VIDEO_FORMAT_ENCODED ? V4L2_FMT_FLAG_COMPRESSED : 0;
 		arg->pixelformat = fi->fourcc;
+		snprintf((char*)arg->description, sizeof(arg->description), "%s",
+				fi->desc ? fi->desc : "Unknown");
 		last_fourcc = fi->fourcc;
 		if (count == arg->index) {
 			found = true;
@@ -1343,7 +1507,7 @@ static int vidioc_enum_fmt(struct file *file, struct v4l2_fmtdesc *arg)
 	if (!found)
 		return -EINVAL;
 
-	pw_log_info("format: %u", arg->pixelformat);
+	pw_log_info("format: %.4s", (char*)&arg->pixelformat);
 	pw_log_info("flags: %u", arg->type);
 	memset(arg->reserved, 0, sizeof(arg->reserved));
 
@@ -1352,21 +1516,50 @@ static int vidioc_enum_fmt(struct file *file, struct v4l2_fmtdesc *arg)
 
 static int vidioc_g_fmt(struct file *file, struct v4l2_format *arg)
 {
+	struct param *p;
+	struct global *g = file->node;
+	int res;
+
 	if (arg->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
-	*arg = file->v4l2_format;
-	return 0;
+	pw_thread_loop_lock(file->loop);
+	if (file->v4l2_format.fmt.pix.pixelformat != 0) {
+		*arg = file->v4l2_format;
+	} else {
+		struct v4l2_format tmp;
+		bool found = false;
+
+		spa_list_for_each(p, &g->param_list, link) {
+			if (p->id != SPA_PARAM_EnumFormat || p->param == NULL)
+				continue;
+
+			if (param_to_fmt(p->param, &tmp) < 0)
+				continue;
+
+			found = true;
+			break;
+		}
+		if (!found) {
+			res = -EINVAL;
+			goto exit_unlock;
+		}
+		*arg = file->v4l2_format = tmp;
+	}
+	res = 0;
+exit_unlock:
+	pw_thread_loop_unlock(file->loop);
+	return res;
 }
 
 static int score_diff(struct v4l2_format *fmt, struct v4l2_format *tmp)
 {
-	int score = 0;
+	int score = 0, w, h;
 	if (fmt->fmt.pix.pixelformat != tmp->fmt.pix.pixelformat)
 		score += 20000;
-	score += SPA_ABS((int)fmt->fmt.pix.width - (int)tmp->fmt.pix.width);
-	score += SPA_ABS((int)fmt->fmt.pix.height - (int)tmp->fmt.pix.height);
-	return score;
+	w = SPA_ABS((int)fmt->fmt.pix.width - (int)tmp->fmt.pix.width);
+	h = SPA_ABS((int)fmt->fmt.pix.height - (int)tmp->fmt.pix.height);
+	return score + (w*w) + (h*h);
 }
 
 static int try_format(struct file *file, struct v4l2_format *fmt)
@@ -1377,6 +1570,9 @@ static int try_format(struct file *file, struct v4l2_format *fmt)
 	int best = -1;
 
 	pw_log_info("in: type: %u", fmt->type);
+	if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
 	pw_log_info("in: format: %.4s", (char*)&fmt->fmt.pix.pixelformat);
 	pw_log_info("in: width: %u", fmt->fmt.pix.width);
 	pw_log_info("in: height: %u", fmt->fmt.pix.height);
@@ -1385,7 +1581,10 @@ static int try_format(struct file *file, struct v4l2_format *fmt)
 		struct v4l2_format tmp;
 		int score;
 
-		if (p->id != SPA_PARAM_EnumFormat || p->param == NULL)
+		if (p->param == NULL)
+			continue;
+
+		if (p->id != SPA_PARAM_EnumFormat && p->id != SPA_PARAM_Format)
 			continue;
 
 		if (param_to_fmt(p->param, &tmp) < 0)
@@ -1398,6 +1597,10 @@ static int try_format(struct file *file, struct v4l2_format *fmt)
 		pw_log_debug("check: height: %u", tmp.fmt.pix.height);
 		pw_log_debug("check: score: %d best:%d", score, best);
 
+		if (p->id == SPA_PARAM_Format) {
+			best_fmt = tmp;
+			break;
+		}
 		if (best == -1 || score < best) {
 			best = score;
 			best_fmt = tmp;
@@ -1415,6 +1618,7 @@ static int try_format(struct file *file, struct v4l2_format *fmt)
 static int disconnect_stream(struct file *file)
 {
 	if (file->stream != NULL) {
+		pw_log_info("file:%d disconnect", file->fd);
 		pw_stream_destroy(file->stream);
 		file->stream = NULL;
 		file->n_buffers = 0;
@@ -1426,7 +1630,6 @@ static int connect_stream(struct file *file)
 {
 	int res;
 	struct global *g = file->node;
-	const char *str;
 	struct timespec abstime;
 	const char *error = NULL;
 	uint8_t buffer[1024];
@@ -1442,11 +1645,7 @@ static int connect_stream(struct file *file)
 
 	disconnect_stream(file);
 
-	props = NULL;
-	if ((str = getenv("PIPEWIRE_PROPS")) != NULL)
-		props = pw_properties_new_string(str);
-	if (props == NULL)
-		props = pw_properties_new(NULL, NULL);
+	props = pw_properties_new(NULL, NULL);
 	if (props == NULL) {
 		res = -errno;
 		goto exit;
@@ -1469,6 +1668,7 @@ static int connect_stream(struct file *file)
 	pw_stream_add_listener(file->stream,
 			&file->stream_listener,
 			&stream_events, file);
+
 
 	file->error = 0;
 
@@ -1532,36 +1732,132 @@ static int vidioc_try_fmt(struct file *file, struct v4l2_format *arg)
 	return res;
 }
 
-static int vidioc_enuminput(struct file *file, struct v4l2_input *arg)
+static int vidioc_g_parm(struct file *file, struct v4l2_streamparm *arg)
 {
-	if (arg->index != 0)
+	if (arg->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
-	spa_zero(*arg);
-	spa_scnprintf((char*)arg->name, sizeof(arg->name), "%s", DEFAULT_CARD);
-        arg->type = V4L2_INPUT_TYPE_CAMERA;
+	struct param *p;
 
-        return 0;
+	pw_thread_loop_lock(file->loop);
+	bool found = false;
+	struct spa_video_info info;
+	int num = 0, denom = 0;
+
+	spa_list_for_each(p, &file->node->param_list, link) {
+		if (p->id != SPA_PARAM_EnumFormat || p->param == NULL)
+			continue;
+
+		if (param_to_info(p->param, &info) < 0)
+			continue;
+
+		switch (info.media_subtype) {
+			case SPA_MEDIA_SUBTYPE_raw:
+				num = info.info.raw.framerate.num;
+				denom = info.info.raw.framerate.denom;
+				break;
+			case SPA_MEDIA_SUBTYPE_mjpg:
+				num = info.info.mjpg.framerate.num;
+				denom = info.info.mjpg.framerate.denom;
+				break;
+			case SPA_MEDIA_SUBTYPE_h264:
+				num = info.info.h264.framerate.num;
+				denom = info.info.h264.framerate.denom;
+				break;
+		}
+
+		if (num == 0 || denom == 0)
+		  continue;
+
+		found = true;
+		break;
+	}
+
+	if (!found) {
+		pw_thread_loop_unlock(file->loop);
+		return -EINVAL;
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	spa_zero(*arg);
+	arg->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	arg->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+	arg->parm.capture.capturemode = 0;
+	arg->parm.capture.extendedmode = 0;
+	arg->parm.capture.readbuffers = 0;
+	arg->parm.capture.timeperframe.numerator = denom;
+	arg->parm.capture.timeperframe.denominator = num;
+
+	pw_log_info("VIDIOC_G_PARM frametime: %d/%d", num, denom);
+
+	return 0;
+}
+
+// TODO: implement setting parameters
+static int vidioc_s_parm(struct file *file, struct v4l2_streamparm *arg)
+{
+	pw_log_warn("VIDIOC_S_PARM is unimplemented, returning current value");
+	vidioc_g_parm(file, arg);
+	return 0;
+}
+
+static int vidioc_enuminput(struct file *file, struct v4l2_input *arg)
+{
+	uint32_t index = arg->index;
+	spa_zero(*arg);
+	arg->index = index;
+	switch (arg->index) {
+	case 0:
+		spa_scnprintf((char*)arg->name, sizeof(arg->name), "%s", DEFAULT_CARD);
+	        arg->type = V4L2_INPUT_TYPE_CAMERA;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
 }
 static int vidioc_g_input(struct file *file, int *arg)
 {
 	*arg = 0;
-        return 0;
+	return 0;
 }
 static int vidioc_s_input(struct file *file, int *arg)
 {
 	if (*arg != 0)
 		return -EINVAL;
-        return 0;
+	return 0;
 }
 
-static int vidioc_reqbufs(struct file *file, struct v4l2_requestbuffers *arg)
+static int vidioc_g_priority(struct file *file, enum v4l2_priority *arg)
+{
+	*arg = file->priority;
+	pw_log_info("file:%d prio:%d", file->fd, *arg);
+	return 0;
+}
+static int vidioc_s_priority(struct file *file, int fd, enum v4l2_priority *arg)
+{
+	if (*arg > V4L2_PRIORITY_RECORD)
+		return -EINVAL;
+
+	if (file->fd != fd && file->priority > *arg)
+		return -EINVAL;
+
+	pw_log_info("file:%d (%d) prio:%d", file->fd, fd, *arg);
+	file->priority = *arg;
+	return 0;
+}
+
+static int vidioc_reqbufs(struct file *file, int fd, struct v4l2_requestbuffers *arg)
 {
 	int res;
 
 	pw_log_info("count: %u", arg->count);
 	pw_log_info("type: %u", arg->type);
 	pw_log_info("memory: %u", arg->memory);
+#ifdef V4L2_MEMORY_FLAG_NON_COHERENT
+	pw_log_info("flags: %08x", arg->flags);
+#endif
 
 	if (arg->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1570,17 +1866,25 @@ static int vidioc_reqbufs(struct file *file, struct v4l2_requestbuffers *arg)
 
 	pw_thread_loop_lock(file->loop);
 
+	if (file->n_buffers > 0 && file->reqbufs_fd != fd) {
+		pw_log_info("%u fd:%d != %d", file->n_buffers, file->reqbufs_fd, fd);
+		res = -EBUSY;
+		goto exit_unlock;
+	}
 	if (arg->count == 0) {
 		if (pw_array_get_len(&file->buffer_maps, struct buffer_map) != 0) {
+			pw_log_info("fd:%d have maps", fd);
 			res = -EBUSY;
 			goto exit_unlock;
 		}
 		if (file->running) {
+			pw_log_info("fd:%d running", fd);
 			res = -EBUSY;
 			goto exit_unlock;
 		}
-		file->reqbufs = 0;
 		res = disconnect_stream(file);
+		file->reqbufs = 0;
+		file->reqbufs_fd = -1;
 	} else {
 		file->reqbufs = arg->count;
 
@@ -1588,7 +1892,11 @@ static int vidioc_reqbufs(struct file *file, struct v4l2_requestbuffers *arg)
 			goto exit_unlock;
 
 		arg->count = file->n_buffers;
+		file->reqbufs_fd = fd;
 	}
+#ifdef V4L2_MEMORY_FLAG_NON_COHERENT
+	arg->flags = 0;
+#endif
 #ifdef V4L2_BUF_CAP_SUPPORTS_MMAP
 	arg->capabilities = V4L2_BUF_CAP_SUPPORTS_MMAP;
 #endif
@@ -1597,6 +1905,8 @@ static int vidioc_reqbufs(struct file *file, struct v4l2_requestbuffers *arg)
 	pw_log_info("result count: %u", arg->count);
 
 exit_unlock:
+	if (res < 0)
+		pw_log_info("error : %s", spa_strerror(res));
 	pw_thread_loop_unlock(file->loop);
 	return res;
 }
@@ -1649,42 +1959,52 @@ static int vidioc_qbuf(struct file *file, struct v4l2_buffer *arg)
 	arg->flags = buf->v4l2.flags;
 
 	pw_stream_queue_buffer(file->stream, buf->buf);
-	pw_log_debug("file:%p %d -> %d (%s)", file, arg->index, res, spa_strerror(res));
-
 exit:
+	pw_log_debug("file:%d %d -> %d (%s)", file->fd, arg->index, res, spa_strerror(res));
 	pw_thread_loop_unlock(file->loop);
 
 	return res;
 }
-static int vidioc_dqbuf(struct file *file, struct v4l2_buffer *arg)
+static int vidioc_dqbuf(struct file *file, int fd, struct v4l2_buffer *arg)
 {
 	int res = 0;
 	struct pw_buffer *b;
 	struct buffer *buf;
 	uint64_t val;
 	struct spa_data *d;
+	struct timespec ts;
 
 	if (arg->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 	if (arg->memory != V4L2_MEMORY_MMAP)
 		return -EINVAL;
 
+	pw_log_debug("file:%d (%d) %d", file->fd, fd,
+			arg->index);
+
 	pw_thread_loop_lock(file->loop);
 	if (arg->index >= file->n_buffers) {
 		res = -EINVAL;
 		goto exit_unlock;
 	}
-	if (!file->running) {
-		res = -EINVAL;
-		goto exit_unlock;
+
+	while (true) {
+		if (!file->running) {
+			res = -EINVAL;
+			goto exit_unlock;
+		}
+
+		b = pw_stream_dequeue_buffer(file->stream);
+		if (b != NULL)
+			break;
+
+		pw_thread_loop_unlock(file->loop);
+		res = spa_system_eventfd_read(file->l->system, fd, &val);
+		pw_thread_loop_lock(file->loop);
+		if (res < 0)
+			goto exit_unlock;
 	}
 
-	b = pw_stream_dequeue_buffer(file->stream);
-	if (b == NULL) {
-		res = -EAGAIN;
-		goto exit_unlock;
-	}
-	spa_system_eventfd_read(file->l->system, file->fd, &val);
 
 	buf = b->user_data;
 	d = &buf->buf->buffer->datas[0];
@@ -1693,21 +2013,26 @@ static int vidioc_dqbuf(struct file *file, struct v4l2_buffer *arg)
 	SPA_FLAG_UPDATE(buf->v4l2.flags, V4L2_BUF_FLAG_ERROR,
 		SPA_FLAG_IS_SET(d->chunk->flags, SPA_CHUNK_FLAG_CORRUPTED));
 
+	SPA_FLAG_SET(buf->v4l2.flags, V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC);
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	buf->v4l2.timestamp.tv_sec = ts.tv_sec;
+	buf->v4l2.timestamp.tv_usec = ts.tv_nsec / 1000;
+
+	buf->v4l2.field = V4L2_FIELD_NONE;
 	buf->v4l2.bytesused = d->chunk->size;
+	buf->v4l2.sequence = file->sequence++;
 	*arg = buf->v4l2;
 
 exit_unlock:
+	pw_log_debug("file:%d (%d) %d -> %d (%s)", file->fd, fd,
+			arg->index, res, spa_strerror(res));
 	pw_thread_loop_unlock(file->loop);
-
-	pw_log_debug("file:%p %d -> %d (%s)", file, arg->index, res, spa_strerror(res));
 	return res;
 }
 
 static int vidioc_streamon(struct file *file, int *arg)
 {
 	int res;
-
-	pw_log_info("file:%p -> %d", file, *arg);
 
 	if (*arg != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1727,40 +2052,302 @@ static int vidioc_streamon(struct file *file, int *arg)
 exit_unlock:
 	pw_thread_loop_unlock(file->loop);
 
-	pw_log_info("file:%p -> %d (%s)", file, res, spa_strerror(res));
+	pw_log_info("file:%d -> %d (%s)", file->fd, res, spa_strerror(res));
 	return res;
 }
 static int vidioc_streamoff(struct file *file, int *arg)
 {
 	int res;
+	uint32_t i;
 
 	if (*arg != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
 	pw_thread_loop_lock(file->loop);
+	for (i = 0; i < file->n_buffers; i++) {
+		struct buffer *buf = &file->buffers[i];
+		SPA_FLAG_CLEAR(buf->v4l2.flags, V4L2_BUF_FLAG_QUEUED);
+	}
 	if (!file->running) {
 		res = 0;
 		goto exit_unlock;
 	}
 	res = pw_stream_set_active(file->stream, false);
 	file->running = false;
+	file->sequence = 0;
 
 exit_unlock:
 	pw_thread_loop_unlock(file->loop);
 
-	pw_log_info("file:%p -> %d (%s)", file, res, spa_strerror(res));
+	pw_log_info("file:%d -> %d (%s)", file->fd, res, spa_strerror(res));
 	return res;
+}
+
+// Copied from spa/plugins/v4l2/v4l2-utils.c
+// TODO: unify with source
+static struct {
+	uint32_t v4l2_id;
+	uint32_t spa_id;
+} control_map[] = {
+	{ V4L2_CID_BRIGHTNESS, SPA_PROP_brightness },
+	{ V4L2_CID_CONTRAST, SPA_PROP_contrast },
+	{ V4L2_CID_SATURATION, SPA_PROP_saturation },
+	{ V4L2_CID_HUE, SPA_PROP_hue },
+	{ V4L2_CID_GAMMA, SPA_PROP_gamma },
+	{ V4L2_CID_EXPOSURE, SPA_PROP_exposure },
+	{ V4L2_CID_GAIN, SPA_PROP_gain },
+	{ V4L2_CID_SHARPNESS, SPA_PROP_sharpness },
+};
+
+static uint32_t prop_id_to_control(uint32_t prop_id)
+{
+	SPA_FOR_EACH_ELEMENT_VAR(control_map, c) {
+		if (c->spa_id == prop_id)
+			return c->v4l2_id;
+	}
+	if (prop_id >= SPA_PROP_START_CUSTOM)
+		return prop_id - SPA_PROP_START_CUSTOM;
+	return SPA_ID_INVALID;
+}
+
+static int vidioc_queryctrl(struct file *file, struct v4l2_queryctrl *arg)
+{
+	struct param *p;
+	bool found = false, next = false;
+
+	memset(arg->reserved, 0, sizeof(arg->reserved));
+
+	// TODO: V4L2_CTRL_FLAG_NEXT_COMPOUND
+	if (arg->id & V4L2_CTRL_FLAG_NEXT_CTRL) {
+		pw_log_debug("VIDIOC_QUERYCTRL: 0x%08" PRIx32 " | V4L2_CTRL_FLAG_NEXT_CTRL", arg->id);
+		arg->id = arg->id & ~V4L2_CTRL_FLAG_NEXT_CTRL & ~V4L2_CTRL_FLAG_NEXT_COMPOUND;
+		next = true;
+	}
+	pw_log_debug("VIDIOC_QUERYCTRL: 0x%08" PRIx32, arg->id);
+
+
+	if (file->node == NULL)
+		return -EIO;
+
+	pw_thread_loop_lock(file->loop);
+
+	// FIXME: place found item into a variable. Will fix unordered ctrls
+	spa_list_for_each(p, &file->node->param_list, link) {
+		uint32_t prop_id, ctrl_id, n_vals, choice = SPA_ID_INVALID;
+		const char *prop_description;
+		const struct spa_pod *type, *pod;
+
+		if (p->id != SPA_PARAM_PropInfo || p->param == NULL)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_id,		SPA_POD_Id(&prop_id),
+			SPA_PROP_INFO_description,	SPA_POD_String(&prop_description)) < 0)
+			continue;
+
+		if ((ctrl_id = prop_id_to_control(prop_id)) == SPA_ID_INVALID)
+			continue;
+
+		if ((next && ctrl_id > arg->id) || (!next && ctrl_id == arg->id)) {
+			if (spa_pod_parse_object(p->param,
+				SPA_TYPE_OBJECT_PropInfo, NULL,
+				SPA_PROP_INFO_type, SPA_POD_PodChoice(&type)) < 0)
+				continue;
+
+			// TODO: support setting controls
+			arg->flags = V4L2_CTRL_FLAG_READ_ONLY;
+			spa_scnprintf((char*)arg->name, sizeof(arg->name), "%s", prop_description);
+
+			// check type and populate range
+			pod = spa_pod_get_values(type, &n_vals, &choice);
+			if (spa_pod_is_int(pod)) {
+				if (n_vals < 4)
+					break;
+				arg->type = V4L2_CTRL_TYPE_INTEGER;
+				int *v = SPA_POD_BODY(pod);
+				arg->default_value = v[0];
+				arg->minimum = v[1];
+				arg->maximum = v[2];
+				arg->step = v[3];
+			}
+			else if (spa_pod_is_bool(pod) && n_vals > 0) {
+				arg->type = V4L2_CTRL_TYPE_BOOLEAN;
+				arg->default_value = SPA_POD_VALUE(struct spa_pod_bool, pod);
+				arg->minimum = 0;
+				arg->maximum = 1;
+				arg->step = 1;
+			}
+			else {
+				break;
+			}
+
+			arg->id = ctrl_id;
+			found = true;
+			pw_log_debug("ctrl 0x%08" PRIx32 " ok", arg->id);
+			break;
+		}
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	if (!found) {
+		pw_log_info("not found ctrl 0x%08" PRIx32, arg->id);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int vidioc_g_ctrl(struct file *file, struct v4l2_control *arg)
+{
+	struct param *p;
+	bool found = false;
+
+	pw_log_debug("VIDIOC_G_CTRL: 0x%08" PRIx32, arg->id);
+
+	if (file->node == NULL)
+		return -EIO;
+
+	pw_thread_loop_lock(file->loop);
+
+	spa_list_for_each(p, &file->node->param_list, link) {
+		uint32_t prop_id, ctrl_id, n_vals, choice = SPA_ID_INVALID;
+		const char *prop_description;
+		const struct spa_pod *type, *pod;
+
+		if (p->id != SPA_PARAM_PropInfo || p->param == NULL)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_id,		SPA_POD_Id(&prop_id),
+			SPA_PROP_INFO_description,	SPA_POD_String(&prop_description)) < 0)
+			continue;
+
+		if ((ctrl_id = prop_id_to_control(prop_id)) == SPA_ID_INVALID)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_type, SPA_POD_PodChoice(&type)) < 0)
+			continue;
+
+		if (ctrl_id == arg->id) {
+			// TODO: support getting true ctrl values instead of defaults
+			pod = spa_pod_get_values(type, &n_vals, &choice);
+			if (spa_pod_is_int(pod)) {
+				if (n_vals < 4)
+					break;
+				int *v = SPA_POD_BODY(pod);
+				arg->value = v[0];
+			}
+			else if (spa_pod_is_bool(pod) && n_vals > 0) {
+				arg->value = SPA_POD_VALUE(struct spa_pod_bool, pod);
+			}
+			else {
+				break;
+			}
+
+			found = true;
+			pw_log_debug("ctrl 0x%08" PRIx32 " ok", arg->id);
+			break;
+		}
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	if (!found) {
+		pw_log_info("not found ctrl 0x%08" PRIx32, arg->id);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int vidioc_s_ctrl(struct file *file, struct v4l2_control *arg)
+{
+	struct param *p;
+	bool found = false;
+
+	pw_log_info("VIDIOC_S_CTRL: 0x%08" PRIx32 " 0x%08" PRIx32, arg->id, arg->value);
+
+	if (file->node == NULL)
+		return -EIO;
+
+	pw_thread_loop_lock(file->loop);
+
+	spa_list_for_each(p, &file->node->param_list, link) {
+		uint32_t prop_id, ctrl_id, n_vals, choice = SPA_ID_INVALID;
+		const char *prop_description;
+		const struct spa_pod *type, *pod;
+
+		if (p->id != SPA_PARAM_PropInfo || p->param == NULL)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_id,		SPA_POD_Id(&prop_id),
+			SPA_PROP_INFO_description,	SPA_POD_String(&prop_description)) < 0)
+			continue;
+
+		if ((ctrl_id = prop_id_to_control(prop_id)) == SPA_ID_INVALID)
+			continue;
+
+		if (spa_pod_parse_object(p->param,
+			SPA_TYPE_OBJECT_PropInfo, NULL,
+			SPA_PROP_INFO_type, SPA_POD_PodChoice(&type)) < 0)
+			continue;
+
+		if (ctrl_id == arg->id) {
+			char buf[1024];
+			struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+			struct spa_pod_frame f[1];
+			struct spa_pod *param;
+			pod = spa_pod_get_values(type, &n_vals, &choice);
+
+			spa_pod_builder_push_object(&b, &f[0],
+					SPA_TYPE_OBJECT_Props,  SPA_PARAM_Props);
+
+			if (spa_pod_is_int(pod)) {
+				spa_pod_builder_add(&b, prop_id, SPA_POD_Int(arg->value), 0);
+			} else if (spa_pod_is_bool(pod)) {
+				spa_pod_builder_add(&b, prop_id, SPA_POD_Bool(arg->value), 0);
+			} else {
+				// TODO: float and other formats
+				pw_log_info("unknown type");
+				break;
+			}
+
+			param = spa_pod_builder_pop(&b, &f[0]);
+			pw_node_set_param(file->node->proxy, SPA_PARAM_Props, 0, param);
+
+			found = true;
+			pw_log_info("ctrl 0x%08" PRIx32 " set ok", arg->id);
+			break;
+		}
+	}
+
+	pw_thread_loop_unlock(file->loop);
+
+	if (!found) {
+		pw_log_info("not found ctrl 0x%08" PRIx32, arg->id);
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 {
 	int res;
 	struct file *file;
+	uint32_t flags;
 
-	if ((file = find_file(fd)) == NULL)
+	if ((file = find_file(fd, &flags)) == NULL)
 		return globals.old_fops.ioctl(fd, request, arg);
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
 	if (arg == NULL && (request & IOC_DIRMASK != IOC_VOID)) {
 #else
 	if (arg == NULL && (_IOC_DIR(request) & (_IOC_WRITE | _IOC_READ))) {
@@ -1768,6 +2355,9 @@ static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 		res = -EFAULT;
 		goto done;
 	}
+
+	if (flags & FD_MAP_DUP)
+		fd = file->fd;
 
 	switch (request & 0xffffffff) {
 	case VIDIOC_QUERYCAP:
@@ -1788,6 +2378,12 @@ static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 	case VIDIOC_TRY_FMT:
 		res = vidioc_try_fmt(file, (struct v4l2_format *)arg);
 		break;
+	case VIDIOC_G_PARM:
+		res = vidioc_g_parm(file, (struct v4l2_streamparm *)arg);
+		break;
+	case VIDIOC_S_PARM:
+		res = vidioc_s_parm(file, (struct v4l2_streamparm *)arg);
+		break;
 	case VIDIOC_ENUMINPUT:
 		res = vidioc_enuminput(file, (struct v4l2_input *)arg);
 		break;
@@ -1797,8 +2393,14 @@ static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 	case VIDIOC_S_INPUT:
 		res = vidioc_s_input(file, (int *)arg);
 		break;
+	case VIDIOC_G_PRIORITY:
+		res = vidioc_g_priority(file, (enum v4l2_priority *)arg);
+		break;
+	case VIDIOC_S_PRIORITY:
+		res = vidioc_s_priority(file, fd, (enum v4l2_priority *)arg);
+		break;
 	case VIDIOC_REQBUFS:
-		res = vidioc_reqbufs(file, (struct v4l2_requestbuffers *)arg);
+		res = vidioc_reqbufs(file, fd, (struct v4l2_requestbuffers *)arg);
 		break;
 	case VIDIOC_QUERYBUF:
 		res = vidioc_querybuf(file, (struct v4l2_buffer *)arg);
@@ -1807,13 +2409,23 @@ static int v4l2_ioctl(int fd, unsigned long int request, void *arg)
 		res = vidioc_qbuf(file, (struct v4l2_buffer *)arg);
 		break;
 	case VIDIOC_DQBUF:
-		res = vidioc_dqbuf(file, (struct v4l2_buffer *)arg);
+		res = vidioc_dqbuf(file, fd, (struct v4l2_buffer *)arg);
 		break;
 	case VIDIOC_STREAMON:
 		res = vidioc_streamon(file, (int *)arg);
 		break;
 	case VIDIOC_STREAMOFF:
 		res = vidioc_streamoff(file, (int *)arg);
+		break;
+	// TODO: VIDIOC_QUERY_EXT_CTRL
+	case VIDIOC_QUERYCTRL:
+		res = vidioc_queryctrl(file, (struct v4l2_queryctrl *)arg);
+		break;
+	case VIDIOC_G_CTRL:
+		res = vidioc_g_ctrl(file, (struct v4l2_control *)arg);
+		break;
+	case VIDIOC_S_CTRL:
+		res = vidioc_s_ctrl(file, (struct v4l2_control *)arg);
 		break;
 	default:
 		res = -ENOTTY;
@@ -1824,8 +2436,8 @@ done:
 		errno = -res;
 		res = -1;
 	}
-	pw_log_debug("fd:%d request:%lx nr:%d arg:%p -> %d (%s)",
-			fd, request, (int)_IOC_NR(request), arg,
+	pw_log_debug("file:%d fd:%d request:%lx nr:%d arg:%p -> %d (%s)",
+			file->fd, fd, request, (int)_IOC_NR(request), arg,
 			res, strerror(res < 0 ? errno : 0));
 
 	unref_file(file);
@@ -1838,12 +2450,13 @@ static void *v4l2_mmap(void *addr, size_t length, int prot,
 {
 	void *res;
 	struct file *file;
-	uint32_t id;
+	off64_t id;
 	struct pw_map_range range;
 	struct buffer *buf;
 	struct spa_data *data;
+	uint32_t fl;
 
-	if ((file = find_file(fd)) == NULL)
+	if ((file = find_file(fd, &fl)) == NULL)
 		return globals.old_fops.mmap(addr, length, prot, flags, fd, offset);
 
 	pw_thread_loop_lock(file->loop);
@@ -1868,14 +2481,19 @@ static void *v4l2_mmap(void *addr, size_t length, int prot,
 	if (!SPA_FLAG_IS_SET(data->flags, SPA_DATA_FLAG_WRITABLE))
 		prot &= ~PROT_WRITE;
 
-	res = globals.old_fops.mmap(addr, range.size, prot, flags, data->fd, range.offset);
+	if (data->data == NULL)
+		res = globals.old_fops.mmap(addr, range.size, prot, flags, data->fd, range.offset);
+	else
+		res = data->data;
 
-	add_file_map(file, addr);
-	add_buffer_map(file, addr, id);
+	add_file_map(file, res);
+	add_buffer_map(file, res, id);
 	SPA_FLAG_SET(buf->v4l2.flags, V4L2_BUF_FLAG_MAPPED);
 
-	pw_log_info("addr:%p length:%u prot:%d flags:%d fd:%"PRIi64" offset:%u -> %p (%s)" ,
-			addr, range.size, prot, flags, data->fd, range.offset,
+	pw_log_info("file:%d addr:%p length:%zu prot:%d flags:%d fd:%"PRIi64
+			" offset:%"PRIi64" (%u - %u) -> %p (%s)" ,
+			file->fd, addr, length, prot, flags, data->fd, offset,
+			range.offset, range.size,
 			res, strerror(res == MAP_FAILED ? errno : 0));
 
 error_unlock:
@@ -1888,7 +2506,9 @@ static int v4l2_munmap(void *addr, size_t length)
 {
 	int res;
 	struct buffer_map *bmap;
+	struct buffer *buf;
 	struct file *file;
+	struct spa_data *data;
 
 	if ((file = remove_file_map(addr)) == NULL)
 		return globals.old_fops.munmap(addr, length);
@@ -1900,12 +2520,18 @@ static int v4l2_munmap(void *addr, size_t length)
 		res = -EINVAL;
 		goto exit_unlock;
 	}
-	res = globals.old_fops.munmap(addr, length);
+	buf = &file->buffers[bmap->id];
+	data = &buf->buf->buffer->datas[0];
+
+	if (data->data == NULL)
+		res = globals.old_fops.munmap(addr, length);
+	else
+		res = 0;
 
 	pw_log_info("addr:%p length:%zu -> %d (%s)", addr, length,
 			res, strerror(res < 0 ? errno : 0));
 
-	file->buffers[bmap->id].v4l2.flags &= ~V4L2_BUF_FLAG_MAPPED;
+	buf->v4l2.flags &= ~V4L2_BUF_FLAG_MAPPED;
 	remove_buffer_map(file, bmap);
 
 exit_unlock:

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -42,26 +22,36 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
-#define FACTORY_USAGE	PW_KEY_LINK_OUTPUT_NODE"=<output-node> "	\
-			"["PW_KEY_LINK_OUTPUT_PORT"=<output-port>] "	\
-			PW_KEY_LINK_INPUT_NODE"=<input-node> "		\
-			"["PW_KEY_LINK_INPUT_PORT"=<input-port>] "	\
-			"["PW_KEY_OBJECT_LINGER"=<bool>] "		\
-			"["PW_KEY_LINK_PASSIVE"=<bool>]"
+#define FACTORY_USAGE	"("PW_KEY_LINK_OUTPUT_NODE"=<output-node>) "	\
+			"("PW_KEY_LINK_OUTPUT_PORT"=<output-port>) "	\
+			"("PW_KEY_LINK_INPUT_NODE"=<input-node>) "	\
+			"("PW_KEY_LINK_INPUT_PORT"=<input-port>) "	\
+			"("PW_KEY_OBJECT_LINGER"=<bool>) "		\
+			"("PW_KEY_LINK_PASSIVE"=<bool>)"
+
+#define MODULE_USAGE	"( allow.link.passive=<bool, default false> ) "
 
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
 	{ PW_KEY_MODULE_DESCRIPTION, "Allow clients to create links" },
+	{ PW_KEY_MODULE_USAGE, MODULE_USAGE },
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
 struct factory_data {
+	struct pw_context *context;
+
+	struct pw_properties *props;
+
+	unsigned int allow_passive:1;
+
 	struct pw_impl_module *module;
-	struct pw_impl_factory *this;
+	struct spa_hook module_listener;
+
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 
 	struct spa_list link_list;
-
-	struct spa_hook module_listener;
 
 	struct pw_work_queue *work;
 };
@@ -125,9 +115,13 @@ static void link_destroy(void *data)
 static void link_initialized(void *data)
 {
 	struct link_data *ld = data;
-	struct pw_impl_client *client = pw_resource_get_client(ld->factory_resource);
+	struct pw_impl_client *client;
 	int res;
 
+	if (ld->factory_resource == NULL)
+		return;
+
+	client = pw_resource_get_client(ld->factory_resource);
 	ld->global = pw_impl_link_get_global(ld->link);
 	pw_global_add_listener(ld->global, &ld->global_listener, &global_events, ld);
 
@@ -364,16 +358,13 @@ static void *create_object(void *_data,
 	struct pw_impl_client *client = NULL;
 	struct pw_impl_node *output_node, *input_node;
 	struct pw_impl_port *outport = NULL, *inport = NULL;
-	struct pw_context *context;
+	struct pw_context *context = d->context;
 	struct pw_impl_link *link;
 	const char *output_node_str, *input_node_str;
 	const char *output_port_str, *input_port_str;
 	struct link_data *ld;
 	int res;
 	bool linger;
-
-	client = pw_resource_get_client(resource);
-	context = pw_impl_client_get_context(client);
 
 	if (properties == NULL)
 		goto error_properties;
@@ -405,11 +396,15 @@ static void *create_object(void *_data,
 	linger = pw_properties_get_bool(properties, PW_KEY_OBJECT_LINGER, false);
 
 	pw_properties_setf(properties, PW_KEY_FACTORY_ID, "%d",
-			pw_impl_factory_get_info(d->this)->id);
-	if (!linger)
+			pw_impl_factory_get_info(d->factory)->id);
+
+	client = resource ? pw_resource_get_client(resource) : NULL;
+	if (client && !linger)
 		pw_properties_setf(properties, PW_KEY_CLIENT_ID, "%d",
 				pw_impl_client_get_info(client)->id);
 
+	if (!d->allow_passive)
+		pw_properties_set(properties, PW_KEY_LINK_PASSIVE, NULL);
 
 	link = pw_context_create_link(context, outport, inport, NULL, properties, sizeof(struct link_data));
 	properties = NULL;
@@ -463,24 +458,41 @@ static const struct pw_impl_factory_implementation impl_factory = {
 	.create_object = create_object,
 };
 
-static void module_destroy(void *data)
+static void factory_destroy(void *data)
 {
 	struct factory_data *d = data;
 	struct link_data *ld, *t;
 
-	spa_hook_remove(&d->module_listener);
+	spa_hook_remove(&d->factory_listener);
 
 	spa_list_for_each_safe(ld, t, &d->link_list, l)
 		pw_impl_link_destroy(ld->link);
 
-	pw_impl_factory_destroy(d->this);
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
+	pw_properties_free(d->props);
+}
+
+static const struct pw_impl_factory_events factory_events = {
+	PW_VERSION_IMPL_FACTORY_EVENTS,
+	.destroy = factory_destroy,
+};
+
+static void module_destroy(void *data)
+{
+	struct factory_data *d = data;
+	spa_hook_remove(&d->module_listener);
+	d->module = NULL;
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
 {
 	struct factory_data *d = data;
 	struct pw_impl_module *module = d->module;
-	struct pw_impl_factory *factory = d->this;
+	struct pw_impl_factory *factory = d->factory;
 	struct spa_dict_item items[1];
 	char id[16];
 	int res;
@@ -506,7 +518,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_impl_factory *factory;
 	struct factory_data *data;
-	int res;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -522,14 +533,15 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		return -errno;
 
 	data = pw_impl_factory_get_user_data(factory);
-	data->this = factory;
+	data->factory = factory;
 	data->module = module;
+	data->context = context;
 	data->work = pw_context_get_work_queue(context);
-	if (data->work == NULL) {
-		res = -errno;
-		pw_log_error( "can't get work queue: %m");
-		pw_impl_factory_destroy(factory);
-		return res;
+	data->props = args ? pw_properties_new_string(args) : NULL;
+
+	if (data->props) {
+		data->allow_passive = pw_properties_get_bool(data->props,
+				"allow.link.passive", false);
 	}
 
 	spa_list_init(&data->link_list);
@@ -542,6 +554,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	pw_impl_module_update_properties(module, &SPA_DICT_INIT_ARRAY(module_props));
 
+	pw_impl_factory_add_listener(factory, &data->factory_listener, &factory_events, data);
 	pw_impl_module_add_listener(module, &data->module_listener, &module_events, data);
 
 	return 0;

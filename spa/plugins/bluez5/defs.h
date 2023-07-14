@@ -1,26 +1,6 @@
-/* Spa Bluez5 Monitor
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa Bluez5 Monitor */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_BLUEZ5_DEFS_H
 #define SPA_BLUEZ5_DEFS_H
@@ -47,6 +27,7 @@ extern "C" {
 #define BLUEZ_PROFILE_INTERFACE BLUEZ_SERVICE ".Profile1"
 #define BLUEZ_ADAPTER_INTERFACE BLUEZ_SERVICE ".Adapter1"
 #define BLUEZ_DEVICE_INTERFACE BLUEZ_SERVICE ".Device1"
+#define BLUEZ_DEVICE_SET_INTERFACE BLUEZ_SERVICE ".DeviceSet1"
 #define BLUEZ_MEDIA_INTERFACE BLUEZ_SERVICE ".Media1"
 #define BLUEZ_MEDIA_ENDPOINT_INTERFACE BLUEZ_SERVICE ".MediaEndpoint1"
 #define BLUEZ_MEDIA_TRANSPORT_INTERFACE BLUEZ_SERVICE ".MediaTransport1"
@@ -59,9 +40,6 @@ extern "C" {
 #define DBUS_SIGNAL_PROPERTIES_CHANGED "PropertiesChanged"
 
 #define PIPEWIRE_BATTERY_PROVIDER "/org/freedesktop/pipewire/battery"
-
-#define MIN_LATENCY	512
-#define MAX_LATENCY	1024
 
 #define OBJECT_MANAGER_INTROSPECT_XML                                          \
 	DBUS_INTROSPECT_1_0_XML_DOCTYPE_DECL_NODE                                  \
@@ -137,13 +115,16 @@ extern "C" {
 
 #define BLUEZ_ERROR_NOT_SUPPORTED "org.bluez.Error.NotSupported"
 
-#define SPA_BT_UUID_A2DP_SOURCE "0000110A-0000-1000-8000-00805F9B34FB"
-#define SPA_BT_UUID_A2DP_SINK   "0000110B-0000-1000-8000-00805F9B34FB"
-#define SPA_BT_UUID_HSP_HS      "00001108-0000-1000-8000-00805F9B34FB"
-#define SPA_BT_UUID_HSP_HS_ALT  "00001131-0000-1000-8000-00805F9B34FB"
-#define SPA_BT_UUID_HSP_AG      "00001112-0000-1000-8000-00805F9B34FB"
-#define SPA_BT_UUID_HFP_HF      "0000111E-0000-1000-8000-00805F9B34FB"
-#define SPA_BT_UUID_HFP_AG      "0000111F-0000-1000-8000-00805F9B34FB"
+#define SPA_BT_UUID_A2DP_SOURCE "0000110a-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_A2DP_SINK   "0000110b-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_HSP_HS      "00001108-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_HSP_HS_ALT  "00001131-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_HSP_AG      "00001112-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_HFP_HF      "0000111e-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_HFP_AG      "0000111f-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_PACS        "00001850-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_BAP_SINK    "00002bc9-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_BAP_SOURCE  "00002bcb-0000-1000-8000-00805f9b34fb"
 
 #define PROFILE_HSP_AG	"/Profile/HSPAG"
 #define PROFILE_HSP_HS	"/Profile/HSPHS"
@@ -165,6 +146,10 @@ extern "C" {
 #define A2DP_SINK_ENDPOINT	A2DP_OBJECT_MANAGER_PATH "/A2DPSink"
 #define A2DP_SOURCE_ENDPOINT	A2DP_OBJECT_MANAGER_PATH "/A2DPSource"
 
+#define BAP_OBJECT_MANAGER_PATH "/MediaEndpointLE"
+#define BAP_SINK_ENDPOINT	BAP_OBJECT_MANAGER_PATH "/BAPSink"
+#define BAP_SOURCE_ENDPOINT	BAP_OBJECT_MANAGER_PATH "/BAPSource"
+
 #define SPA_BT_UNKNOWN_DELAY			0
 
 #define SPA_BT_NO_BATTERY			((uint8_t)255)
@@ -175,19 +160,30 @@ extern "C" {
 #define MSBC_ENCODED_SIZE       60  /* 2 bytes header + 57 mSBC payload + 1 byte padding */
 #define MSBC_PAYLOAD_SIZE       57
 
+enum spa_bt_media_direction {
+	SPA_BT_MEDIA_SOURCE,
+	SPA_BT_MEDIA_SINK,
+};
+
 enum spa_bt_profile {
 	SPA_BT_PROFILE_NULL =		0,
-	SPA_BT_PROFILE_A2DP_SINK =	(1 << 0),
-	SPA_BT_PROFILE_A2DP_SOURCE =	(1 << 1),
-	SPA_BT_PROFILE_HSP_HS =		(1 << 2),
-	SPA_BT_PROFILE_HSP_AG =		(1 << 3),
-	SPA_BT_PROFILE_HFP_HF =		(1 << 4),
-	SPA_BT_PROFILE_HFP_AG =		(1 << 5),
+	SPA_BT_PROFILE_BAP_SINK =	(1 << 0),
+	SPA_BT_PROFILE_BAP_SOURCE =	(1 << 1),
+	SPA_BT_PROFILE_A2DP_SINK =	(1 << 2),
+	SPA_BT_PROFILE_A2DP_SOURCE =	(1 << 3),
+	SPA_BT_PROFILE_HSP_HS =		(1 << 4),
+	SPA_BT_PROFILE_HSP_AG =		(1 << 5),
+	SPA_BT_PROFILE_HFP_HF =		(1 << 6),
+	SPA_BT_PROFILE_HFP_AG =		(1 << 7),
 
 	SPA_BT_PROFILE_A2DP_DUPLEX =	(SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_A2DP_SOURCE),
+	SPA_BT_PROFILE_BAP_DUPLEX =     (SPA_BT_PROFILE_BAP_SINK | SPA_BT_PROFILE_BAP_SOURCE),
 	SPA_BT_PROFILE_HEADSET_HEAD_UNIT = (SPA_BT_PROFILE_HSP_HS | SPA_BT_PROFILE_HFP_HF),
 	SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY = (SPA_BT_PROFILE_HSP_AG | SPA_BT_PROFILE_HFP_AG),
 	SPA_BT_PROFILE_HEADSET_AUDIO =  (SPA_BT_PROFILE_HEADSET_HEAD_UNIT | SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY),
+
+	SPA_BT_PROFILE_MEDIA_SINK =		(SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_BAP_SINK),
+	SPA_BT_PROFILE_MEDIA_SOURCE =	(SPA_BT_PROFILE_A2DP_SOURCE | SPA_BT_PROFILE_BAP_SOURCE),
 };
 
 static inline enum spa_bt_profile spa_bt_profile_from_uuid(const char *uuid)
@@ -206,6 +202,10 @@ static inline enum spa_bt_profile spa_bt_profile_from_uuid(const char *uuid)
 		return SPA_BT_PROFILE_HFP_HF;
 	else if (strcasecmp(uuid, SPA_BT_UUID_HFP_AG) == 0)
 		return SPA_BT_PROFILE_HFP_AG;
+	else if (strcasecmp(uuid, SPA_BT_UUID_BAP_SINK) == 0)
+		return SPA_BT_PROFILE_BAP_SINK;
+	else if (strcasecmp(uuid, SPA_BT_UUID_BAP_SOURCE) == 0)
+		return SPA_BT_PROFILE_BAP_SOURCE;
 	else
 		return 0;
 }
@@ -306,6 +306,12 @@ static inline const char *spa_bt_profile_name (enum spa_bt_profile profile) {
 	return "headset-audio-gateway";
       case SPA_BT_PROFILE_HEADSET_AUDIO:
 	return "headset-audio";
+      case SPA_BT_PROFILE_BAP_SOURCE:
+        return "bap-source";
+      case SPA_BT_PROFILE_BAP_SINK:
+        return "bap-sink";
+      case SPA_BT_PROFILE_BAP_DUPLEX:
+        return "bap-duplex";
       default:
         break;
       }
@@ -332,11 +338,17 @@ struct spa_bt_adapter {
 	uint32_t bluetooth_class;
 	uint32_t profiles;
 	int powered;
-	unsigned int endpoints_registered:1;
-	unsigned int application_registered:1;
+	unsigned int has_msbc:1;
+	unsigned int msbc_probed:1;
+	unsigned int legacy_endpoints_registered:1;
+	unsigned int a2dp_application_registered:1;
+	unsigned int bap_application_registered:1;
 	unsigned int player_registered:1;
-	unsigned int has_battery_provider;
-	unsigned int battery_provider_unavailable;
+	unsigned int has_battery_provider:1;
+	unsigned int battery_provider_unavailable:1;
+	unsigned int le_audio_supported:1;
+	unsigned int has_adapter1_interface:1;
+	unsigned int has_media1_interface:1;
 };
 
 enum spa_bt_form_factor {
@@ -413,7 +425,7 @@ static inline enum spa_bt_form_factor spa_bt_form_factor_from_class(uint32_t blu
 	return SPA_BT_FORM_FACTOR_UNKNOWN;
 }
 
-struct spa_bt_a2dp_codec_switch;
+struct spa_bt_media_codec_switch;
 struct spa_bt_transport;
 
 struct spa_bt_device_events {
@@ -429,9 +441,26 @@ struct spa_bt_device_events {
 	/** Profile configuration changed */
 	void (*profiles_changed) (void *data, uint32_t prev_profiles, uint32_t prev_connected);
 
+	/** Device set configuration changed */
+	void (*device_set_changed) (void *data);
+
 	/** Device freed */
 	void (*destroy) (void *data);
 };
+
+struct media_codec;
+
+struct spa_bt_set_membership {
+	struct spa_list link;
+	struct spa_list others;
+	struct spa_bt_device *device;
+	char *path;
+	uint8_t rank;
+	bool leader;
+};
+
+#define spa_bt_for_each_set_member(s, set) \
+	for ((s) = (set); (s); (s) = spa_list_next((s), others), (s) = (s) != (set) ? (s) : NULL)
 
 struct spa_bt_device {
 	struct spa_list link;
@@ -464,6 +493,7 @@ struct spa_bt_device {
 	struct spa_list remote_endpoint_list;
 	struct spa_list transport_list;
 	struct spa_list codec_switch_list;
+	struct spa_list set_membership_list;
 	uint8_t battery;
 	int has_battery;
 
@@ -473,28 +503,31 @@ struct spa_bt_device {
 	 * under same device. So it's safe to cache activation info here. */
 	bool a2dp_volume_active[2];
 
+	uint64_t last_bluez_action_time;
+
 	struct spa_hook_list listener_list;
 	bool added;
 
 	const struct spa_dict *settings;
 
 	DBusPendingCall *battery_pending_call;
-};
 
-struct a2dp_codec;
+	const struct media_codec *preferred_codec;
+};
 
 struct spa_bt_device *spa_bt_device_find(struct spa_bt_monitor *monitor, const char *path);
 struct spa_bt_device *spa_bt_device_find_by_address(struct spa_bt_monitor *monitor, const char *remote_address, const char *local_address);
 int spa_bt_device_add_profile(struct spa_bt_device *device, enum spa_bt_profile profile);
 int spa_bt_device_connect_profile(struct spa_bt_device *device, enum spa_bt_profile profile);
 int spa_bt_device_check_profiles(struct spa_bt_device *device, bool force);
-int spa_bt_device_ensure_a2dp_codec(struct spa_bt_device *device, const struct a2dp_codec * const *codecs);
-bool spa_bt_device_supports_a2dp_codec(struct spa_bt_device *device, const struct a2dp_codec *codec);
-const struct a2dp_codec **spa_bt_device_get_supported_a2dp_codecs(struct spa_bt_device *device, size_t *count);
+int spa_bt_device_ensure_media_codec(struct spa_bt_device *device, const struct media_codec * const *codecs);
+bool spa_bt_device_supports_media_codec(struct spa_bt_device *device, const struct media_codec *codec, bool sink);
+const struct media_codec **spa_bt_device_get_supported_media_codecs(struct spa_bt_device *device, size_t *count, bool sink);
 int spa_bt_device_ensure_hfp_codec(struct spa_bt_device *device, unsigned int codec);
 int spa_bt_device_supports_hfp_codec(struct spa_bt_device *device, unsigned int codec);
 int spa_bt_device_release_transports(struct spa_bt_device *device);
 int spa_bt_device_report_battery_level(struct spa_bt_device *device, uint8_t percentage);
+void spa_bt_device_update_last_bluez_action_time(struct spa_bt_device *device);
 
 #define spa_bt_device_emit(d,m,v,...)			spa_hook_list_call(&(d)->listener_list, \
 								struct spa_bt_device_events,	\
@@ -502,9 +535,12 @@ int spa_bt_device_report_battery_level(struct spa_bt_device *device, uint8_t per
 #define spa_bt_device_emit_connected(d,...)	        spa_bt_device_emit(d, connected, 0, __VA_ARGS__)
 #define spa_bt_device_emit_codec_switched(d,...)	spa_bt_device_emit(d, codec_switched, 0, __VA_ARGS__)
 #define spa_bt_device_emit_profiles_changed(d,...)	spa_bt_device_emit(d, profiles_changed, 0, __VA_ARGS__)
+#define spa_bt_device_emit_device_set_changed(d)	spa_bt_device_emit(d, device_set_changed, 0)
 #define spa_bt_device_emit_destroy(d)			spa_bt_device_emit(d, destroy, 0)
 #define spa_bt_device_add_listener(d,listener,events,data)           \
 	spa_hook_list_append(&(d)->listener_list, listener, events, data)
+
+struct spa_bt_iso_io;
 
 struct spa_bt_sco_io;
 
@@ -523,9 +559,10 @@ int spa_bt_sco_io_write(struct spa_bt_sco_io *io, uint8_t *data, int size);
 #define SPA_BT_VOLUME_A2DP_MAX	127
 
 enum spa_bt_transport_state {
-        SPA_BT_TRANSPORT_STATE_IDLE,
-        SPA_BT_TRANSPORT_STATE_PENDING,
-        SPA_BT_TRANSPORT_STATE_ACTIVE,
+        SPA_BT_TRANSPORT_STATE_ERROR = -1,
+        SPA_BT_TRANSPORT_STATE_IDLE = 0,
+        SPA_BT_TRANSPORT_STATE_PENDING = 1,
+        SPA_BT_TRANSPORT_STATE_ACTIVE = 2,
 };
 
 struct spa_bt_transport_events {
@@ -568,10 +605,13 @@ struct spa_bt_transport {
 	struct spa_list device_link;
 	enum spa_bt_profile profile;
 	enum spa_bt_transport_state state;
-	const struct a2dp_codec *a2dp_codec;
+	const struct media_codec *media_codec;
 	unsigned int codec;
 	void *configuration;
 	int configuration_len;
+	char *endpoint_path;
+	bool bap_initiator;
+	struct spa_list bap_transport_linked;
 
 	uint32_t n_channels;
 	uint32_t channels[64];
@@ -579,15 +619,26 @@ struct spa_bt_transport {
 	struct spa_bt_transport_volume volumes[SPA_BT_VOLUME_ID_TERM];
 
 	int acquire_refcount;
+	bool acquired;
+	bool keepalive;
+	int error_count;
+	uint64_t last_error_time;
 	int fd;
 	uint16_t read_mtu;
 	uint16_t write_mtu;
-	uint16_t delay;
+	unsigned int delay_us;
+	unsigned int latency_us;
+	uint8_t bap_cig;
+	uint8_t bap_cis;
+	uint32_t bap_interval;
 
+	struct spa_bt_iso_io *iso_io;
 	struct spa_bt_sco_io *sco_io;
 
 	struct spa_source volume_timer;
 	struct spa_source release_timer;
+	DBusPendingCall *acquire_call;
+	DBusPendingCall *volume_call;
 
 	struct spa_hook_list listener_list;
 	struct spa_callbacks impl;
@@ -608,6 +659,7 @@ bool spa_bt_transport_volume_enabled(struct spa_bt_transport *transport);
 
 int spa_bt_transport_acquire(struct spa_bt_transport *t, bool optional);
 int spa_bt_transport_release(struct spa_bt_transport *t);
+int spa_bt_transport_keepalive(struct spa_bt_transport *t, bool keepalive);
 int spa_bt_transport_ensure_sco_io(struct spa_bt_transport *t, struct spa_loop *data_loop);
 
 #define spa_bt_transport_emit(t,m,v,...)		spa_hook_list_call(&(t)->listener_list, \
@@ -693,6 +745,8 @@ int spa_bt_quirks_get_features(const struct spa_bt_quirks *quirks,
 		const struct spa_bt_device *device,
 		uint32_t *features);
 void spa_bt_quirks_destroy(struct spa_bt_quirks *quirks);
+
+int spa_bt_adapter_has_msbc(struct spa_bt_adapter *adapter);
 
 struct spa_bt_backend_implementation {
 #define SPA_VERSION_BT_BACKEND_IMPLEMENTATION	0

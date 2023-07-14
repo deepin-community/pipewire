@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <pipewire/pipewire.h>
 #include <pipewire/main-loop.h>
@@ -67,8 +47,8 @@ static void test_abi(void)
 	TEST_FUNC(ev, test, trigger_done);
 
 #if defined(__x86_64__) && defined(__LP64__)
-	spa_assert_se(sizeof(struct pw_buffer) == 24);
-	spa_assert_se(sizeof(struct pw_time) == 40);
+	spa_assert_se(sizeof(struct pw_buffer) == 32);
+	spa_assert_se(sizeof(struct pw_time) == 56);
 #else
 	fprintf(stderr, "%zd\n", sizeof(struct pw_buffer));
 	fprintf(stderr, "%zd\n", sizeof(struct pw_time));
@@ -171,13 +151,14 @@ static void test_create(void)
 	/* check id, only when connected */
 	spa_assert_se(pw_stream_get_node_id(stream) == SPA_ID_INVALID);
 
-	spa_assert_se(pw_stream_get_time(stream, &tm) == 0);
+	spa_assert_se(pw_stream_get_time_n(stream, &tm, sizeof(tm)) == 0);
 	spa_assert_se(tm.now == 0);
 	spa_assert_se(tm.rate.num == 0);
 	spa_assert_se(tm.rate.denom == 0);
 	spa_assert_se(tm.ticks == 0);
 	spa_assert_se(tm.delay == 0);
 	spa_assert_se(tm.queued == 0);
+	spa_assert_se(tm.buffered == 0);
 
 	spa_assert_se(pw_stream_dequeue_buffer(stream) == NULL);
 
@@ -249,6 +230,8 @@ int main(int argc, char *argv[])
 	test_abi();
 	test_create();
 	test_properties();
+
+	pw_deinit();
 
 	return 0;
 }

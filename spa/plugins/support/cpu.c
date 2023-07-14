@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stddef.h>
 #include <unistd.h>
@@ -30,7 +10,7 @@
 #include <sched.h>
 #include <fcntl.h>
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
 #include <sys/sysctl.h>
 #endif
 
@@ -59,7 +39,7 @@ struct impl {
 	uint32_t vm_type;
 };
 
-static char *read_file(const char *name, char *buffer, size_t len)
+static char *spa_cpu_read_file(const char *name, char *buffer, size_t len)
 {
 	int n, fd;
 
@@ -171,19 +151,18 @@ impl_cpu_get_vm_type(void *object)
 		/* https://wiki.freebsd.org/bhyve */
 		{ "BHYVE",		SPA_CPU_VM_BHYVE },
         };
-	uint32_t i, j;
 
-	for (i = 0; i < SPA_N_ELEMENTS(dmi_vendors); i++) {
+	SPA_FOR_EACH_ELEMENT_VAR(dmi_vendors, dv) {
 		char buffer[256], *s;
 
-		if ((s = read_file(dmi_vendors[i], buffer, sizeof(buffer))) == NULL)
+		if ((s = spa_cpu_read_file(*dv, buffer, sizeof(buffer))) == NULL)
 			continue;
 
-		for (j = 0; j < SPA_N_ELEMENTS(dmi_vendor_table); j++) {
-			if (spa_strstartswith(s, dmi_vendor_table[j].vendor)) {
+		SPA_FOR_EACH_ELEMENT_VAR(dmi_vendor_table, t) {
+			if (spa_strstartswith(s, t->vendor)) {
 				spa_log_debug(impl->log, "Virtualization %s found in DMI (%s)",
-						s, dmi_vendors[i]);
-				impl->vm_type = dmi_vendor_table[j].id;
+						s, *dv);
+				impl->vm_type = t->id;
 				goto done;
                         }
 		}

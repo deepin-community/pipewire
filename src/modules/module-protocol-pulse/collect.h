@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2020 Wim Taymans
- * Copyright © 2021 Sanchayan Maity <sanchayan@asymptotic.io>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-FileCopyrightText: Copyright © 2021 Sanchayan Maity <sanchayan@asymptotic.io> */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef PULSE_SERVER_COLLECT_H
 #define PULSE_SERVER_COLLECT_H
@@ -44,6 +24,7 @@ struct pw_manager_object;
 struct selector {
 	bool (*type) (struct pw_manager_object *o);
 	uint32_t id;
+	uint32_t index;
 	const char *key;
 	const char *value;
 	void (*accumulate) (struct selector *sel, struct pw_manager_object *o);
@@ -52,6 +33,7 @@ struct selector {
 };
 
 struct pw_manager_object *select_object(struct pw_manager *m, struct selector *s);
+uint32_t id_to_index(struct pw_manager *m, uint32_t id);
 void select_best(struct selector *s, struct pw_manager_object *o);
 
 /* ========================================================================== */
@@ -103,7 +85,7 @@ void collect_card_info(struct pw_manager_object *card, struct card_info *info);
 /* ========================================================================== */
 
 struct profile_info {
-	uint32_t id;
+	uint32_t index;
 	const char *name;
 	const char *description;
 	uint32_t priority;
@@ -118,7 +100,7 @@ uint32_t collect_profile_info(struct pw_manager_object *card, struct card_info *
 /* ========================================================================== */
 
 struct port_info {
-	uint32_t id;
+	uint32_t index;
 	uint32_t direction;
 	const char *name;
 	const char *description;
@@ -154,9 +136,11 @@ uint32_t collect_transport_codec_info(struct pw_manager_object *card,
 /* ========================================================================== */
 
 struct spa_dict *collect_props(struct spa_pod *info, struct spa_dict *dict);
-uint32_t find_profile_id(struct pw_manager_object *card, const char *name);
-uint32_t find_port_id(struct pw_manager_object *card, uint32_t direction, const char *port_name);
-struct pw_manager_object *find_linked(struct pw_manager *m, uint32_t obj_id, enum pw_direction direction);
-bool collect_is_linked(struct pw_manager *m, uint32_t obj_id, enum pw_direction direction);
+uint32_t find_profile_index(struct pw_manager_object *card, const char *name);
+uint32_t find_port_index(struct pw_manager_object *card, uint32_t direction, const char *port_name);
+struct pw_manager_object *find_peer_for_link(struct pw_manager *m,
+		struct pw_manager_object *o, uint32_t id, enum pw_direction direction);
+struct pw_manager_object *find_linked(struct pw_manager *m, uint32_t id, enum pw_direction direction);
+bool collect_is_linked(struct pw_manager *m, uint32_t id, enum pw_direction direction);
 
 #endif

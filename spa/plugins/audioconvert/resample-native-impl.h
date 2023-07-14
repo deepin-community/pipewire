@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <math.h>
 
@@ -34,10 +14,13 @@ typedef void (*resample_func_t)(struct resample *r,
 
 struct resample_info {
 	uint32_t format;
-	uint32_t cpu_flags;
 	resample_func_t process_copy;
+	const char *copy_name;
 	resample_func_t process_full;
+	const char *full_name;
 	resample_func_t process_inter;
+	const char *inter_name;
+	uint32_t cpu_flags;
 };
 
 struct native_data {
@@ -91,6 +74,14 @@ DEFINE_RESAMPLER(copy,arch)							\
 	*out_len = ooffs;							\
 }
 
+#define INC(index,phase,n_phases) \
+	index += inc;						\
+	phase += frac;						\
+	if (phase >= n_phases) {				\
+		phase -= n_phases;				\
+		index += 1;					\
+	}
+
 #define MAKE_RESAMPLER_FULL(arch)						\
 DEFINE_RESAMPLER(full,arch)							\
 {										\
@@ -111,17 +102,10 @@ DEFINE_RESAMPLER(full,arch)							\
 		phase = data->phase;						\
 										\
 		for (o = ooffs; o < olen && index + n_taps <= ilen; o++) {	\
-			const float *ip, *taps;					\
-										\
-			ip = &s[index];						\
-			taps = &data->filter[phase * stride];			\
-			index += inc;						\
-			phase += frac;						\
-			if (phase >= n_phases) {				\
-				phase -= n_phases;				\
-				index += 1;					\
-			}							\
-			inner_product_##arch(&d[o], ip, taps, n_taps);		\
+			inner_product_##arch(&d[o], &s[index],			\
+					&data->filter[phase * stride],		\
+					n_taps);				\
+			INC(index, phase, n_phases);				\
 		}								\
 	}									\
 	*in_len = index;							\
@@ -150,24 +134,13 @@ DEFINE_RESAMPLER(inter,arch)							\
 		phase = data->phase;						\
 										\
 		for (o = ooffs; o < olen && index + n_taps <= ilen; o++) {	\
-			const float *ip, *t0, *t1;				\
-			float ph, x;						\
-			uint32_t offset;					\
-										\
-			ip = &s[index];						\
-			ph = (float)phase * n_phases / out_rate;		\
-			offset = floor(ph);					\
-			x = ph - (float)offset;					\
-										\
-			t0 = &data->filter[(offset + 0) * stride];		\
-			t1 = &data->filter[(offset + 1) * stride];		\
-			index += inc;						\
-			phase += frac;						\
-			if (phase >= out_rate) {				\
-				phase -= out_rate;				\
-				index += 1;					\
-			}							\
-			inner_product_ip_##arch(&d[o], ip, t0, t1, x, n_taps);	\
+			float ph = (float)phase * n_phases / out_rate;		\
+			uint32_t offset = floorf(ph);				\
+			inner_product_ip_##arch(&d[o], &s[index],		\
+					&data->filter[(offset + 0) * stride],	\
+					&data->filter[(offset + 1) * stride],	\
+					ph - offset, n_taps);			\
+			INC(index, phase, out_rate);				\
 		}								\
 	}									\
 	*in_len = index;							\

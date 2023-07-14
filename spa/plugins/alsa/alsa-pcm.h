@@ -1,26 +1,6 @@
-/* Spa ALSA Sink
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa ALSA Sink */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_ALSA_UTILS_H
 #define SPA_ALSA_UTILS_H
@@ -33,12 +13,15 @@ extern "C" {
 #include <math.h>
 
 #include <alsa/asoundlib.h>
+#include <alsa/version.h>
 #include <alsa/use-case.h>
 
 #include <spa/support/plugin.h>
 #include <spa/support/loop.h>
 #include <spa/utils/list.h>
 #include <spa/utils/json.h>
+#include <spa/utils/dll.h>
+#include <spa/utils/ratelimit.h>
 
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -50,25 +33,25 @@ extern "C" {
 
 #include "alsa.h"
 
-#include "dll.h"
 
-#define MIN_LATENCY	16
-#define MAX_LATENCY	8192
+#define MAX_RATES	16
 
+#define DEFAULT_PERIOD		1024u
 #define DEFAULT_RATE		48000u
 #define DEFAULT_CHANNELS	2u
 #define DEFAULT_USE_CHMAP	false
+
+#define MAX_HTIMESTAMP_ERROR	64
 
 struct props {
 	char device[64];
 	char device_name[128];
 	char card_name[128];
-	uint32_t min_latency;
-	uint32_t max_latency;
 	bool use_chmap;
 };
 
 #define MAX_BUFFERS 32
+#define MAX_POLL 16
 
 struct buffer {
 	uint32_t id;
@@ -88,6 +71,17 @@ struct channel_map {
 	uint32_t channels;
 	uint32_t pos[SPA_AUDIO_MAX_CHANNELS];
 };
+
+struct card {
+	struct spa_list link;
+	int ref;
+	uint32_t index;
+	snd_use_case_mgr_t *ucm;
+	char *ucm_prefix;
+	int format_ref;
+	uint32_t rate;
+};
+
 struct state {
 	struct spa_handle handle;
 	struct spa_node node;
@@ -96,7 +90,11 @@ struct state {
 	struct spa_system *data_system;
 	struct spa_loop *data_loop;
 
-	int card_index;
+	FILE *log_file;
+	struct spa_ratelimit rate_limit;
+
+	uint32_t card_index;
+	struct card *card;
 	snd_pcm_stream_t stream;
 	snd_output_t *output;
 
@@ -115,20 +113,25 @@ struct state {
 
 	bool opened;
 	snd_pcm_t *hndl;
-	int card;
 
 	bool have_format;
 	struct spa_audio_info current_format;
 
 	uint32_t default_period_size;
+	uint32_t default_period_num;
 	uint32_t default_headroom;
 	uint32_t default_start_delay;
 	uint32_t default_format;
 	unsigned int default_channels;
 	unsigned int default_rate;
+	uint32_t allowed_rates[MAX_RATES];
+	uint32_t n_allowed_rates;
 	struct channel_map default_pos;
 	unsigned int disable_mmap;
 	unsigned int disable_batch;
+	unsigned int disable_tsched;
+	char clock_name[64];
+	uint32_t quantum_limit;
 
 	snd_pcm_uframes_t buffer_frames;
 	snd_pcm_uframes_t period_frames;
@@ -136,6 +139,7 @@ struct state {
 	int rate;
 	int channels;
 	size_t frame_size;
+	size_t frame_scale;
 	int blocks;
 	uint32_t rate_denom;
 	uint32_t delay;
@@ -166,18 +170,23 @@ struct state {
 	size_t ready_offset;
 
 	bool started;
-	struct spa_source source;
+	/* Either a single source for tsched, or a set of pollfds from ALSA */
+	struct spa_source source[MAX_POLL];
 	int timerfd;
+	struct pollfd pfds[MAX_POLL];
+	int n_fds;
 	uint32_t threshold;
 	uint32_t last_threshold;
 	uint32_t headroom;
 	uint32_t start_delay;
+	uint32_t min_delay;
+	uint32_t max_delay;
+	uint32_t htimestamp_error;
 
 	uint32_t duration;
-	uint32_t last_duration;
-	uint64_t last_position;
 	unsigned int alsa_started:1;
 	unsigned int alsa_sync:1;
+	unsigned int alsa_sync_warning:1;
 	unsigned int alsa_recovering:1;
 	unsigned int following:1;
 	unsigned int matching:1;
@@ -188,13 +197,14 @@ struct state {
 	unsigned int open_ucm:1;
 	unsigned int is_iec958:1;
 	unsigned int is_hdmi:1;
+	unsigned int multi_rate:1;
+	unsigned int htimestamp:1;
 
 	uint64_t iec958_codecs;
 
 	int64_t sample_count;
 
 	int64_t sample_time;
-	uint64_t current_time;
 	uint64_t next_time;
 	uint64_t base_time;
 
@@ -202,21 +212,30 @@ struct state {
 
 	struct spa_dll dll;
 	double max_error;
+	double max_resync;
 
 	struct spa_latency_info latency[2];
 	struct spa_process_latency_info process_latency;
 
-	const char *ucm_prefix;
+	/* Rate match via an ALSA ctl */
+	snd_ctl_t *ctl;
+	snd_ctl_elem_value_t *pitch_elem;
+	double last_rate;
 };
 
-int
-spa_alsa_enum_format(struct state *state, int seq,
+struct spa_pod *spa_alsa_enum_propinfo(struct state *state,
+		uint32_t idx, struct spa_pod_builder *b);
+int spa_alsa_add_prop_params(struct state *state, struct spa_pod_builder *b);
+int spa_alsa_parse_prop_params(struct state *state, struct spa_pod *params);
+
+int spa_alsa_enum_format(struct state *state, int seq,
 		     uint32_t start, uint32_t num,
 		     const struct spa_pod *filter);
 
 int spa_alsa_set_format(struct state *state, struct spa_audio_info *info, uint32_t flags);
+int spa_alsa_update_rate_match(struct state *state);
 
-int spa_alsa_init(struct state *state);
+int spa_alsa_init(struct state *state, const struct spa_dict *info);
 int spa_alsa_clear(struct state *state);
 
 int spa_alsa_open(struct state *state, const char *params);
@@ -267,6 +286,22 @@ static inline void spa_alsa_parse_position(struct channel_map *map, const char *
 	}
 }
 
+static inline uint32_t spa_alsa_parse_rates(uint32_t *rates, uint32_t max, const char *val, size_t len)
+{
+	struct spa_json it[2];
+	char v[256];
+	uint32_t count;
+
+	spa_json_init(&it[0], val, len);
+        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
+                spa_json_init(&it[1], val, len);
+
+	count = 0;
+	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 && count < max)
+		rates[count++] = atoi(v);
+	return count;
+}
+
 static inline uint32_t spa_alsa_iec958_codec_from_name(const char *name)
 {
 	int i;
@@ -305,6 +340,13 @@ static inline uint32_t spa_alsa_get_iec958_codecs(struct state *state, uint32_t 
 		j++;
 	}
 	return i;
+}
+
+/* This function is also as snd_pcm_channel_area_addr() since 1.2.6 which is not yet
+ * in ubuntu and I can't figure out how to do the ALSA version check. */
+static inline void *channel_area_addr(const snd_pcm_channel_area_t *area, snd_pcm_uframes_t offset)
+{
+        return (char *)area->addr + (area->first + area->step * offset) / 8;
 }
 
 #ifdef __cplusplus

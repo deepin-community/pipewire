@@ -1,30 +1,9 @@
-/* Spa
- *
- * Copyright (C) 2020, Collabora Ltd.
- *     Author: Raghavendra Rao Sidlagatta <raghavendra.rao@collabora.com>
- * Copyright (C) 2021 Wim Taymans <wim.taymans@gmail.com>
- *
- * libcamera-utils.cpp
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2020 Collabora Ltd. */
+/*                         @author Raghavendra Rao Sidlagatta <raghavendra.rao@collabora.com> */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
+
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -32,15 +11,17 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <poll.h>
+#include <limits.h>
 
 #include <linux/media.h>
+#include <libcamera/control_ids.h>
 
 int spa_libcamera_open(struct impl *impl)
 {
 	if (impl->acquired)
 		return 0;
 
-	spa_log_info(impl->log, "open camera %s", impl->props.device);
+	spa_log_info(impl->log, "open camera %s", impl->device_id.c_str());
 	impl->camera->acquire();
 
 	impl->allocator = new FrameBufferAllocator(impl->camera);
@@ -54,10 +35,10 @@ int spa_libcamera_close(struct impl *impl)
 	struct port *port = &impl->out_ports[0];
 	if (!impl->acquired)
 		return 0;
-	if (impl->active || port->have_format)
+	if (impl->active || port->current_format)
 		return 0;
 
-	spa_log_info(impl->log, "close camera %s", impl->props.device);
+	spa_log_info(impl->log, "close camera %s", impl->device_id.c_str());
 	delete impl->allocator;
 	impl->allocator = nullptr;
 
@@ -69,13 +50,10 @@ int spa_libcamera_close(struct impl *impl)
 
 static void spa_libcamera_get_config(struct impl *impl)
 {
-	if (impl->have_config)
+	if (impl->config)
 		return;
 
-	StreamRoles roles;
-	roles.push_back(VideoRecording);
-	impl->config = impl->camera->generateConfiguration(roles);
-	impl->have_config = true;
+	impl->config = impl->camera->generateConfiguration({ StreamRole::VideoRecording });
 }
 
 static int spa_libcamera_buffer_recycle(struct impl *impl, struct port *port, uint32_t buffer_id)
@@ -91,10 +69,10 @@ static int spa_libcamera_buffer_recycle(struct impl *impl, struct port *port, ui
 	if (buffer_id >= impl->requestPool.size()) {
 		spa_log_warn(impl->log, "invalid buffer_id %u >= %zu",
 				buffer_id, impl->requestPool.size());
-                return -EINVAL;
-        }
+		return -EINVAL;
+	}
 	Request *request = impl->requestPool[buffer_id].get();
-        Stream *stream = port->streamConfig.stream();
+	Stream *stream = port->streamConfig.stream();
 	FrameBuffer *buffer = impl->allocator->buffers(stream)[buffer_id].get();
 	if ((res = request->addBuffer(stream, buffer)) < 0) {
 		spa_log_warn(impl->log, "can't add buffer %u for request: %s",
@@ -104,7 +82,9 @@ static int spa_libcamera_buffer_recycle(struct impl *impl, struct port *port, ui
 	if (!impl->active) {
 		impl->pendingRequests.push_back(request);
 		return 0;
-        } else {
+	} else {
+		request->controls().merge(impl->ctrls);
+		impl->ctrls.clear();
 		if ((res = impl->camera->queueRequest(request)) < 0) {
 			spa_log_warn(impl->log, "can't queue buffer %u: %s",
 				buffer_id, spa_strerror(res));
@@ -119,7 +99,7 @@ static int allocBuffers(struct impl *impl, struct port *port, unsigned int count
 	int res;
 
 	if ((res = impl->allocator->allocate(port->streamConfig.stream())) < 0)
-                return res;
+		return res;
 
 	for (unsigned int i = 0; i < count; i++) {
 		std::unique_ptr<Request> request = impl->camera->createRequest(i);
@@ -129,7 +109,7 @@ static int allocBuffers(struct impl *impl, struct port *port, unsigned int count
 		}
 		impl->requestPool.push_back(std::move(request));
 	}
-        return res;
+	return res;
 }
 
 static void freeBuffers(struct impl *impl, struct port *port)
@@ -239,6 +219,14 @@ static const struct format_info *find_format_info_by_media_type(uint32_t type,
 	return NULL;
 }
 
+static int score_size(Size &a, Size &b)
+{
+	int x, y;
+	x = (int)a.width - (int)b.width;
+	y = (int)a.height - (int)b.height;
+	return x * x + y * y;
+}
+
 static int
 spa_libcamera_enum_format(struct impl *impl, struct port *port, int seq,
 		     uint32_t start, uint32_t num, const struct spa_pod *filter)
@@ -250,7 +238,7 @@ spa_libcamera_enum_format(struct impl *impl, struct port *port, int seq,
 	struct spa_pod_frame f[2];
 	struct spa_result_node_params result;
 	struct spa_pod *fmt;
-	uint32_t count = 0;
+	uint32_t i, count = 0, num_sizes;
 	PixelFormat format;
 	Size frameSize;
 	SizeRange sizeRange = SizeRange();
@@ -285,8 +273,23 @@ next_fmt:
 		goto next_fmt;
 	}
 
-	if (port->size_index < formats.sizes(format).size()) {
-		frameSize = formats.sizes(format)[port->size_index];
+	num_sizes = formats.sizes(format).size();
+	if (num_sizes > 0 && port->size_index <= num_sizes) {
+		if (port->size_index == 0) {
+			Size wanted = Size(640, 480), test;
+			int score, best = INT_MAX;
+			for (i = 0; i < num_sizes; i++) {
+				test = formats.sizes(format)[i];
+				score = score_size(wanted, test);
+				if (score < best) {
+					best = score;
+					frameSize = test;
+				}
+			}
+		}
+		else {
+			frameSize = formats.sizes(format)[port->size_index - 1];
+		}
 	} else if (port->size_index < 1) {
 		sizeRange = formats.range(format);
 		if (sizeRange.hStep == 0 || sizeRange.vStep == 0) {
@@ -417,9 +420,7 @@ static int spa_libcamera_set_format(struct impl *impl, struct port *port,
 	port->streamConfig = impl->config->at(0);
 
 	if ((res = allocBuffers(impl, port, port->streamConfig.bufferCount)) < 0)
-		return res;
-
-	port->have_format = true;
+		goto error;
 
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE;
 	port->info.flags = SPA_PORT_FLAG_CAN_ALLOC_BUFFERS |
@@ -435,13 +436,221 @@ error:
 
 }
 
+static struct {
+	uint32_t id;
+	uint32_t spa_id;
+} control_map[] = {
+	{ libcamera::controls::BRIGHTNESS, SPA_PROP_brightness },
+	{ libcamera::controls::CONTRAST, SPA_PROP_contrast },
+	{ libcamera::controls::SATURATION, SPA_PROP_saturation },
+	{ libcamera::controls::EXPOSURE_TIME, SPA_PROP_exposure },
+	{ libcamera::controls::ANALOGUE_GAIN, SPA_PROP_gain },
+	{ libcamera::controls::SHARPNESS, SPA_PROP_sharpness },
+};
+
+static uint32_t control_to_prop_id(struct impl *impl, uint32_t control_id)
+{
+	SPA_FOR_EACH_ELEMENT_VAR(control_map, c) {
+		if (c->id == control_id)
+			return c->spa_id;
+	}
+	return SPA_PROP_START_CUSTOM + control_id;
+}
+
+static uint32_t prop_id_to_control(struct impl *impl, uint32_t prop_id)
+{
+	SPA_FOR_EACH_ELEMENT_VAR(control_map, c) {
+		if (c->spa_id == prop_id)
+			return c->id;
+	}
+	if (prop_id >= SPA_PROP_START_CUSTOM)
+		return prop_id - SPA_PROP_START_CUSTOM;
+	return SPA_ID_INVALID;
+}
+
 static int
 spa_libcamera_enum_controls(struct impl *impl, struct port *port, int seq,
 		       uint32_t start, uint32_t num,
 		       const struct spa_pod *filter)
 {
-	return -ENOTSUP;
+	const ControlInfoMap &info = impl->camera->controls();
+	uint8_t buffer[1024];
+	struct spa_pod_builder b = { 0 };
+	struct spa_pod_frame f[2];
+	struct spa_result_node_params result;
+	struct spa_pod *ctrl;
+	uint32_t count = 0, skip, id;
+	int res;
+	const ControlId *ctrl_id;
+	ControlInfo ctrl_info;
+
+	result.id = SPA_PARAM_PropInfo;
+	result.next = start;
+
+	auto it = info.begin();
+	for (skip = result.next; skip; skip--)
+		it++;
+
+	if (false) {
+next:
+		it++;
+	}
+	result.index = result.next++;
+	if (it == info.end())
+		goto enum_end;
+
+	ctrl_id = it->first;
+	ctrl_info = it->second;
+
+	id = control_to_prop_id(impl, ctrl_id->id());
+
+	spa_pod_builder_init(&b, buffer, sizeof(buffer));
+	spa_pod_builder_push_object(&b, &f[0], SPA_TYPE_OBJECT_PropInfo, SPA_PARAM_PropInfo);
+	spa_pod_builder_add(&b,
+			SPA_PROP_INFO_id,   SPA_POD_Id(id),
+			SPA_PROP_INFO_description, SPA_POD_String(ctrl_id->name().c_str()),
+			0);
+
+	switch (ctrl_id->type()) {
+	case ControlTypeBool: {
+		bool def;
+		if (ctrl_info.def().isNone())
+			def = ctrl_info.min().get<bool>();
+		else
+			def = ctrl_info.def().get<bool>();
+
+		spa_pod_builder_add(&b,
+					SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(
+							def),
+					0);
+	} break;
+	case ControlTypeFloat: {
+		float min = ctrl_info.min().get<float>();
+		float max = ctrl_info.max().get<float>();
+		float def;
+
+		if (ctrl_info.def().isNone())
+			def = (min + max) / 2;
+		else
+			def = ctrl_info.def().get<float>();
+
+		spa_pod_builder_add(&b,
+				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Float(
+						def, min, max),
+				0);
+	} break;
+	case ControlTypeInteger32: {
+		int32_t min = ctrl_info.min().get<int32_t>();
+		int32_t max = ctrl_info.max().get<int32_t>();
+		int32_t def;
+
+		if (ctrl_info.def().isNone())
+			def = (min + max) / 2;
+		else
+			def = ctrl_info.def().get<int32_t>();
+
+		spa_pod_builder_add(&b,
+				SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Int(
+						def, min, max),
+				0);
+	} break;
+	default:
+		goto next;
+	}
+
+	ctrl = (struct spa_pod*) spa_pod_builder_pop(&b, &f[0]);
+
+	if (spa_pod_filter(&b, &result.param, ctrl, filter) < 0)
+		goto next;
+
+	spa_node_emit_result(&impl->hooks, seq, 0, SPA_RESULT_TYPE_NODE_PARAMS, &result);
+
+	if (++count != num)
+		goto next;
+
+enum_end:
+	res = 0;
+	return res;
 }
+
+struct val {
+	uint32_t type;
+	float f_val;
+	int32_t i_val;
+	bool b_val;
+	uint32_t id;
+};
+
+static int do_update_ctrls(struct spa_loop *loop,
+			    bool async,
+			    uint32_t seq,
+			    const void *data,
+			    size_t size,
+			    void *user_data)
+{
+	struct impl *impl = (struct impl *)user_data;
+	const struct val *d = (const struct val *)data;
+	switch (d->type) {
+	case ControlTypeBool:
+		impl->ctrls.set(d->id, d->b_val);
+		break;
+	case ControlTypeFloat:
+		impl->ctrls.set(d->id, d->f_val);
+		break;
+	case ControlTypeInteger32:
+		//impl->ctrls.set(d->id, (int32_t)d->i_val);
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static int
+spa_libcamera_set_control(struct impl *impl, const struct spa_pod_prop *prop)
+{
+	const ControlInfoMap &info = impl->camera->controls();
+	const ControlId *ctrl_id;
+	int res;
+	struct val d;
+	uint32_t control_id;
+
+	control_id = prop_id_to_control(impl, prop->key);
+	if (control_id == SPA_ID_INVALID)
+		return -ENOENT;
+
+	auto v = info.idmap().find(control_id);
+	if (v == info.idmap().end())
+		return -ENOENT;
+
+	ctrl_id = v->second;
+
+	d.type = ctrl_id->type();
+	d.id = ctrl_id->id();
+
+	switch (d.type) {
+	case ControlTypeBool:
+		if ((res = spa_pod_get_bool(&prop->value, &d.b_val)) < 0)
+			goto done;
+		break;
+	case ControlTypeFloat:
+		if ((res = spa_pod_get_float(&prop->value, &d.f_val)) < 0)
+			goto done;
+		break;
+	case ControlTypeInteger32:
+		if ((res = spa_pod_get_int(&prop->value, &d.i_val)) < 0)
+			goto done;
+		break;
+	default:
+		res = -EINVAL;
+		goto done;
+	}
+	spa_loop_invoke(impl->data_loop, do_update_ctrls, 0, &d, sizeof(d), true, impl);
+	res = 0;
+done:
+	return res;
+}
+
 
 static void libcamera_on_fd_events(struct spa_source *source)
 {
@@ -480,7 +689,12 @@ static void libcamera_on_fd_events(struct spa_source *source)
 	spa_list_append(&port->queue, &b->link);
 
 	io = port->io;
-	if (io != NULL && io->status != SPA_STATUS_HAVE_DATA) {
+	if (io == NULL) {
+		b = spa_list_first(&port->queue, struct buffer, link);
+		spa_list_remove(&b->link);
+		SPA_FLAG_SET(b->flags, BUFFER_FLAG_OUTSTANDING);
+		spa_libcamera_buffer_recycle(impl, port, b->id);
+	} else if (io->status != SPA_STATUS_HAVE_DATA) {
 		if (io->buffer_id < port->n_buffers)
 			spa_libcamera_buffer_recycle(impl, port, io->buffer_id);
 
@@ -499,6 +713,31 @@ static int spa_libcamera_use_buffers(struct impl *impl, struct port *port,
 		struct spa_buffer **buffers, uint32_t n_buffers)
 {
 	return -ENOTSUP;
+}
+
+static const struct {
+	Transform libcamera_transform;
+	uint32_t spa_transform_value;
+} transform_map[] = {
+	{ Transform::Identity, SPA_META_TRANSFORMATION_None },
+	{ Transform::Rot0, SPA_META_TRANSFORMATION_None },
+	{ Transform::HFlip, SPA_META_TRANSFORMATION_Flipped },
+	{ Transform::VFlip, SPA_META_TRANSFORMATION_Flipped180 },
+	{ Transform::HVFlip, SPA_META_TRANSFORMATION_180 },
+	{ Transform::Rot180, SPA_META_TRANSFORMATION_180 },
+	{ Transform::Transpose, SPA_META_TRANSFORMATION_Flipped90 },
+	{ Transform::Rot90, SPA_META_TRANSFORMATION_90 },
+	{ Transform::Rot270, SPA_META_TRANSFORMATION_270 },
+	{ Transform::Rot180Transpose, SPA_META_TRANSFORMATION_Flipped270 },
+};
+
+static uint32_t libcamera_transform_to_spa_transform_value(Transform transform)
+{
+	for (const auto& t : transform_map) {
+		if (t.libcamera_transform == transform)
+			return t.spa_transform_value;
+	}
+	return SPA_META_TRANSFORMATION_None;
 }
 
 static int
@@ -545,6 +784,16 @@ mmap_init(struct impl *impl, struct port *port,
 		b->flags = BUFFER_FLAG_OUTSTANDING;
 		b->h = (struct spa_meta_header*)spa_buffer_find_meta_data(buffers[i], SPA_META_Header, sizeof(*b->h));
 
+		b->videotransform = (struct spa_meta_videotransform*)spa_buffer_find_meta_data(
+			buffers[i], SPA_META_VideoTransform, sizeof(*b->videotransform));
+		if (b->videotransform) {
+			b->videotransform->transform =
+				libcamera_transform_to_spa_transform_value(impl->config->transform);
+			spa_log_debug(impl->log, "Setting videotransform for buffer %d to %u (from %s)",
+				i, b->videotransform->transform, transformToString(impl->config->transform));
+
+		}
+
 		d = buffers[i]->datas;
 		for(j = 0; j < buffers[i]->n_datas; ++j) {
 			d[j].type = port->memtype;
@@ -558,7 +807,7 @@ mmap_init(struct impl *impl, struct port *port,
 
 			if (port->memtype == SPA_DATA_DmaBuf ||
 			    port->memtype == SPA_DATA_MemFd) {
-				d[j].fd = bufs[i]->planes()[j].fd.fd();
+				d[j].fd = bufs[i]->planes()[j].fd.get();
 				spa_log_debug(impl->log, "Got fd = %ld for buffer: #%d", d[j].fd, i);
 				d[j].data = NULL;
 				SPA_FLAG_SET(b->flags, BUFFER_FLAG_ALLOCATED);
@@ -568,7 +817,7 @@ mmap_init(struct impl *impl, struct port *port,
 				d[j].data = mmap(NULL,
 						d[j].maxsize + d[j].mapoffset,
 						PROT_READ, MAP_SHARED,
-						bufs[i]->planes()[j].fd.fd(),
+						bufs[i]->planes()[j].fd.get(),
 						0);
 				if (d[j].data == MAP_FAILED) {
 					spa_log_error(impl->log, "mmap: %m");
@@ -607,7 +856,7 @@ spa_libcamera_alloc_buffers(struct impl *impl, struct port *port,
 }
 
 
-void Impl::requestComplete(libcamera::Request *request)
+void impl::requestComplete(libcamera::Request *request)
 {
 	struct impl *impl = this;
 	struct port *port = &impl->out_ports[0];
@@ -617,22 +866,29 @@ void Impl::requestComplete(libcamera::Request *request)
 
 	spa_log_debug(impl->log, "request complete");
 
+	buffer_id = request->cookie();
+	b = &port->buffers[buffer_id];
+
 	if ((request->status() == Request::RequestCancelled)) {
-                spa_log_debug(impl->log, "Request was cancelled");
-                return;
-        }
+		spa_log_debug(impl->log, "Request was cancelled");
+		request->reuse();
+		SPA_FLAG_SET(b->flags, BUFFER_FLAG_OUTSTANDING);
+		spa_libcamera_buffer_recycle(impl, port, b->id);
+		return;
+	}
 	FrameBuffer *buffer = request->findBuffer(stream);
 	if (buffer == nullptr) {
-                spa_log_warn(impl->log, "unknown buffer");
+		spa_log_warn(impl->log, "unknown buffer");
 		return;
 	}
 	const FrameMetadata &fmd = buffer->metadata();
 
-	buffer_id = request->cookie();
-
-	b = &port->buffers[buffer_id];
-
 	if (impl->clock) {
+		/* FIXME, we should follow the driver clock and target_ values.
+		 * for now we ignore and use our own. */
+		impl->clock->target_rate = port->rate;
+		impl->clock->target_duration = 1;
+
 		impl->clock->nsec = fmd.timestamp;
 		impl->clock->rate = port->rate;
 		impl->clock->position = fmd.sequence;
@@ -664,7 +920,7 @@ static int spa_libcamera_stream_on(struct impl *impl)
 	struct port *port = &impl->out_ports[0];
 	int res;
 
-	if (!port->have_format) {
+	if (!port->current_format) {
 		spa_log_error(impl->log, "Exting %s with -EIO", __FUNCTION__);
 		return -EIO;
 	}
@@ -674,15 +930,15 @@ static int spa_libcamera_stream_on(struct impl *impl)
 
 	impl->camera->requestCompleted.connect(impl, &impl::requestComplete);
 
-	spa_log_info(impl->log, "starting camera %s", impl->props.device);
+	spa_log_info(impl->log, "starting camera %s", impl->device_id.c_str());
 	if ((res = impl->camera->start()) < 0)
-		return res == -EACCES ? -EBUSY : res;
+		goto error;
 
 	for (Request *req : impl->pendingRequests) {
-                if ((res = impl->camera->queueRequest(req)) < 0)
-			return res == -EACCES ? -EBUSY : res;
-        }
-        impl->pendingRequests.clear();
+		if ((res = impl->camera->queueRequest(req)) < 0)
+			goto error_stop;
+	}
+	impl->pendingRequests.clear();
 
 	impl->source.func = libcamera_on_fd_events;
 	impl->source.data = impl;
@@ -691,13 +947,20 @@ static int spa_libcamera_stream_on(struct impl *impl)
 	impl->source.rmask = 0;
 	if (impl->source.fd < 0) {
 		spa_log_error(impl->log, "Failed to create eventfd: %s", spa_strerror(impl->source.fd));
-		return impl->source.fd;
+		res = impl->source.fd;
+		goto error_stop;
 	}
 	spa_loop_add_source(impl->data_loop, &impl->source);
 
 	impl->active = true;
 
 	return 0;
+
+error_stop:
+	impl->camera->stop();
+error:
+	impl->camera->requestCompleted.disconnect(impl, &impl::requestComplete);
+	return res == -EACCES ? -EBUSY : res;
 }
 
 static int do_remove_source(struct spa_loop *loop,
@@ -724,11 +987,14 @@ static int spa_libcamera_stream_off(struct impl *impl)
 		return 0;
 	}
 
-	spa_log_info(impl->log, "stopping camera %s", impl->props.device);
+	impl->active = false;
+	spa_log_info(impl->log, "stopping camera %s", impl->device_id.c_str());
 	impl->pendingRequests.clear();
 
-	if ((res = impl->camera->stop()) < 0)
-		return res == -EACCES ? -EBUSY : res;
+	if ((res = impl->camera->stop()) < 0) {
+		spa_log_warn(impl->log, "error stopping camera %s: %s",
+				impl->device_id.c_str(), spa_strerror(res));
+	}
 
 	impl->camera->requestCompleted.disconnect(impl, &impl::requestComplete);
 
@@ -739,7 +1005,6 @@ static int spa_libcamera_stream_off(struct impl *impl)
 	}
 
 	spa_list_init(&port->queue);
-	impl->active = false;
 
 	return 0;
 }

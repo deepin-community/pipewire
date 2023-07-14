@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -51,11 +31,12 @@ static const struct spa_dict_item module_props[] = {
 
 struct factory_data {
 	struct pw_context *context;
-	struct pw_impl_module *module;
-	struct pw_impl_factory *this;
 
-	struct spa_hook factory_listener;
+	struct pw_impl_module *module;
 	struct spa_hook module_listener;
+
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 
 	struct spa_list device_list;
 };
@@ -120,7 +101,7 @@ static void *create_object(void *_data,
 		goto error_properties;
 
 	pw_properties_setf(properties, PW_KEY_FACTORY_ID, "%d",
-			pw_global_get_id(pw_impl_factory_get_global(data->this)));
+			pw_global_get_id(pw_impl_factory_get_global(data->factory)));
 
 	client = resource ? pw_resource_get_client(resource) : NULL;
 
@@ -165,15 +146,10 @@ static void *create_object(void *_data,
 
 error_properties:
 	res = -EINVAL;
-	pw_log_error("factory %p: usage: " FACTORY_USAGE, data->this);
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res,
-				"usage: "FACTORY_USAGE);
+	pw_resource_errorf_id(resource, new_id, res, "usage: "FACTORY_USAGE);
 	goto error_exit_cleanup;
 error_device:
-	pw_log_debug("can't create device %s: %s", factory_name, spa_strerror(res));
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res,
+	pw_resource_errorf_id(resource, new_id, res,
 				"can't create device %s: %s", factory_name,
 				spa_strerror(res));
 	goto error_exit;
@@ -195,16 +171,19 @@ static const struct pw_impl_factory_implementation factory_impl = {
 	.create_object = create_object,
 };
 
-static void factory_destroy(void *_data)
+static void factory_destroy(void *data)
 {
-	struct factory_data *data = _data;
+	struct factory_data *d = data;
 	struct device_data *nd;
 
-	spa_hook_remove(&data->factory_listener);
-	spa_hook_remove(&data->module_listener);
+	spa_hook_remove(&d->factory_listener);
 
-	spa_list_consume(nd, &data->device_list, link)
+	spa_list_consume(nd, &d->device_list, link)
 		pw_impl_device_destroy(nd->device);
+
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
 }
 
 static const struct pw_impl_factory_events factory_events = {
@@ -212,17 +191,21 @@ static const struct pw_impl_factory_events factory_events = {
 	.destroy = factory_destroy,
 };
 
-static void module_destroy(void *_data)
+static void module_destroy(void *data)
 {
-	struct factory_data *data = _data;
-	pw_impl_factory_destroy(data->this);
+	struct factory_data *d = data;
+
+	spa_hook_remove(&d->module_listener);
+	d->module = NULL;
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
 {
 	struct factory_data *d = data;
 	struct pw_impl_module *module = d->module;
-	struct pw_impl_factory *factory = d->this;
+	struct pw_impl_factory *factory = d->factory;
 	struct spa_dict_item items[1];
 	char id[16];
 	int res;
@@ -261,7 +244,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		return -errno;
 
 	data = pw_impl_factory_get_user_data(factory);
-	data->this = factory;
+	data->factory = factory;
 	data->module = module;
 	data->context = context;
 	spa_list_init(&data->device_list);

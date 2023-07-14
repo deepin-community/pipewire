@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_PARAM_LATENCY_UTILS_H
 #define SPA_PARAM_LATENCY_UTILS_H
@@ -34,24 +14,14 @@ extern "C" {
  * \{
  */
 
+#include <float.h>
+
 #include <spa/pod/builder.h>
 #include <spa/pod/parser.h>
-#include <spa/param/param.h>
-
-struct spa_latency_info {
-	enum spa_direction direction;
-	float min_quantum;
-	float max_quantum;
-	uint32_t min_rate;
-	uint32_t max_rate;
-	uint64_t min_ns;
-	uint64_t max_ns;
-};
-
-#define SPA_LATENCY_INFO(dir,...) (struct spa_latency_info) { .direction = (dir), ## __VA_ARGS__ }
+#include <spa/param/latency.h>
 
 static inline int
-spa_latency_info_compare(const struct spa_latency_info *a, struct spa_latency_info *b)
+spa_latency_info_compare(const struct spa_latency_info *a, const struct spa_latency_info *b)
 {
 	if (a->min_quantum == b->min_quantum &&
 	    a->max_quantum == b->max_quantum &&
@@ -63,20 +33,42 @@ spa_latency_info_compare(const struct spa_latency_info *a, struct spa_latency_in
 	return 1;
 }
 
+static inline void
+spa_latency_info_combine_start(struct spa_latency_info *info, enum spa_direction direction)
+{
+	*info = SPA_LATENCY_INFO(direction,
+			.min_quantum = FLT_MAX,
+			.max_quantum = 0.0f,
+			.min_rate = UINT32_MAX,
+			.max_rate = 0,
+			.min_ns = UINT64_MAX,
+			.max_ns = 0);
+}
+static inline void
+spa_latency_info_combine_finish(struct spa_latency_info *info)
+{
+	if (info->min_quantum == FLT_MAX)
+		info->min_quantum = 0;
+	if (info->min_rate == UINT32_MAX)
+		info->min_rate = 0;
+	if (info->min_ns == UINT64_MAX)
+		info->min_ns = 0;
+}
+
 static inline int
 spa_latency_info_combine(struct spa_latency_info *info, const struct spa_latency_info *other)
 {
 	if (info->direction != other->direction)
 		return -EINVAL;
-	if (info->min_quantum == 0.0f || other->min_quantum < info->min_quantum)
+	if (other->min_quantum < info->min_quantum)
 		info->min_quantum = other->min_quantum;
 	if (other->max_quantum > info->max_quantum)
 		info->max_quantum = other->max_quantum;
-	if (info->min_rate == 0U || other->min_rate < info->min_rate)
+	if (other->min_rate < info->min_rate)
 		info->min_rate = other->min_rate;
 	if (other->max_rate > info->max_rate)
 		info->max_rate = other->max_rate;
-	if (info->min_ns == 0UL || other->min_ns < info->min_ns)
+	if (other->min_ns < info->min_ns)
 		info->min_ns = other->min_ns;
 	if (other->max_ns > info->max_ns)
 		info->max_ns = other->max_ns;
@@ -115,14 +107,6 @@ spa_latency_build(struct spa_pod_builder *builder, uint32_t id, const struct spa
 			SPA_PARAM_LATENCY_minNs, SPA_POD_Long(info->min_ns),
 			SPA_PARAM_LATENCY_maxNs, SPA_POD_Long(info->max_ns));
 }
-
-struct spa_process_latency_info {
-	float quantum;
-	uint32_t rate;
-	uint64_t ns;
-};
-
-#define SPA_PROCESS_LATENCY_INFO_INIT(...)	(struct spa_process_latency_info) { __VA_ARGS__ }
 
 static inline int
 spa_process_latency_parse(const struct spa_pod *latency, struct spa_process_latency_info *info)

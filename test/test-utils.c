@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include "pwtest.h"
 #include <limits.h>
@@ -172,9 +152,7 @@ static void test__pw_split_walk(void)
 		},
 	};
 
-	const struct test_case *tc;
-
-	SPA_FOR_EACH_ELEMENT(test_cases, tc) {
+	SPA_FOR_EACH_ELEMENT_VAR(test_cases, tc) {
 		const char *str = tc->input, *s;
 		const char *state = NULL;
 		size_t j = 0, len;
@@ -195,6 +173,8 @@ static void test__pw_split_strv(void)
 {
 	const char *test1 = "a \n test string  \n \r ";
 	const char *del = "\n\r ";
+	const char *test2 = "a:";
+	const char *del2 = ":";
 	int n_tokens;
 	char **res;
 
@@ -213,6 +193,13 @@ static void test__pw_split_strv(void)
 	pwtest_str_eq(res[0], "a");
 	pwtest_str_eq(res[1], "test string  \n \r ");
 	pwtest_ptr_null(res[2]);
+	pw_free_strv(res);
+
+	res = pw_split_strv(test2, del2, 2, &n_tokens);
+	pwtest_ptr_notnull(res);
+	pwtest_int_eq(n_tokens, 1);
+	pwtest_str_eq(res[0], "a");
+	pwtest_ptr_null(res[1]);
 	pw_free_strv(res);
 }
 

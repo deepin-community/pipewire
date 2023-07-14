@@ -1,26 +1,6 @@
-/* Spa
- *
- * Copyright © 2019 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa */
+/* SPDX-FileCopyrightText: Copyright © 2019 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <stddef.h>
@@ -34,6 +14,7 @@
 #include <spa/utils/list.h>
 #include <spa/utils/keys.h>
 #include <spa/utils/names.h>
+#include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -60,8 +41,6 @@ static void reset_props(struct props *props)
 {
 	props->live = DEFAULT_LIVE;
 }
-
-#define MAX_PORTS 1
 
 struct buffer {
 	uint32_t id;
@@ -122,7 +101,7 @@ struct impl {
 	struct port port;
 };
 
-#define CHECK_PORT(this,d,p)  ((d) == SPA_DIRECTION_OUTPUT && (p) < MAX_PORTS)
+#define CHECK_PORT(this,d,p)  ((d) == SPA_DIRECTION_OUTPUT && (p) < 1)
 
 static int impl_node_enum_params(void *object, int seq,
 				 uint32_t id, uint32_t start, uint32_t num,
@@ -155,7 +134,7 @@ static int impl_node_enum_params(void *object, int seq,
 			param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_PropInfo, id,
 				SPA_PROP_INFO_id,   SPA_POD_Id(SPA_PROP_live),
-				SPA_PROP_INFO_name, SPA_POD_String("Configure live mode of the source"),
+				SPA_PROP_INFO_description, SPA_POD_String("Configure live mode of the source"),
 				SPA_PROP_INFO_type, SPA_POD_Bool(p->live));
 			break;
 		default:
@@ -225,6 +204,7 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 	case SPA_PARAM_Props:
 	{
 		struct props *p = &this->props;
+		struct port *port = &this->port;
 
 		if (param == NULL) {
 			reset_props(p);
@@ -235,9 +215,9 @@ static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
 			SPA_PROP_live,        SPA_POD_OPT_Bool(&p->live));
 
 		if (p->live)
-			this->info.flags |= SPA_PORT_FLAG_LIVE;
+			port->info.flags |= SPA_PORT_FLAG_LIVE;
 		else
-			this->info.flags &= ~SPA_PORT_FLAG_LIVE;
+			port->info.flags &= ~SPA_PORT_FLAG_LIVE;
 		break;
 	}
 	default:
@@ -268,14 +248,20 @@ static void set_timer(struct impl *this, bool enabled)
 	}
 }
 
-static void read_timer(struct impl *this)
+static int read_timer(struct impl *this)
 {
 	uint64_t expirations;
+	int res = 0;
 
 	if (this->async || this->props.live) {
-		if (spa_system_timerfd_read(this->data_system, this->timer_source.fd, &expirations) < 0)
-			perror("read timerfd");
+		if ((res = spa_system_timerfd_read(this->data_system,
+						this->timer_source.fd, &expirations)) < 0) {
+			if (res != -EAGAIN)
+				spa_log_error(this->log, NAME " %p: timerfd error: %s",
+						this, spa_strerror(res));
+		}
 	}
+	return res;
 }
 
 static int make_buffer(struct impl *this)
@@ -285,7 +271,8 @@ static int make_buffer(struct impl *this)
 	uint32_t n_bytes;
 	int res;
 
-	read_timer(this);
+	if (read_timer(this) < 0)
+		return 0;
 
 	if ((res = spa_vulkan_ready(&this->state)) < 0) {
 		res = SPA_STATUS_OK;
@@ -307,12 +294,13 @@ static int make_buffer(struct impl *this)
 	this->state.constants.time = this->elapsed_time / (float) SPA_NSEC_PER_SEC;
 	this->state.constants.frame = this->frame_count;
 
-	spa_vulkan_process(&this->state, b->id);
+	this->state.streams[0].pending_buffer_id = b->id;
+	spa_vulkan_process(&this->state);
 
-	if (this->state.ready_buffer_id != SPA_ID_INVALID) {
-		struct buffer *b = &port->buffers[this->state.ready_buffer_id];
+	if (this->state.streams[0].ready_buffer_id != SPA_ID_INVALID) {
+		struct buffer *b = &port->buffers[this->state.streams[0].ready_buffer_id];
 
-		this->state.ready_buffer_id = SPA_ID_INVALID;
+		this->state.streams[0].ready_buffer_id = SPA_ID_INVALID;
 
 		spa_log_trace(this->log, NAME " %p: ready buffer %d", this, b->id);
 
@@ -600,8 +588,7 @@ impl_node_port_enum_params(void *object, int seq,
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_Int(this->position->video.stride *
 								this->position->video.size.height),
-			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->position->video.stride),
-			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
+			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->position->video.stride));
 		break;
 	}
 	case SPA_PARAM_Meta:
@@ -636,7 +623,7 @@ static int clear_buffers(struct impl *this, struct port *port)
 {
 	if (port->n_buffers > 0) {
 		spa_log_debug(this->log, NAME " %p: clear buffers", this);
-		spa_vulkan_use_buffers(&this->state, 0, 0, NULL);
+		spa_vulkan_use_buffers(&this->state, &this->state.streams[0], 0, 0, NULL);
 		port->n_buffers = 0;
 		spa_list_init(&port->empty);
 		spa_list_init(&port->ready);
@@ -733,10 +720,12 @@ impl_node_port_use_buffers(void *object,
 	spa_return_val_if_fail(CHECK_PORT(this, direction, port_id), -EINVAL);
 	port = &this->port;
 
-	if (!port->have_format)
-		return -EIO;
-
 	clear_buffers(this, port);
+
+	if (n_buffers > 0 && !port->have_format)
+		return -EIO;
+	if (n_buffers > MAX_BUFFERS)
+		return -ENOSPC;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b;
@@ -749,7 +738,7 @@ impl_node_port_use_buffers(void *object,
 
 		spa_list_append(&port->empty, &b->link);
 	}
-	spa_vulkan_use_buffers(&this->state, flags, n_buffers, buffers);
+	spa_vulkan_use_buffers(&this->state, &this->state.streams[0], flags, n_buffers, buffers);
 	port->n_buffers = n_buffers;
 
 	return 0;
@@ -803,8 +792,8 @@ static int impl_node_process(void *object)
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
 	port = &this->port;
-	io = port->io;
-	spa_return_val_if_fail(io != NULL, -EIO);
+	if ((io = port->io) == NULL)
+		return -EIO;
 
 	if (io->status == SPA_STATUS_HAVE_DATA)
 		return SPA_STATUS_HAVE_DATA;
@@ -855,6 +844,13 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 	return 0;
 }
 
+static int do_remove_timer(struct spa_loop *loop, bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct impl *this = user_data;
+	spa_loop_remove_source(this->data_loop, &this->timer_source);
+	return 0;
+}
+
 static int impl_clear(struct spa_handle *handle)
 {
 	struct impl *this;
@@ -864,7 +860,7 @@ static int impl_clear(struct spa_handle *handle)
 	this = (struct impl *) handle;
 
 	if (this->data_loop)
-		spa_loop_remove_source(this->data_loop, &this->timer_source);
+		spa_loop_invoke(this->data_loop, do_remove_timer, 0, NULL, 0, true, this);
 	spa_system_close(this->data_system, this->timer_source.fd);
 
 	return 0;
@@ -939,7 +935,7 @@ impl_init(const struct spa_handle_factory *factory,
 	port->info = SPA_PORT_INFO_INIT();
 	port->info.flags = SPA_PORT_FLAG_NO_REF | SPA_PORT_FLAG_CAN_ALLOC_BUFFERS;
 	if (this->props.live)
-		this->info.flags |= SPA_PORT_FLAG_LIVE;
+		port->info.flags |= SPA_PORT_FLAG_LIVE;
 	port->params[0] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
 	port->params[1] = SPA_PARAM_INFO(SPA_PARAM_Meta, SPA_PARAM_INFO_READ);
 	port->params[2] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);
@@ -951,6 +947,10 @@ impl_init(const struct spa_handle_factory *factory,
 	spa_list_init(&port->ready);
 
 	this->state.log = this->log;
+	spa_vulkan_init_stream(&this->state, &this->state.streams[0],
+			SPA_DIRECTION_OUTPUT, NULL);
+	this->state.shaderName = "spa/plugins/vulkan/shaders/main.spv";
+	this->state.n_streams = 1;
 
 	return 0;
 }

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <unistd.h>
 #include <stdio.h>
@@ -29,6 +9,7 @@
 #include <getopt.h>
 #include <limits.h>
 #include <math.h>
+#include <locale.h>
 
 #include <spa/utils/result.h>
 #include <spa/pod/builder.h>
@@ -50,11 +31,13 @@ struct data {
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
 
+	const char *opt_node_name;
 	const char *opt_group_name;
 	const char *opt_channel_map;
 
 	uint32_t channels;
 	uint32_t latency;
+	float delay;
 
 	struct pw_properties *capture_props;
 	struct pw_properties *playback_props;
@@ -80,21 +63,24 @@ static const struct pw_impl_module_events module_events = {
 };
 
 
-static void show_help(struct data *data, const char *name)
+static void show_help(struct data *data, const char *name, bool error)
 {
-        fprintf(stdout, "%s [options]\n"
+        fprintf(error ? stderr : stdout, "%s [options]\n"
 		"  -h, --help                            Show this help\n"
 		"      --version                         Show version\n"
 		"  -r, --remote                          Remote daemon name\n"
+		"  -n, --name                            Node name (default '%s')\n"
 		"  -g, --group                           Node group (default '%s')\n"
 		"  -c, --channels                        Number of channels (default %d)\n"
 		"  -m, --channel-map                     Channel map (default '%s')\n"
 		"  -l, --latency                         Desired latency in ms\n"
-		"  -C  --capture                         Capture source to connect to\n"
+		"  -d, --delay                           Desired delay in float s\n"
+		"  -C  --capture                         Capture source to connect to (name or serial)\n"
 		"      --capture-props                   Capture stream properties\n"
-		"  -P  --playback                        Playback sink to connect to\n"
+		"  -P  --playback                        Playback sink to connect to (name or serial)\n"
 		"      --playback-props                  Playback stream properties\n",
 		name,
+		data->opt_node_name,
 		data->opt_group_name,
 		data->channels,
 		data->opt_channel_map);
@@ -105,7 +91,7 @@ int main(int argc, char *argv[])
 	struct data data = { 0 };
 	struct pw_loop *l;
 	const char *opt_remote = NULL;
-	char cname[256];
+	char cname[256], value[256];
 	char *args;
 	size_t size;
 	FILE *f;
@@ -114,8 +100,10 @@ int main(int argc, char *argv[])
 		{ "version",		no_argument,		NULL, 'V' },
 		{ "remote",		required_argument,	NULL, 'r' },
 		{ "group",		required_argument,	NULL, 'g' },
+		{ "name",		required_argument,	NULL, 'n' },
 		{ "channels",		required_argument,	NULL, 'c' },
 		{ "latency",		required_argument,	NULL, 'l' },
+		{ "delay",		required_argument,	NULL, 'd' },
 		{ "capture",		required_argument,	NULL, 'C' },
 		{ "playback",		required_argument,	NULL, 'P' },
 		{ "capture-props",	required_argument,	NULL, 'i' },
@@ -124,6 +112,7 @@ int main(int argc, char *argv[])
 	};
 	int c, res = -1;
 
+	setlocale(LC_ALL, "");
 	pw_init(&argc, &argv);
 
 	data.channels = DEFAULT_CHANNELS;
@@ -131,6 +120,7 @@ int main(int argc, char *argv[])
 	data.opt_group_name = pw_get_client_name();
 	if (snprintf(cname, sizeof(cname), "%s-%zd", argv[0], (size_t) getpid()) > 0)
 		data.opt_group_name = cname;
+	data.opt_node_name = data.opt_group_name;
 
 	data.capture_props = pw_properties_new(NULL, NULL);
 	data.playback_props = pw_properties_new(NULL, NULL);
@@ -139,13 +129,13 @@ int main(int argc, char *argv[])
 		goto exit;
 	}
 
-	while ((c = getopt_long(argc, argv, "hVr:g:c:m:l:C:P:i:o:", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "hVr:n:g:c:m:l:d:C:P:i:o:", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h':
-			show_help(&data, argv[0]);
+			show_help(&data, argv[0], false);
 			return 0;
 		case 'V':
-			fprintf(stdout, "%s\n"
+			printf("%s\n"
 				"Compiled with libpipewire %s\n"
 				"Linked with libpipewire %s\n",
 				argv[0],
@@ -154,6 +144,9 @@ int main(int argc, char *argv[])
 			return 0;
 		case 'r':
 			opt_remote = optarg;
+			break;
+		case 'n':
+			data.opt_node_name = optarg;
 			break;
 		case 'g':
 			data.opt_group_name = optarg;
@@ -167,11 +160,14 @@ int main(int argc, char *argv[])
 		case 'l':
 			data.latency = atoi(optarg) * DEFAULT_RATE / SPA_MSEC_PER_SEC;
 			break;
+		case 'd':
+			data.delay = atof(optarg);
+			break;
 		case 'C':
-			pw_properties_set(data.capture_props, PW_KEY_NODE_TARGET, optarg);
+			pw_properties_set(data.capture_props, PW_KEY_TARGET_OBJECT, optarg);
 			break;
 		case 'P':
-			pw_properties_set(data.playback_props, PW_KEY_NODE_TARGET, optarg);
+			pw_properties_set(data.playback_props, PW_KEY_TARGET_OBJECT, optarg);
 			break;
 		case 'i':
 			pw_properties_update_string(data.capture_props, optarg, strlen(optarg));
@@ -180,7 +176,7 @@ int main(int argc, char *argv[])
 			pw_properties_update_string(data.playback_props, optarg, strlen(optarg));
 			break;
 		default:
-			show_help(&data, argv[0]);
+			show_help(&data, argv[0], true);
 			return -1;
 		}
 	}
@@ -202,17 +198,26 @@ int main(int argc, char *argv[])
 	}
 
 
-        f = open_memstream(&args, &size);
+        if ((f = open_memstream(&args, &size)) == NULL) {
+		fprintf(stderr, "can't open memstream: %m\n");
+		goto exit;
+	}
+
 	fprintf(f, "{");
 
 	if (opt_remote != NULL)
 		fprintf(f, " remote.name = \"%s\"", opt_remote);
 	if (data.latency != 0)
 		fprintf(f, " node.latency = %u/%u", data.latency, DEFAULT_RATE);
+	if (data.delay != 0.0f)
+		fprintf(f, " target.delay.sec = %s",
+				spa_json_format_float(value, sizeof(value), data.delay));
 	if (data.channels != 0)
 		fprintf(f, " audio.channels = %u", data.channels);
 	if (data.opt_channel_map != NULL)
 		fprintf(f, " audio.position = %s", data.opt_channel_map);
+	if (data.opt_node_name != NULL)
+		fprintf(f, " node.name = %s", data.opt_node_name);
 
 	if (data.opt_group_name != NULL) {
 		pw_properties_set(data.capture_props, PW_KEY_NODE_GROUP, data.opt_group_name);

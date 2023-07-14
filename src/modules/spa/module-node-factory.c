@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <string.h>
 #include <stdio.h>
@@ -51,11 +31,12 @@ static const struct spa_dict_item module_props[] = {
 
 struct factory_data {
 	struct pw_context *context;
-	struct pw_impl_factory *this;
-	struct pw_impl_module *module;
 
-	struct spa_hook factory_listener;
+	struct pw_impl_module *module;
 	struct spa_hook module_listener;
+
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 
 	struct spa_list node_list;
 };
@@ -65,15 +46,109 @@ struct node_data {
 	struct spa_list link;
 	struct pw_impl_node *node;
 	struct spa_hook node_listener;
+	struct pw_resource *resource;
 	struct spa_hook resource_listener;
 	unsigned int linger:1;
+
+	struct pw_core *core;
+	struct spa_hook core_listener;
+	struct spa_hook core_proxy_listener;
+	struct pw_proxy *proxy;
+	struct spa_hook proxy_listener;
 };
+
+static void proxy_removed(void *_data)
+{
+	struct node_data *nd = _data;
+	pw_log_debug("%p: removed", nd);
+	pw_proxy_destroy(nd->proxy);
+}
+
+static void proxy_destroy(void *_data)
+{
+	struct node_data *nd = _data;
+	pw_log_debug("%p: destroy", nd);
+	spa_hook_remove(&nd->proxy_listener);
+	nd->proxy = NULL;
+	if (nd->node)
+		pw_impl_node_destroy(nd->node);
+}
+
+static const struct pw_proxy_events proxy_events = {
+	PW_VERSION_PROXY_EVENTS,
+	.removed = proxy_removed,
+	.destroy = proxy_destroy,
+};
+
+static void core_error(void *data, uint32_t id, int seq, int res, const char *message)
+{
+	struct node_data *nd = data;
+
+	pw_log_error("error id:%u seq:%d res:%d (%s): %s",
+			id, seq, res, spa_strerror(res), message);
+
+	if (id == PW_ID_CORE && res == -EPIPE)
+		pw_impl_node_destroy(nd->node);
+}
+
+static const struct pw_core_events core_events = {
+	PW_VERSION_CORE_EVENTS,
+	.error = core_error,
+};
+
+static void core_removed(void *d)
+{
+	struct node_data *nd = d;
+	pw_log_debug("%p: removed", nd);
+	spa_hook_remove(&nd->core_proxy_listener);
+	spa_hook_remove(&nd->core_listener);
+	nd->core = NULL;
+	if (nd->node)
+		pw_impl_node_destroy(nd->node);
+}
+
+static const struct pw_proxy_events core_proxy_events = {
+	.removed = core_removed,
+};
+
+static int export_node(struct node_data *nd, struct pw_properties *props)
+{
+	const char *str;
+
+	str = pw_properties_get(props, PW_KEY_REMOTE_NAME);
+	nd->core = pw_context_connect(nd->data->context,
+			pw_properties_new(
+				PW_KEY_REMOTE_NAME, str,
+				NULL),
+			0);
+	if (nd->core == NULL) {
+		pw_log_error("can't connect: %m");
+		return -errno;
+	}
+	pw_proxy_add_listener((struct pw_proxy*)nd->core,
+			&nd->core_proxy_listener,
+			&core_proxy_events, nd);
+	pw_core_add_listener(nd->core,
+			&nd->core_listener,
+			&core_events, nd);
+
+	pw_log_debug("%p: export node %p", nd, nd->node);
+	nd->proxy = pw_core_export(nd->core,
+			PW_TYPE_INTERFACE_Node, NULL, nd->node, 0);
+	if (nd->proxy == NULL)
+		return -errno;
+
+	pw_proxy_add_listener(nd->proxy, &nd->proxy_listener, &proxy_events, nd);
+
+	return 0;
+}
 
 static void resource_destroy(void *data)
 {
 	struct node_data *nd = data;
 	pw_log_debug("node %p", nd);
 	spa_hook_remove(&nd->resource_listener);
+	nd->resource = NULL;
 	if (nd->node && !nd->linger)
 		pw_impl_node_destroy(nd->node);
 }
@@ -90,6 +165,15 @@ static void node_destroy(void *data)
 	spa_list_remove(&nd->link);
 	spa_hook_remove(&nd->node_listener);
 	nd->node = NULL;
+
+	if (nd->resource) {
+		spa_hook_remove(&nd->resource_listener);
+		nd->resource = NULL;
+	}
+	if (nd->core) {
+		pw_core_disconnect(nd->core);
+		nd->core = NULL;
+	}
 }
 
 static const struct pw_impl_node_events node_events = {
@@ -121,7 +205,7 @@ static void *create_object(void *_data,
 		goto error_properties;
 
 	pw_properties_setf(properties, PW_KEY_FACTORY_ID, "%d",
-			pw_global_get_id(pw_impl_factory_get_global(data->this)));
+			pw_global_get_id(pw_impl_factory_get_global(data->factory)));
 
 	linger = pw_properties_get_bool(properties, PW_KEY_OBJECT_LINGER, false);
 
@@ -147,36 +231,38 @@ static void *create_object(void *_data,
 	pw_impl_node_add_listener(node, &nd->node_listener, &node_events, nd);
 
 	if (client) {
-		struct pw_resource *bound_resource;
-
 		res = pw_global_bind(pw_impl_node_get_global(node),
 			       client, PW_PERM_ALL, version, new_id);
 		if (res < 0)
 			goto error_bind;
 
-		if ((bound_resource = pw_impl_client_find_resource(client, new_id)) == NULL)
+		if ((nd->resource = pw_impl_client_find_resource(client, new_id)) == NULL)
 			goto error_bind;
 
-		pw_resource_add_listener(bound_resource, &nd->resource_listener, &resource_events, nd);
+		pw_resource_add_listener(nd->resource, &nd->resource_listener, &resource_events, nd);
+	}
+	if (pw_properties_get_bool(properties, PW_KEY_OBJECT_EXPORT, false)) {
+		res = export_node(nd, properties);
+		if (res < 0)
+			goto error_export;
 	}
 	return node;
 
 error_properties:
 	res = -EINVAL;
-	pw_log_error("factory %p: usage: " FACTORY_USAGE, data->this);
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res,
-				"usage: "FACTORY_USAGE);
+	pw_resource_errorf_id(resource, new_id, res, "usage: "FACTORY_USAGE);
 	goto error_exit_cleanup;
 error_create_node:
 	res = -errno;
-	pw_log_error("can't create node: %m");
-	if (resource)
-		pw_resource_errorf_id(resource, new_id, res,
+	pw_resource_errorf_id(resource, new_id, res,
 				"can't create node: %s", spa_strerror(res));
 	goto error_exit;
 error_bind:
 	pw_resource_errorf_id(resource, new_id, res, "can't bind node");
+	pw_impl_node_destroy(node);
+	goto error_exit;
+error_export:
+	pw_resource_errorf_id(resource, new_id, res, "can't export node");
 	pw_impl_node_destroy(node);
 	goto error_exit;
 
@@ -192,15 +278,17 @@ static const struct pw_impl_factory_implementation factory_impl = {
 	.create_object = create_object,
 };
 
-static void factory_destroy(void *_data)
+static void factory_destroy(void *data)
 {
-	struct factory_data *data = _data;
+	struct factory_data *d = data;
 	struct node_data *nd;
 
-	spa_hook_remove(&data->factory_listener);
-	spa_list_consume(nd, &data->node_list, link)
+	spa_hook_remove(&d->factory_listener);
+	spa_list_consume(nd, &d->node_list, link)
 		pw_impl_node_destroy(nd->node);
-	data->this = NULL;
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
 }
 
 static const struct pw_impl_factory_events factory_events = {
@@ -208,19 +296,20 @@ static const struct pw_impl_factory_events factory_events = {
 	.destroy = factory_destroy,
 };
 
-static void module_destroy(void *_data)
+static void module_destroy(void *data)
 {
-	struct factory_data *data = _data;
-	spa_hook_remove(&data->module_listener);
-	if (data->this)
-		pw_impl_factory_destroy(data->this);
+	struct factory_data *d = data;
+	spa_hook_remove(&d->module_listener);
+	d->module = NULL;
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
 {
 	struct factory_data *d = data;
 	struct pw_impl_module *module = d->module;
-	struct pw_impl_factory *factory = d->this;
+	struct pw_impl_factory *factory = d->factory;
 	struct spa_dict_item items[1];
 	char id[16];
 	int res;
@@ -259,7 +348,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		return -errno;
 
 	data = pw_impl_factory_get_user_data(factory);
-	data->this = factory;
+	data->factory = factory;
 	data->context = context;
 	data->module = module;
 	spa_list_init(&data->node_list);

@@ -1,26 +1,6 @@
-/* Simple Plugin API
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Simple Plugin API */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #ifndef SPA_DEBUG_TYPES_H
 #define SPA_DEBUG_TYPES_H
@@ -96,6 +76,26 @@ static inline uint32_t spa_debug_type_find_type(const struct spa_type_info *info
 	return SPA_ID_INVALID;
 }
 
+static inline const struct spa_type_info *spa_debug_type_find_short(const struct spa_type_info *info, const char *name)
+{
+	while (info && info->name) {
+		if (strcmp(spa_debug_type_short_name(info->name), name) == 0)
+			return info;
+		if (strcmp(info->name, name) == 0)
+			return info;
+		if (info->type != 0 && info->type == (uint32_t)atoi(name))
+			return info;
+		info++;
+	}
+	return NULL;
+}
+
+static inline uint32_t spa_debug_type_find_type_short(const struct spa_type_info *info, const char *name)
+{
+	if ((info = spa_debug_type_find_short(info, name)) == NULL)
+		return SPA_ID_INVALID;
+	return info->type;
+}
 /**
  * \}
  */

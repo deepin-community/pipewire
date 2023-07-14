@@ -1,26 +1,6 @@
-/* Spa A2DP AAC codec
- *
- * Copyright © 2020 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa A2DP AAC codec */
+/* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <unistd.h>
 #include <stddef.h>
@@ -31,9 +11,15 @@
 #include <spa/utils/dict.h>
 
 #include <fdk-aac/aacenc_lib.h>
+#include <fdk-aac/aacdecoder_lib.h>
 
 #include "rtp.h"
-#include "a2dp-codecs.h"
+#include "media-codecs.h"
+
+static struct spa_log *log;
+static struct spa_log_topic log_topic = SPA_LOG_TOPIC(0, "spa.bluez5.codecs.aac");
+#undef SPA_LOG_TOPIC_DEFAULT
+#define SPA_LOG_TOPIC_DEFAULT &log_topic
 
 #define DEFAULT_AAC_BITRATE	320000
 #define MIN_AAC_BITRATE		64000
@@ -44,6 +30,7 @@ struct props {
 
 struct impl {
 	HANDLE_AACENCODER aacenc;
+	HANDLE_AACDECODER aacdec;
 
 	struct rtp_header *header;
 
@@ -58,7 +45,7 @@ struct impl {
 	int samplesize;
 };
 
-static int codec_fill_caps(const struct a2dp_codec *codec, uint32_t flags,
+static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 		uint8_t caps[A2DP_MAX_CAPS_SIZE])
 {
 	static const a2dp_aac_t a2dp_aac = {
@@ -91,7 +78,7 @@ static int codec_fill_caps(const struct a2dp_codec *codec, uint32_t flags,
 	return sizeof(a2dp_aac);
 }
 
-static const struct a2dp_codec_config
+static const struct media_codec_config
 aac_frequencies[] = {
 	{ AAC_SAMPLING_FREQ_48000, 48000, 11 },
 	{ AAC_SAMPLING_FREQ_44100, 44100, 10 },
@@ -107,7 +94,7 @@ aac_frequencies[] = {
 	{ AAC_SAMPLING_FREQ_8000,  8000,  0 },
 };
 
-static const struct a2dp_codec_config
+static const struct media_codec_config
 aac_channel_modes[] = {
 	{ AAC_CHANNELS_2, 2, 1 },
 	{ AAC_CHANNELS_1, 1, 0 },
@@ -123,9 +110,9 @@ static int get_valid_aac_bitrate(a2dp_aac_t *conf)
 	}
 }
 
-static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
+static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
-		const struct a2dp_codec_audio_info *info,
+		const struct media_codec_audio_info *info,
 		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
 {
 	a2dp_aac_t conf;
@@ -147,7 +134,7 @@ static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
 	else
 		return -ENOTSUP;
 
-	if ((i = a2dp_codec_select_config(aac_frequencies,
+	if ((i = media_codec_select_config(aac_frequencies,
 					  SPA_N_ELEMENTS(aac_frequencies),
 					  AAC_GET_FREQUENCY(conf),
 				    	  info ? info->rate : A2DP_CODEC_DEFAULT_RATE
@@ -155,7 +142,7 @@ static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
 		return -ENOTSUP;
 	AAC_SET_FREQUENCY(conf, aac_frequencies[i].config);
 
-	if ((i = a2dp_codec_select_config(aac_channel_modes,
+	if ((i = media_codec_select_config(aac_channel_modes,
 					  SPA_N_ELEMENTS(aac_channel_modes),
 					  conf.channels,
 				    	  info ? info->channels : A2DP_CODEC_DEFAULT_CHANNELS
@@ -170,7 +157,7 @@ static int codec_select_config(const struct a2dp_codec *codec, uint32_t flags,
 	return sizeof(conf);
 }
 
-static int codec_enum_config(const struct a2dp_codec *codec,
+static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size, uint32_t id, uint32_t idx,
 		struct spa_pod_builder *b, struct spa_pod **param)
 {
@@ -199,19 +186,19 @@ static int codec_enum_config(const struct a2dp_codec *codec,
 	spa_pod_builder_push_choice(b, &f[1], SPA_CHOICE_None, 0);
 	choice = (struct spa_pod_choice*)spa_pod_builder_frame(b, &f[1]);
 	i = 0;
-	for (size_t j = 0; j < SPA_N_ELEMENTS(aac_frequencies); j++) {
-		if (AAC_GET_FREQUENCY(conf) & aac_frequencies[j].config) {
+	SPA_FOR_EACH_ELEMENT_VAR(aac_frequencies, f) {
+		if (AAC_GET_FREQUENCY(conf) & f->config) {
 			if (i++ == 0)
-				spa_pod_builder_int(b, aac_frequencies[j].value);
-			spa_pod_builder_int(b, aac_frequencies[j].value);
+				spa_pod_builder_int(b, f->value);
+			spa_pod_builder_int(b, f->value);
 		}
 	}
-	if (i == 0)
-		return -EINVAL;
 	if (i > 1)
 		choice->body.type = SPA_CHOICE_Enum;
 	spa_pod_builder_pop(b, &f[1]);
 
+	if (i == 0)
+		return -EINVAL;
 
 	if (SPA_FLAG_IS_SET(conf.channels, AAC_CHANNELS_1 | AAC_CHANNELS_2)) {
 		spa_pod_builder_add(b,
@@ -239,7 +226,7 @@ static int codec_enum_config(const struct a2dp_codec *codec,
 	return *param == NULL ? -EIO : 1;
 }
 
-static int codec_validate_config(const struct a2dp_codec *codec, uint32_t flags,
+static int codec_validate_config(const struct media_codec *codec, uint32_t flags,
 			const void *caps, size_t caps_size,
 			struct spa_audio_info *info)
 {
@@ -265,14 +252,15 @@ static int codec_validate_config(const struct a2dp_codec *codec, uint32_t flags,
 	if (!(conf.object_type & (AAC_OBJECT_TYPE_MPEG2_AAC_LC |
 					AAC_OBJECT_TYPE_MPEG4_AAC_LC)))
 		return -EINVAL;
-
-	for (j = 0; j < SPA_N_ELEMENTS(aac_frequencies); ++j) {
-		if (AAC_GET_FREQUENCY(conf) & aac_frequencies[j].config) {
-			info->info.raw.rate = aac_frequencies[j].value;
+	j = 0;
+	SPA_FOR_EACH_ELEMENT_VAR(aac_frequencies, f) {
+		if (AAC_GET_FREQUENCY(conf) & f->config) {
+			info->info.raw.rate = f->value;
+			j++;
 			break;
 		}
 	}
-	if (j == SPA_N_ELEMENTS(aac_frequencies))
+	if (j == 0)
 		return -EINVAL;
 
 	if (conf.channels & AAC_CHANNELS_2) {
@@ -289,7 +277,7 @@ static int codec_validate_config(const struct a2dp_codec *codec, uint32_t flags,
 	return 0;
 }
 
-static void *codec_init_props(const struct a2dp_codec *codec, const struct spa_dict *settings)
+static void *codec_init_props(const struct media_codec *codec, uint32_t flags, const struct spa_dict *settings)
 {
 	struct props *p = calloc(1, sizeof(struct props));
 	const char *str;
@@ -309,7 +297,7 @@ static void codec_clear_props(void *props)
 	free(props);
 }
 
-static void *codec_init(const struct a2dp_codec *codec, uint32_t flags,
+static void *codec_init(const struct media_codec *codec, uint32_t flags,
 		void *config, size_t config_len, const struct spa_audio_info *info,
 		void *props, size_t mtu)
 {
@@ -412,11 +400,39 @@ static void *codec_init(const struct a2dp_codec *codec, uint32_t flags,
 
 	this->codesize = enc_info.frameLength * this->channels * this->samplesize;
 
+	this->aacdec = aacDecoder_Open(TT_MP4_LATM_MCP1, 1);
+	if (!this->aacdec) {
+		res = -EINVAL;
+		goto error;
+	}
+
+#ifdef AACDECODER_LIB_VL0
+	res = aacDecoder_SetParam(this->aacdec, AAC_PCM_MIN_OUTPUT_CHANNELS, this->channels);
+	if (res != AAC_DEC_OK) {
+		spa_log_debug(log, "Couldn't set min output channels: 0x%04X", res);
+		goto error;
+	}
+
+	res = aacDecoder_SetParam(this->aacdec, AAC_PCM_MAX_OUTPUT_CHANNELS, this->channels);
+	if (res != AAC_DEC_OK) {
+		spa_log_debug(log, "Couldn't set max output channels: 0x%04X", res);
+		goto error;
+	}
+#else
+	res = aacDecoder_SetParam(this->aacdec, AAC_PCM_OUTPUT_CHANNELS, this->channels);
+	if (res != AAC_DEC_OK) {
+		spa_log_debug(log, "Couldn't set output channels: 0x%04X", res);
+		goto error;
+	}
+#endif
+
 	return this;
 
 error:
-	if (this->aacenc)
+	if (this && this->aacenc)
 		aacEncClose(&this->aacenc);
+	if (this && this->aacdec)
+		aacDecoder_Close(this->aacdec);
 	free(this);
 	errno = -res;
 	return NULL;
@@ -427,6 +443,8 @@ static void codec_deinit(void *data)
 	struct impl *this = data;
 	if (this->aacenc)
 		aacEncClose(&this->aacenc);
+	if (this->aacdec)
+		aacDecoder_Close(this->aacdec);
 	free(this);
 }
 
@@ -493,13 +511,62 @@ static int codec_encode(void *data,
 		return -EINVAL;
 
 	*dst_out = out_args.numOutBytes;
-	*need_flush = 1;
+	*need_flush = NEED_FLUSH_ALL;
 
 	/* RFC6416: It is set to 1 to indicate that the RTP packet contains a complete
    	 * audioMuxElement or the last fragment of an audioMuxElement */
 	this->header->m = 1;
 
 	return out_args.numInSamples * this->samplesize;
+}
+
+static int codec_start_decode (void *data,
+		const void *src, size_t src_size, uint16_t *seqnum, uint32_t *timestamp)
+{
+	const struct rtp_header *header = src;
+	size_t header_size = sizeof(struct rtp_header);
+
+	spa_return_val_if_fail (src_size > header_size, -EINVAL);
+
+	if (seqnum)
+		*seqnum = ntohs(header->sequence_number);
+	if (timestamp)
+		*timestamp = ntohl(header->timestamp);
+
+	return header_size;
+}
+
+static int codec_decode(void *data,
+		const void *src, size_t src_size,
+		void *dst, size_t dst_size,
+		size_t *dst_out)
+{
+	struct impl *this = data;
+	uint data_size = (uint)src_size;
+	uint bytes_valid = data_size;
+	CStreamInfo *aacinf;
+	int res;
+
+	res = aacDecoder_Fill(this->aacdec, (UCHAR **)&src, &data_size, &bytes_valid);
+	if (res != AAC_DEC_OK) {
+		spa_log_debug(log, "AAC buffer fill error: 0x%04X", res);
+		return -EINVAL;
+	}
+
+	res = aacDecoder_DecodeFrame(this->aacdec, dst, dst_size, 0);
+	if (res != AAC_DEC_OK) {
+		spa_log_debug(log, "AAC decode frame error: 0x%04X", res);
+		return -EINVAL;
+	}
+
+	aacinf = aacDecoder_GetStreamInfo(this->aacdec);
+	if (!aacinf) {
+		spa_log_debug(log, "AAC get stream info failed");
+		return -EINVAL;
+	}
+	*dst_out = aacinf->frameSize * aacinf->numChannels * this->samplesize;
+
+	return src_size - bytes_valid;
 }
 
 static int codec_abr_process (void *data, size_t unsent)
@@ -523,7 +590,7 @@ static int codec_change_bitrate(struct impl *this, int new_bitrate)
 	if (res != AACENC_OK)
 		return -EINVAL;
 
-	return 0;
+	return this->cur_bitrate;
 }
 
 static int codec_reduce_bitpool(void *data)
@@ -538,7 +605,13 @@ static int codec_increase_bitpool(void *data)
 	return codec_change_bitrate(this, (this->cur_bitrate * 4) / 3);
 }
 
-const struct a2dp_codec a2dp_codec_aac = {
+static void codec_set_log(struct spa_log *global_log)
+{
+	log = global_log;
+	spa_log_topic_init(log, &log_topic);
+}
+
+const struct media_codec a2dp_codec_aac = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_AAC,
 	.codec_id = A2DP_CODEC_MPEG24,
 	.name = "aac",
@@ -554,12 +627,15 @@ const struct a2dp_codec a2dp_codec_aac = {
 	.get_block_size = codec_get_block_size,
 	.start_encode = codec_start_encode,
 	.encode = codec_encode,
+	.start_decode = codec_start_decode,
+	.decode = codec_decode,
 	.abr_process = codec_abr_process,
 	.reduce_bitpool = codec_reduce_bitpool,
 	.increase_bitpool = codec_increase_bitpool,
+	.set_log = codec_set_log,
 };
 
-A2DP_CODEC_EXPORT_DEF(
+MEDIA_CODEC_EXPORT_DEF(
 	"aac",
 	&a2dp_codec_aac
 );

@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdio.h>
 #include <unistd.h>
@@ -44,7 +24,7 @@ static void core_event_ping(void *data, uint32_t id, int seq)
 {
 	struct pw_core *this = data;
 	pw_log_debug("%p: object %u ping %u", this, id, seq);
-	pw_core_pong(this->core, id, seq);
+	pw_core_pong(this, id, seq);
 }
 
 static void core_event_done(void *data, uint32_t id, int seq)
@@ -89,9 +69,8 @@ static void core_event_bound_id(void *data, uint32_t id, uint32_t global_id)
 	struct pw_proxy *proxy;
 
 	pw_log_debug("%p: proxy id %u bound %u", this, id, global_id);
-	if ((proxy = pw_map_lookup(&this->objects, id)) != NULL) {
+	if ((proxy = pw_map_lookup(&this->objects, id)) != NULL)
 		pw_proxy_set_bound_id(proxy, global_id);
-	}
 }
 
 static void core_event_add_mem(void *data, uint32_t id, uint32_t type, int fd, uint32_t flags)
@@ -110,6 +89,16 @@ static void core_event_add_mem(void *data, uint32_t id, uint32_t type, int fd, u
 	}
 }
 
+static void core_event_bound_props(void *data, uint32_t id, uint32_t global_id, const struct spa_dict *props)
+{
+	struct pw_core *this = data;
+	struct pw_proxy *proxy;
+
+	pw_log_debug("%p: proxy id %u bound %u", this, id, global_id);
+	if ((proxy = pw_map_lookup(&this->objects, id)) != NULL)
+		pw_proxy_emit_bound_props(proxy, global_id, props);
+}
+
 static void core_event_remove_mem(void *data, uint32_t id)
 {
 	struct pw_core *this = data;
@@ -126,6 +115,7 @@ static const struct pw_core_events core_events = {
 	.bound_id = core_event_bound_id,
 	.add_mem = core_event_add_mem,
 	.remove_mem = core_event_remove_mem,
+	.bound_props = core_event_bound_props,
 };
 
 SPA_EXPORT
@@ -327,11 +317,9 @@ static struct pw_core *core_new(struct pw_context *context,
 
 	pw_properties_add(properties, &context->properties->dict);
 
-	p->proxy.core = p;
 	p->context = context;
 	p->properties = properties;
 	p->pool = pw_mempool_new(NULL);
-	p->core = p;
 	if (user_data_size > 0)
 		p->user_data = SPA_PTROFF(p, sizeof(struct pw_core), void);
 	p->proxy.user_data = p->user_data;
@@ -354,7 +342,7 @@ static struct pw_core *core_new(struct pw_context *context,
 	if (p->conn == NULL)
 		goto error_connection;
 
-	if ((res = pw_proxy_init(&p->proxy, PW_TYPE_INTERFACE_Core, PW_VERSION_CORE)) < 0)
+	if ((res = pw_proxy_init(&p->proxy, p, PW_TYPE_INTERFACE_Core, PW_VERSION_CORE)) < 0)
 		goto error_proxy;
 
 	p->client = (struct pw_client*)pw_proxy_new(&p->proxy,
@@ -488,8 +476,16 @@ struct pw_mempool * pw_core_get_mempool(struct pw_core *core)
 SPA_EXPORT
 int pw_core_disconnect(struct pw_core *core)
 {
+	/*
+	 * the `proxy` member must be the first because the whole pw_core object is
+	 * freed via the free() call in pw_proxy_destroy() -> pw_proxy_unref()
+	 */
+	SPA_STATIC_ASSERT(offsetof(struct pw_core, proxy) == 0, "`proxy` member must be first");
+
 	pw_log_debug("%p: disconnect", core);
-	pw_proxy_remove(&core->proxy);
-	pw_proxy_destroy(&core->proxy);
+	if (!core->removed)
+		pw_proxy_remove(&core->proxy);
+	if (!core->destroyed)
+		pw_proxy_destroy(&core->proxy);
 	return 0;
 }

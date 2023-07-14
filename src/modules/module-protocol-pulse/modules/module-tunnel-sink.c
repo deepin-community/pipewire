@@ -1,38 +1,16 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans <wim.taymans@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <spa/param/audio/format-utils.h>
 #include <spa/utils/hook.h>
 #include <spa/utils/json.h>
 
 #include <pipewire/pipewire.h>
-#include <pipewire/private.h>
 #include <pipewire/i18n.h>
 
 #include "../defs.h"
 #include "../module.h"
-#include "registry.h"
 
 #define NAME "tunnel-sink"
 
@@ -44,8 +22,6 @@ struct module_tunnel_sink_data {
 
 	struct pw_impl_module *mod;
 	struct spa_hook mod_listener;
-
-	uint32_t latency_msec;
 
 	struct pw_properties *stream_props;
 };
@@ -63,23 +39,21 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy
 };
 
-static int module_tunnel_sink_load(struct client *client, struct module *module)
+static int module_tunnel_sink_load(struct module *module)
 {
 	struct module_tunnel_sink_data *data = module->user_data;
 	FILE *f;
 	char *args;
 	size_t size;
-	const char *server;
 
-	server = pw_properties_get(module->props, "server");
+	pw_properties_setf(data->stream_props, "pulse.module.id",
+			"%u", module->index);
 
-	f = open_memstream(&args, &size);
+	if ((f = open_memstream(&args, &size)) == NULL)
+		return -errno;
+
 	fprintf(f, "{");
 	pw_properties_serialize_dict(f, &module->props->dict, 0);
-	fprintf(f, " pulse.server.address = \"%s\" ", server);
-	fprintf(f, " tunnel.mode = playback ");
-	if (data->latency_msec > 0)
-		fprintf(f, " pulse.latency = %u ", data->latency_msec);
 	fprintf(f, " stream.props = {");
 	pw_properties_serialize_dict(f, &data->stream_props->dict, 0);
 	fprintf(f, " } }");
@@ -100,7 +74,7 @@ static int module_tunnel_sink_load(struct client *client, struct module *module)
 	return 0;
 }
 
-static int module_tunnel_sink_unload(struct client *client, struct module *module)
+static int module_tunnel_sink_unload(struct module *module)
 {
 	struct module_tunnel_sink_data *d = module->user_data;
 
@@ -114,12 +88,6 @@ static int module_tunnel_sink_unload(struct client *client, struct module *modul
 
 	return 0;
 }
-
-static const struct module_methods module_tunnel_sink_methods = {
-	VERSION_MODULE_METHODS,
-	.load = module_tunnel_sink_load,
-	.unload = module_tunnel_sink_unload,
-};
 
 static const struct spa_dict_item module_tunnel_sink_info[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
@@ -138,52 +106,42 @@ static const struct spa_dict_item module_tunnel_sink_info[] = {
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
-static void audio_info_to_props(struct spa_audio_info_raw *info, struct pw_properties *props)
+static int module_tunnel_sink_prepare(struct module * const module)
 {
-	char *s, *p;
-	uint32_t i;
-
-	pw_properties_setf(props, SPA_KEY_AUDIO_CHANNELS, "%u", info->channels);
-	p = s = alloca(info->channels * 6);
-	for (i = 0; i < info->channels; i++)
-		p += snprintf(p, 6, "%s%s", i == 0 ? "" : ",",
-				channel_id2name(info->position[i]));
-	pw_properties_set(props, SPA_KEY_AUDIO_POSITION, s);
-}
-
-struct module *create_module_tunnel_sink(struct impl *impl, const char *argument)
-{
-	struct module *module;
-	struct module_tunnel_sink_data *d;
-	struct pw_properties *props = NULL, *stream_props = NULL;
+	struct module_tunnel_sink_data * const d = module->user_data;
+	struct pw_properties * const props = module->props;
+	struct pw_properties *stream_props = NULL;
 	const char *str, *server, *remote_sink_name;
 	struct spa_audio_info_raw info = { 0 };
 	int res;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
-	props = pw_properties_new_dict(&SPA_DICT_INIT_ARRAY(module_tunnel_sink_info));
 	stream_props = pw_properties_new(NULL, NULL);
-	if (props == NULL || stream_props == NULL) {
+	if (stream_props == NULL) {
 		res = -ENOMEM;
 		goto out;
 	}
-	if (argument)
-		module_args_add_props(props, argument);
+
+	pw_properties_set(props, "tunnel.mode", "sink");
 
 	remote_sink_name = pw_properties_get(props, "sink");
 	if (remote_sink_name)
-		pw_properties_set(props, PW_KEY_NODE_TARGET, remote_sink_name);
+		pw_properties_set(props, PW_KEY_TARGET_OBJECT, remote_sink_name);
 
 	if ((server = pw_properties_get(props, "server")) == NULL) {
 		pw_log_error("no server given");
 		res = -EINVAL;
 		goto out;
+	} else {
+		pw_properties_set(props, "pulse.server.address", server);
 	}
 
 	pw_properties_setf(stream_props, PW_KEY_NODE_DESCRIPTION,
-                     _("Tunnel to %s/%s"), server,
+                     _("Tunnel to %s%s%s"), server,
+		     remote_sink_name ? "/" : "",
 		     remote_sink_name ? remote_sink_name : "");
+
 	pw_properties_set(stream_props, PW_KEY_MEDIA_CLASS, "Audio/Sink");
 
 	if ((str = pw_properties_get(props, "sink_name")) != NULL) {
@@ -193,44 +151,38 @@ struct module *create_module_tunnel_sink(struct impl *impl, const char *argument
 		pw_properties_setf(stream_props, PW_KEY_NODE_NAME,
 				"tunnel-sink.%s", server);
 	}
+	pw_properties_set(props, "server", NULL);
 
 	if ((str = pw_properties_get(props, "sink_properties")) != NULL) {
 		module_args_add_props(stream_props, str);
 		pw_properties_set(props, "sink_properties", NULL);
 	}
-	if (module_args_to_audioinfo(impl, props, &info) < 0) {
+	if (module_args_to_audioinfo_keys(module->impl, props,
+			"format", "rate", "channels", "channel_map", &info) < 0) {
 		res = -EINVAL;
 		goto out;
 	}
+	audioinfo_to_properties(&info, stream_props);
 
-	audio_info_to_props(&info, stream_props);
-	if ((str = pw_properties_get(props, "format")) != NULL) {
-		uint32_t id = format_paname2id(str, strlen(str));
-		if (id == SPA_AUDIO_FORMAT_UNKNOWN) {
-			res = -EINVAL;
-			goto out;
-		}
-
-		pw_properties_set(stream_props, PW_KEY_AUDIO_FORMAT, format_id2name(id));
+	if ((str = pw_properties_get(props, "latency_msec")) != NULL) {
+		pw_properties_set(props, "pulse.latency", str);
+		pw_properties_set(props, "latency_msec", NULL);
 	}
 
-	module = module_new(impl, &module_tunnel_sink_methods, sizeof(*d));
-	if (module == NULL) {
-		res = -errno;
-		goto out;
-	}
-
-	module->props = props;
-	d = module->user_data;
 	d->module = module;
 	d->stream_props = stream_props;
 
-	pw_properties_fetch_uint32(props, "latency_msec", &d->latency_msec);
-
-	return module;
+	return 0;
 out:
-	pw_properties_free(props);
 	pw_properties_free(stream_props);
-	errno = -res;
-	return NULL;
+	return res;
 }
+
+DEFINE_MODULE_INFO(module_tunnel_sink) = {
+	.name = "module-tunnel-sink",
+	.prepare = module_tunnel_sink_prepare,
+	.load = module_tunnel_sink_load,
+	.unload = module_tunnel_sink_unload,
+	.properties = &SPA_DICT_INIT_ARRAY(module_tunnel_sink_info),
+	.data_size = sizeof(struct module_tunnel_sink_data),
+};

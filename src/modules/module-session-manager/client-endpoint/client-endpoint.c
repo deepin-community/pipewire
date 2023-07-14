@@ -1,27 +1,7 @@
-/* PipeWire
- *
- * Copyright © 2019 Collabora Ltd.
- *   @author George Kiagiadakis <george.kiagiadakis@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2019 Collabora Ltd. */
+/*                         @author George Kiagiadakis <george.kiagiadakis@collabora.com> */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdbool.h>
 #include <string.h>
@@ -38,9 +18,11 @@
 #define NAME "client-endpoint"
 
 struct factory_data {
-	struct pw_impl_factory *factory;
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
+
+	struct pw_impl_factory *factory;
+	struct spa_hook factory_listener;
 };
 
 static struct endpoint_stream *find_stream(struct client_endpoint *this, uint32_t id)
@@ -219,12 +201,27 @@ static const struct pw_impl_factory_implementation impl_factory = {
 	.create_object = create_object,
 };
 
+static void factory_destroy(void *data)
+{
+	struct factory_data *d = data;
+	spa_hook_remove(&d->factory_listener);
+	d->factory = NULL;
+	if (d->module)
+		pw_impl_module_destroy(d->module);
+}
+
+static const struct pw_impl_factory_events factory_events = {
+	PW_VERSION_IMPL_FACTORY_EVENTS,
+	.destroy = factory_destroy,
+};
+
 static void module_destroy(void *data)
 {
 	struct factory_data *d = data;
-
 	spa_hook_remove(&d->module_listener);
-	pw_impl_factory_destroy(d->factory);
+	d->module = NULL;
+	if (d->factory)
+		pw_impl_factory_destroy(d->factory);
 }
 
 static void module_registered(void *data)
@@ -271,6 +268,7 @@ int client_endpoint_factory_init(struct pw_impl_module *module)
 	data->module = module;
 
 	pw_impl_factory_set_implementation(factory, &impl_factory, data);
+	pw_impl_factory_add_listener(factory, &data->factory_listener, &factory_events, data);
 
 	pw_impl_module_add_listener(module, &data->module_listener, &module_events, data);
 

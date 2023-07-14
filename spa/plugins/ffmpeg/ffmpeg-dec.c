@@ -1,26 +1,6 @@
-/* Spa FFmpeg decoder
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* Spa FFmpeg decoder */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <stddef.h>
@@ -37,6 +17,8 @@
 #include <spa/param/video/format-utils.h>
 #include <spa/param/video/format.h>
 #include <spa/pod/filter.h>
+
+#include "ffmpeg.h"
 
 #define IS_VALID_PORT(this,d,id)	((id) == 0)
 #define GET_IN_PORT(this,p)		(&this->in_ports[p])
@@ -456,6 +438,20 @@ impl_get_interface(struct spa_handle *handle, const char *type, void **interface
 	return 0;
 }
 
+static int
+impl_clear(struct spa_handle *handle)
+{
+	spa_return_val_if_fail(handle != NULL, -EINVAL);
+
+	return 0;
+}
+
+size_t
+spa_ffmpeg_dec_get_size(const struct spa_handle_factory *factory, const struct spa_dict *params)
+{
+	return sizeof(struct impl);
+}
+
 int
 spa_ffmpeg_dec_init(struct spa_handle *handle,
 		    const struct spa_dict *info,
@@ -466,6 +462,7 @@ spa_ffmpeg_dec_init(struct spa_handle *handle,
 	struct port *port;
 
 	handle->get_interface = impl_get_interface;
+	handle->clear = impl_clear;
 
 	this = (struct impl *) handle;
 

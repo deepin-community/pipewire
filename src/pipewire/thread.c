@@ -1,59 +1,93 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <pthread.h>
 
+#include <spa/utils/dict.h>
 #include <spa/utils/defs.h>
 #include <spa/utils/list.h>
 
 #include <pipewire/log.h>
+#include <pipewire/private.h>
+#include <pipewire/thread.h>
 
-#include "thread.h"
+#define CHECK(expression,label)						\
+do {									\
+	if ((errno = (expression)) != 0) {				\
+		res = -errno;						\
+		pw_log_error(#expression ": %s", strerror(errno));	\
+		goto label;						\
+	}								\
+} while(false);
 
-static struct spa_thread *impl_create(void *data,
+SPA_EXPORT
+pthread_attr_t *pw_thread_fill_attr(const struct spa_dict *props, pthread_attr_t *attr)
+{
+	const char *str;
+	int res;
+
+	if (props == NULL)
+		return NULL;
+
+	pthread_attr_init(attr);
+	if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_STACK_SIZE)) != NULL)
+		CHECK(pthread_attr_setstacksize(attr, atoi(str)), error);
+	return attr;
+error:
+	errno = -res;
+	return NULL;
+}
+
+#if defined(__FreeBSD__) || defined(__MidnightBSD__)
+#include <sys/param.h>
+#if __FreeBSD_version < 1202000 || defined(__MidnightBSD__)
+int pthread_setname_np(pthread_t thread, const char *name)
+{
+	pthread_set_name_np(thread, name);
+	return 0;
+}
+#endif
+#endif
+
+static struct spa_thread *impl_create(void *object,
 			const struct spa_dict *props,
 			void *(*start)(void*), void *arg)
 {
 	pthread_t pt;
+	pthread_attr_t *attr = NULL, attributes;
+	const char *str;
 	int err;
-	if ((err = pthread_create(&pt, NULL, start, arg)) != 0) {
+
+	attr = pw_thread_fill_attr(props, &attributes);
+
+	err = pthread_create(&pt, attr, start, arg);
+
+	if (attr)
+		pthread_attr_destroy(attr);
+
+	if (err != 0) {
 		errno = err;
 		return NULL;
+	}
+	if (props) {
+		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_NAME)) != NULL &&
+		    (err = pthread_setname_np(pt, str)) != 0)
+			pw_log_warn("pthread_setname error: %s", strerror(err));
 	}
 	return (struct spa_thread*)pt;
 }
 
-static int impl_join(void *data, struct spa_thread *thread, void **retval)
+static int impl_join(void *object, struct spa_thread *thread, void **retval)
 {
 	pthread_t pt = (pthread_t)thread;
 	return pthread_join(pt, retval);
 }
 
-static int impl_get_rt_range(void *data, const struct spa_dict *props,
+static int impl_get_rt_range(void *object, const struct spa_dict *props,
 		int *min, int *max)
 {
 	if (min)
@@ -61,6 +95,17 @@ static int impl_get_rt_range(void *data, const struct spa_dict *props,
 	if (max)
 		*max = sched_get_priority_max(SCHED_OTHER);
 	return 0;
+}
+static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority)
+{
+	pw_log_warn("acquire_rt thread:%p prio:%d not implemented", thread, priority);
+	return -ENOTSUP;
+}
+
+static int impl_drop_rt(void *object, struct spa_thread *thread)
+{
+	pw_log_warn("drop_rt thread:%p not implemented", thread);
+	return -ENOTSUP;
 }
 
 static struct {
@@ -74,7 +119,9 @@ static struct {
 	{ SPA_VERSION_THREAD_UTILS_METHODS,
 		.create = impl_create,
 		.join = impl_join,
-		.get_rt_range = impl_get_rt_range
+		.get_rt_range = impl_get_rt_range,
+		.acquire_rt = impl_acquire_rt,
+		.drop_rt = impl_drop_rt,
 	}
 };
 
@@ -83,9 +130,7 @@ static struct spa_thread_utils *global_impl = &default_impl.utils;
 SPA_EXPORT
 void pw_thread_utils_set(struct spa_thread_utils *impl)
 {
-	if (impl == NULL)
-		impl = &default_impl.utils;
-	global_impl = impl;
+	pw_log_warn("pw_thread_utils_set is deprecated and does nothing anymore");
 }
 
 SPA_EXPORT

@@ -1,29 +1,12 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
+
+#include "config.h"
 
 #include <dlfcn.h>
 #include <math.h>
+#include <limits.h>
 
 #include <spa/utils/defs.h>
 #include <spa/utils/list.h>
@@ -47,10 +30,10 @@ struct descriptor {
 };
 
 static void *ladspa_instantiate(const struct fc_descriptor *desc,
-                        unsigned long *SampleRate, int index, const char *config)
+                        unsigned long SampleRate, int index, const char *config)
 {
 	struct descriptor *d = (struct descriptor *)desc;
-	return d->d->instantiate(d->d, *SampleRate);
+	return d->d->instantiate(d->d, SampleRate);
 }
 
 static const LADSPA_Descriptor *find_desc(LADSPA_Descriptor_Function desc_func, const char *name)
@@ -80,39 +63,39 @@ static float get_default(struct fc_port *port, LADSPA_PortRangeHintDescriptor hi
 		break;
 	case LADSPA_HINT_DEFAULT_LOW:
 		if (LADSPA_IS_HINT_LOGARITHMIC(hint))
-			def = (LADSPA_Data) exp(log(lower) * 0.75 + log(upper) * 0.25);
+			def = (LADSPA_Data) expf(logf(lower) * 0.75f + logf(upper) * 0.25f);
 		else
-			def = (LADSPA_Data) (lower * 0.75 + upper * 0.25);
+			def = (LADSPA_Data) (lower * 0.75f + upper * 0.25f);
 		break;
 	case LADSPA_HINT_DEFAULT_MIDDLE:
 		if (LADSPA_IS_HINT_LOGARITHMIC(hint))
-			def = (LADSPA_Data) exp(log(lower) * 0.5 + log(upper) * 0.5);
+			def = (LADSPA_Data) expf(logf(lower) * 0.5f + logf(upper) * 0.5f);
 		else
-			def = (LADSPA_Data) (lower * 0.5 + upper * 0.5);
+			def = (LADSPA_Data) (lower * 0.5f + upper * 0.5f);
 		break;
 	case LADSPA_HINT_DEFAULT_HIGH:
 		if (LADSPA_IS_HINT_LOGARITHMIC(hint))
-			def = (LADSPA_Data) exp(log(lower) * 0.25 + log(upper) * 0.75);
+			def = (LADSPA_Data) expf(logf(lower) * 0.25f + logf(upper) * 0.75f);
 		else
-			def = (LADSPA_Data) (lower * 0.25 + upper * 0.75);
+			def = (LADSPA_Data) (lower * 0.25f + upper * 0.75f);
 		break;
 	case LADSPA_HINT_DEFAULT_0:
-		def = 0;
+		def = 0.0f;
 		break;
 	case LADSPA_HINT_DEFAULT_1:
-		def = 1;
+		def = 1.0f;
 		break;
 	case LADSPA_HINT_DEFAULT_100:
-		def = 100;
+		def = 100.0f;
 		break;
 	case LADSPA_HINT_DEFAULT_440:
-		def = 440;
+		def = 440.0f;
 		break;
 	default:
 		if (upper == lower)
 			def = upper;
 		else
-			def = SPA_CLAMP(0.5 * upper, lower, upper);
+			def = SPA_CLAMPF(0.5f * upper, lower, upper);
 		break;
 	}
 	if (LADSPA_IS_HINT_INTEGER(hint))
@@ -136,7 +119,7 @@ static void ladspa_port_update_ranges(struct descriptor *dd, struct fc_port *por
 	port->max = upper;
 }
 
-static void ladspa_free(struct fc_descriptor *desc)
+static void ladspa_free(const struct fc_descriptor *desc)
 {
 	struct descriptor *d = (struct descriptor*)desc;
 	free(d->desc.ports);
@@ -167,7 +150,7 @@ static const struct fc_descriptor *ladspa_make_desc(struct fc_plugin *plugin, co
 	desc->desc.free = ladspa_free;
 
 	desc->desc.name = d->Label;
-	desc->desc.flags = d->Properties;
+	desc->desc.flags = 0;
 
 	desc->desc.n_ports = d->PortCount;
 	desc->desc.ports = calloc(desc->desc.n_ports, sizeof(struct fc_port));
@@ -221,22 +204,24 @@ static struct fc_plugin *ladspa_handle_load_by_path(const char *path)
 exit:
 	if (p->handle)
 		dlclose(p->handle);
+	free(p);
 	errno = -res;
 	return NULL;
 }
 
-struct fc_plugin *load_ladspa_plugin(const char *plugin, const char *config)
+struct fc_plugin *load_ladspa_plugin(const struct spa_support *support, uint32_t n_support,
+		struct dsp_ops *dsp, const char *plugin, const char *config)
 {
 	struct fc_plugin *pl = NULL;
 
 	if (plugin[0] != '/') {
-		const char *search_dirs, *p;
+		const char *search_dirs, *p, *state = NULL;
 		char path[PATH_MAX];
 		size_t len;
 
 		search_dirs = getenv("LADSPA_PATH");
 		if (!search_dirs)
-			search_dirs = "/usr/lib64/ladspa";
+			search_dirs = "/usr/lib64/ladspa:/usr/lib/ladspa:" LIBDIR;
 
 		/*
 		 * set the errno for the case when `ladspa_handle_load_by_path()`
@@ -245,7 +230,7 @@ struct fc_plugin *load_ladspa_plugin(const char *plugin, const char *config)
 		 */
 		errno = ENAMETOOLONG;
 
-		while ((p = pw_split_walk(NULL, ":", &len, &search_dirs))) {
+		while ((p = pw_split_walk(search_dirs, ":", &len, &state))) {
 			int pathlen;
 
 			if (len >= sizeof(path))

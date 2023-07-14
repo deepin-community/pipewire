@@ -1,26 +1,6 @@
-/* PipeWire
- *
- * Copyright © 2018 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
 #include <errno.h>
 #include <unistd.h>
@@ -100,6 +80,7 @@ pw_global_new(struct pw_context *context,
 		pw_log_error("%p: can't allocate new id: %m", this);
 		goto error_free;
 	}
+	this->serial = SPA_ID_INVALID;
 
 	spa_list_init(&this->resource_list);
 	spa_hook_list_init(&this->listener_list);
@@ -116,6 +97,17 @@ error_cleanup:
 	return NULL;
 }
 
+SPA_EXPORT
+uint64_t pw_global_get_serial(struct pw_global *global)
+{
+	struct pw_context *context = global->context;
+	if (global->serial == SPA_ID_INVALID)
+		global->serial = context->serial++;
+	if ((uint32_t)context->serial == SPA_ID_INVALID)
+		context->serial++;
+	return global->serial;
+}
+
 /** register a global to the context registry
  *
  * \param global a global to add
@@ -127,6 +119,7 @@ int pw_global_register(struct pw_global *global)
 {
 	struct pw_resource *registry;
 	struct pw_context *context = global->context;
+	struct pw_impl_client *client;
 
 	if (global->registered)
 		return -EEXIST;
@@ -134,9 +127,12 @@ int pw_global_register(struct pw_global *global)
 	spa_list_append(&context->global_list, &global->link);
 	global->registered = true;
 
+	global->generation = ++context->generation;
+
 	spa_list_for_each(registry, &context->registry_resource_list, link) {
 		uint32_t permissions = pw_global_get_permissions(global, registry->client);
-		pw_log_debug("registry %p: global %d %08x", registry, global->id, permissions);
+		pw_log_debug("registry %p: global %d %08x serial:%"PRIu64" generation:%"PRIu64,
+				registry, global->id, permissions, global->serial, global->generation);
 		if (PW_PERM_IS_R(permissions))
 			pw_registry_resource_global(registry,
 						    global->id,
@@ -144,6 +140,25 @@ int pw_global_register(struct pw_global *global)
 						    global->type,
 						    global->version,
 						    &global->properties->dict);
+	}
+
+	/* Ensure a message is sent also to clients without registries, to force
+	 * generation number update. */
+	spa_list_for_each(client, &context->client_list, link) {
+		uint32_t permissions;
+
+		if (client->sent_generation >= context->generation)
+			continue;
+		if (!client->core_resource)
+			continue;
+
+		permissions = pw_global_get_permissions(global, client);
+		if (PW_PERM_IS_R(permissions)) {
+			pw_log_debug("impl-client %p: (no registry) global %d %08x serial:%"PRIu64
+					" generation:%"PRIu64, client, global->id, permissions, global->serial,
+					global->generation);
+			pw_core_resource_done(client->core_resource, SPA_ID_INVALID, 0);
+		}
 	}
 
 	pw_log_debug("%p: registered %u", global, global->id);
@@ -169,6 +184,7 @@ static int global_unregister(struct pw_global *global)
 
 	spa_list_remove(&global->link);
 	global->registered = false;
+	global->serial = SPA_ID_INVALID;
 
 	pw_log_debug("%p: unregistered %u", global, global->id);
 	pw_context_emit_global_removed(context, global);
@@ -337,8 +353,8 @@ int pw_global_update_permissions(struct pw_global *global, struct pw_impl_client
 			pw_registry_resource_global_remove(resource, global->id);
 		}
 		else if (do_show) {
-			pw_log_debug("client %p: resource %p show global %d",
-					client, resource, global->id);
+			pw_log_debug("client %p: resource %p show global %d serial:%"PRIu64,
+					client, resource, global->id, global->serial);
 			pw_registry_resource_global(resource,
 						    global->id,
 						    new_permissions,

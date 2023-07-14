@@ -1,36 +1,16 @@
-/* PipeWire
- *
- * Copyright © 2021 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
+
+#ifndef PLUGIN_H
+#define PLUGIN_H
 
 #include <stdint.h>
 #include <stddef.h>
-#include <errno.h>
-#include <stdio.h>
-#include <limits.h>
 
-#include <spa/utils/defs.h>
-#include <spa/utils/list.h>
-#include <spa/utils/string.h>
+#include <spa/support/plugin.h>
+
+#include "dsp-ops.h"
 
 struct fc_plugin {
 	const struct fc_descriptor *(*make_desc)(struct fc_plugin *plugin, const char *name);
@@ -46,7 +26,9 @@ struct fc_port {
 #define FC_PORT_AUDIO	(1ULL << 3)
 	uint64_t flags;
 
+#define FC_HINT_BOOLEAN		(1ULL << 2)
 #define FC_HINT_SAMPLE_RATE	(1ULL << 3)
+#define FC_HINT_INTEGER		(1ULL << 5)
 	uint64_t hint;
 	float def;
 	float min;
@@ -61,19 +43,21 @@ struct fc_port {
 struct fc_descriptor {
 	const char *name;
 #define FC_DESCRIPTOR_SUPPORTS_NULL_DATA	(1ULL << 0)
+#define FC_DESCRIPTOR_COPY			(1ULL << 1)
 	uint64_t flags;
 
-	void (*free) (struct fc_descriptor *desc);
+	void (*free) (const struct fc_descriptor *desc);
 
 	uint32_t n_ports;
 	struct fc_port *ports;
 
 	void *(*instantiate) (const struct fc_descriptor *desc,
-			unsigned long *SampleRate, int index, const char *config);
+			unsigned long SampleRate, int index, const char *config);
 
 	void (*cleanup) (void *instance);
 
 	void (*connect_port) (void *instance, unsigned long port, float *data);
+	void (*control_changed) (void *instance);
 
 	void (*activate) (void *instance);
 	void (*deactivate) (void *instance);
@@ -87,12 +71,16 @@ static inline void fc_plugin_free(struct fc_plugin *plugin)
 		plugin->unload(plugin);
 }
 
-static inline void fc_descriptor_free(struct fc_descriptor *desc)
+static inline void fc_descriptor_free(const struct fc_descriptor *desc)
 {
 	if (desc->free)
 		desc->free(desc);
 }
 
-struct fc_plugin *load_ladspa_plugin(const char *path, const char *config);
-struct fc_plugin *load_builtin_plugin(const char *path, const char *config);
-void init_builtin_plugin(uint32_t cpu_flags);
+#define FC_PLUGIN_LOAD_FUNC "pipewire__filter_chain_plugin_load"
+
+typedef struct fc_plugin *(fc_plugin_load_func)(const struct spa_support *support, uint32_t n_support,
+		struct dsp_ops *dsp, const char *path, const char *config);
+
+
+#endif /* PLUGIN_H */
