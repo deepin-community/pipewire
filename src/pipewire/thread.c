@@ -25,8 +25,9 @@ do {									\
 } while(false);
 
 SPA_EXPORT
-pthread_attr_t *pw_thread_fill_attr(const struct spa_dict *props, pthread_attr_t *attr)
+void *pw_thread_fill_attr(const struct spa_dict *props, void *_attr)
 {
+	pthread_attr_t *attr = _attr;
 	const char *str;
 	int res;
 
@@ -51,6 +52,9 @@ int pthread_setname_np(pthread_t thread, const char *name)
 	return 0;
 }
 #endif
+#endif
+#if defined(__GNU__)
+int pthread_setname_np(pthread_t thread, const char *name) { return 0; }
 #endif
 
 static struct spa_thread *impl_create(void *object,

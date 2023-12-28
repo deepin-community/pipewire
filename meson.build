@@ -1,5 +1,5 @@
 project('pipewire', ['c' ],
-  version : '0.3.74',
+  version : '1.0.0',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.61.1',
   default_options : [ 'warning_level=3',
@@ -23,7 +23,16 @@ endif
 spaversion = '0.2'
 apiversion = '0.3'
 soversion = 0
-libversion = '@0@.@1@.0'.format(soversion, pipewire_version_minor.to_int() * 100 + pipewire_version_micro.to_int())
+libversion_minor = pipewire_version_major.to_int() * 1000 + pipewire_version_minor.to_int() * 100 + pipewire_version_micro.to_int()
+libversion = '@0@.@1@.0'.format(soversion, libversion_minor)
+
+# LADI/jack
+# 3, for PipeWire being the third JACK implementation, after JACK1 and jackdmp/JACK2)
+jack_version_major = 3
+jack_version_minor = libversion_minor
+# libjack[server] version has 0 for major (for compatibility with other implementations),
+# 3 for minor, and "1000*major + 100*minor + micro" as micro version (the minor libpipewire soversion number)
+libjackversion = '@0@.@1@.@2@'.format(soversion, jack_version_major, jack_version_minor)
 
 pipewire_name = 'pipewire-@0@'.format(apiversion)
 spa_name = 'spa-@0@'.format(spaversion)
@@ -40,7 +49,9 @@ pipewire_configdir = pipewire_sysconfdir / 'pipewire'
 pipewire_confdatadir = pipewire_datadir / 'pipewire'
 modules_install_dir = pipewire_libdir / pipewire_name
 
-if host_machine.system() == 'linux'
+cc = meson.get_compiler('c')
+
+if cc.has_header('features.h') and cc.get_define('__GLIBC__', prefix: '#include <features.h>') != ''
   # glibc ld.so interprets ${LIB} in a library loading path with an
   # appropriate value for the current architecture, typically something
   # like lib, lib64 or lib/x86_64-linux-gnu.
@@ -62,8 +73,6 @@ alsadatadir = pipewire_datadir / 'alsa-card-profile' / 'mixer'
 pipewire_headers_dir = pipewire_name / 'pipewire'
 
 pkgconfig = import('pkgconfig')
-
-cc = meson.get_compiler('c')
 
 common_flags = [
   '-fvisibility=hidden',
@@ -210,8 +219,7 @@ cdata.set_quoted('MODULEDIR', modules_install_dir)
 cdata.set_quoted('PIPEWIRE_CONFIG_DIR', pipewire_configdir)
 cdata.set_quoted('PLUGINDIR', spa_plugindir)
 cdata.set_quoted('SPADATADIR', spa_datadir)
-cdata.set_quoted('PA_ALSA_PATHS_DIR', alsadatadir / 'paths')
-cdata.set_quoted('PA_ALSA_PROFILE_SETS_DIR', alsadatadir / 'profile-sets')
+cdata.set_quoted('PA_ALSA_DATA_DIR', alsadatadir)
 
 if host_machine.endian() == 'big'
   cdata.set('WORDS_BIGENDIAN', 1)
@@ -223,6 +231,7 @@ check_headers = [
   ['sys/random.h', 'HAVE_SYS_RANDOM_H'],
   ['sys/vfs.h', 'HAVE_SYS_VFS_H'],
   ['pwd.h', 'HAVE_PWD_H'],
+  ['grp.h', 'HAVE_GRP_H'],
 ]
 
 foreach h : check_headers
@@ -237,6 +246,10 @@ systemd_dep = dependency('libsystemd',required: get_option('systemd'))
 summary({'systemd conf data': systemd.found()}, bool_yn: true)
 summary({'libsystemd': systemd_dep.found()}, bool_yn: true)
 cdata.set('HAVE_SYSTEMD', systemd.found() and systemd_dep.found())
+
+selinux_dep = dependency('libselinux', required: get_option('selinux'))
+summary({'libselinux': selinux_dep.found()}, bool_yn: true)
+cdata.set('HAVE_SELINUX', selinux_dep.found())
 
 configinc = include_directories('.')
 includes_inc = include_directories('include')
@@ -366,11 +379,19 @@ summary({'gstreamer-device-provider': gst_dp_found}, bool_yn: true, section: 'Ba
 
 cdata.set('HAVE_GSTREAMER_DEVICE_PROVIDER', get_option('gstreamer-device-provider').allowed())
 
-webrtc_dep = dependency('webrtc-audio-processing',
-  version : ['>= 0.2', '< 1.0'],
-  required : get_option('echo-cancel-webrtc'))
-summary({'WebRTC Echo Canceling': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
-cdata.set('HAVE_WEBRTC', webrtc_dep.found())
+webrtc_dep = dependency('webrtc-audio-processing-1',
+  version : ['>= 1.2' ],
+  required : false)
+cdata.set('HAVE_WEBRTC1', webrtc_dep.found())
+if webrtc_dep.found()
+  summary({'WebRTC Echo Canceling >= 1.2': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+else
+  webrtc_dep = dependency('webrtc-audio-processing',
+    version : ['>= 0.2', '< 1.0'],
+    required : get_option('echo-cancel-webrtc'))
+  cdata.set('HAVE_WEBRTC', webrtc_dep.found())
+  summary({'WebRTC Echo Canceling < 1.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+endif
 
 # On FreeBSD and MidnightBSD, epoll-shim library is required for eventfd() and timerfd()
 epoll_shim_dep = (host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
@@ -418,6 +439,8 @@ check_functions = [
   ['reallocarray', '#include <stdlib.h>', ['-D_GNU_SOURCE'], []],
   ['sigabbrev_np', '#include <string.h>', ['-D_GNU_SOURCE'], []],
   ['XSetIOErrorExitHandler', '#include <X11/Xlib.h>', [], [x11_dep]],
+  ['malloc_trim', '#include <malloc.h>', [], []],
+  ['malloc_info', '#include <malloc.h>', [], []],
 ]
 
 foreach f : check_functions
@@ -462,22 +485,21 @@ if alsa_dep.found()
   subdir('pipewire-alsa/tests')
 endif
 
-generate_manpages = false
-if get_option('man').allowed()
-  rst2man = find_program('rst2man', required: false)
-  if not rst2man.found()
-    rst2man = find_program('rst2man.py', required: get_option('man'))
-  endif
-  if rst2man.found()
-    generate_manpages = true
-  endif
+generate_docs = get_option('man').enabled() or get_option('docs').enabled()
+if get_option('man').allowed() or get_option('docs').allowed()
+  doxygen = find_program('doxygen', required : generate_docs)
+  pymod = import('python')
+  python = pymod.find_installation('python3', required: generate_docs)
+  generate_docs = doxygen.found() and python.found()
 endif
 
-summary({'Manpage generation': generate_manpages}, bool_yn: true)
-subdir('man')
+install_docs = get_option('docs').require(generate_docs).allowed()
+install_man = get_option('man').require(generate_docs).allowed()
 
-doxygen = find_program('doxygen', required : get_option('docs'))
-if doxygen.found()
+summary({'Documentation ': install_docs}, bool_yn: true)
+summary({'Man pages ': install_man}, bool_yn: true)
+
+if generate_docs
   subdir('doc')
 endif
 

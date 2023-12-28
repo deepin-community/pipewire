@@ -40,7 +40,7 @@
 
 #include <pipewire/extensions/profiler.h>
 
-/** \page page_module_echo_cancel PipeWire Module: Echo Cancel
+/** \page page_module_echo_cancel Echo Cancel
  *
  * The `echo-cancel` module performs echo cancellation. The module creates
  * virtual `echo-cancel-capture` source and `echo-cancel-playback` sink
@@ -79,6 +79,10 @@
  *   the signal from the sink stream is removed from the capture stream data.
  *   This data then goes into the application (the conference application) and
  *   does not contain the echo from the other participants anymore.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-echo-cancel`
  *
  * ## Module Options
  *
@@ -604,7 +608,7 @@ static void input_param_latency_changed(struct impl *impl, const struct spa_pod 
 	struct spa_pod_builder b;
 	const struct spa_pod *params[1];
 
-	if (spa_latency_parse(param, &latency) < 0)
+	if (param == NULL || spa_latency_parse(param, &latency) < 0)
 		return;
 
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
@@ -767,7 +771,7 @@ static void output_param_latency_changed(struct impl *impl, const struct spa_pod
 	struct spa_pod_builder b;
 	const struct spa_pod *params[1];
 
-	if (spa_latency_parse(param, &latency) < 0)
+	if (param == NULL || spa_latency_parse(param, &latency) < 0)
 		return;
 
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
@@ -1002,7 +1006,8 @@ static int setup_streams(struct impl *impl)
 			PW_DIRECTION_OUTPUT,
 			PW_ID_ANY,
 			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_RT_PROCESS,
+			PW_STREAM_FLAG_RT_PROCESS |
+			PW_STREAM_FLAG_ASYNC,
 			params, n_params)) < 0) {
 		spa_pod_dynamic_builder_clean(&b);
 		return res;
@@ -1036,7 +1041,8 @@ static int setup_streams(struct impl *impl)
 			PW_ID_ANY,
 			PW_STREAM_FLAG_AUTOCONNECT |
 			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_RT_PROCESS,
+			PW_STREAM_FLAG_RT_PROCESS |
+			PW_STREAM_FLAG_ASYNC,
 			params, n_params)) < 0) {
 		spa_pod_dynamic_builder_clean(&b);
 		return res;

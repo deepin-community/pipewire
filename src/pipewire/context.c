@@ -17,6 +17,7 @@
 #include <spa/support/plugin.h>
 #include <spa/support/plugin-loader.h>
 #include <spa/node/utils.h>
+#include <spa/utils/atomic.h>
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
 #include <spa/debug/types.h>
@@ -30,6 +31,8 @@
 
 PW_LOG_TOPIC_EXTERN(log_context);
 #define PW_LOG_TOPIC_DEFAULT log_context
+
+#define MAX_HOPS	64
 
 /** \cond */
 struct impl {
@@ -478,61 +481,6 @@ void pw_context_add_listener(struct pw_context *context,
 	spa_hook_list_append(&context->listener_list, listener, events, data);
 }
 
-struct listener_data {
-	struct spa_hook *listener;
-	const struct pw_context_driver_events *events;
-	void *data;
-};
-
-static int
-do_add_listener(struct spa_loop *loop,
-		bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct pw_context *context = user_data;
-	const struct listener_data *d = data;
-	spa_hook_list_append(&context->driver_listener_list,
-			d->listener, d->events, d->data);
-	return 0;
-}
-
-SPA_EXPORT
-void pw_context_driver_add_listener(struct pw_context *context,
-			  struct spa_hook *listener,
-			  const struct pw_context_driver_events *events,
-			  void *data)
-{
-	struct listener_data d = {
-		.listener = listener,
-		.events = events,
-		.data = data };
-	struct pw_impl_node *n;
-	spa_list_for_each(n, &context->driver_list, driver_link) {
-		SPA_FLAG_SET(n->rt.target.activation->flags, PW_NODE_ACTIVATION_FLAG_PROFILER);
-	}
-	pw_loop_invoke(context->data_loop,
-                       do_add_listener, SPA_ID_INVALID, &d, sizeof(d), false, context);
-}
-
-static int do_remove_listener(struct spa_loop *loop,
-		bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct spa_hook *listener = user_data;
-	spa_hook_remove(listener);
-	return 0;
-}
-
-SPA_EXPORT
-void pw_context_driver_remove_listener(struct pw_context *context,
-			  struct spa_hook *listener)
-{
-	struct pw_impl_node *n;
-	spa_list_for_each(n, &context->driver_list, driver_link) {
-		SPA_FLAG_CLEAR(n->rt.target.activation->flags, PW_NODE_ACTIVATION_FLAG_PROFILER);
-	}
-	pw_loop_invoke(context->data_loop,
-                       do_remove_listener, SPA_ID_INVALID, NULL, 0, true, listener);
-}
-
 SPA_EXPORT
 const struct spa_support *pw_context_get_support(struct pw_context *context, uint32_t *n_support)
 {
@@ -841,44 +789,57 @@ static int ensure_state(struct pw_impl_node *node, bool running)
 	return pw_impl_node_set_state(node, state);
 }
 
-/* From a node (that is runnable) follow all prepared links and groups to
- * active nodes up to the driver and make them recursively runnable as well.
- *
- * We stop at driver nodes so that other paths linked to the driver will stay
- * unrunnable when no other runnable path exists.
+/* From a node (that is runnable) follow all prepared links in the given direction
+ * and groups to active nodes and make them recursively runnable as well.
  */
-static inline int run_nodes(struct pw_context *context, struct pw_impl_node *node, struct spa_list *nodes)
+static inline int run_nodes(struct pw_context *context, struct pw_impl_node *node,
+		struct spa_list *nodes, enum pw_direction direction, int hop)
 {
 	struct pw_impl_node *t;
 	struct pw_impl_port *p;
 	struct pw_impl_link *l;
 
-	pw_log_debug("node %p: '%s'", node, node->name);
-
-	spa_list_for_each(p, &node->input_ports, link) {
-		spa_list_for_each(l, &p->links, input_link) {
-			t = l->output->node;
-
-			if (!t->active || !l->prepared || t->runnable)
-				continue;
-
-			pw_log_debug("  peer %p: '%s'", t, t->name);
-			t->runnable = true;
-			if (!t->driving)
-				run_nodes(context, t, nodes);
-		}
+	if (hop == MAX_HOPS) {
+		pw_log_warn("exceeded hops (%d)", hop);
+		return -EIO;
 	}
-	spa_list_for_each(p, &node->output_ports, link) {
-		spa_list_for_each(l, &p->links, output_link) {
-			t = l->input->node;
 
-			if (!t->active || !l->prepared || t->runnable)
-				continue;
+	pw_log_debug("node %p: '%s' direction:%s", node, node->name,
+			pw_direction_as_string(direction));
 
-			pw_log_debug("  peer %p: '%s'", t, t->name);
-			t->runnable = true;
-			if (!t->driving)
-				run_nodes(context, t, nodes);
+	SPA_FLAG_SET(node->checked, 1u<<direction);
+
+	if (direction == PW_DIRECTION_INPUT) {
+		spa_list_for_each(p, &node->input_ports, link) {
+			spa_list_for_each(l, &p->links, input_link) {
+				t = l->output->node;
+
+				if (!t->active || !l->prepared ||
+				    (!t->driving && SPA_FLAG_IS_SET(t->checked, 1u<<direction)))
+					continue;
+				if (t->driving && p->node == t)
+					continue;
+
+				pw_log_debug("  peer %p: '%s'", t, t->name);
+				t->runnable = true;
+				run_nodes(context, t, nodes, direction, hop + 1);
+			}
+		}
+	} else {
+		spa_list_for_each(p, &node->output_ports, link) {
+			spa_list_for_each(l, &p->links, output_link) {
+				t = l->input->node;
+
+				if (!t->active || !l->prepared ||
+				    (!t->driving && SPA_FLAG_IS_SET(t->checked, 1u<<direction)))
+					continue;
+				if (t->driving && p->node == t)
+					continue;
+
+				pw_log_debug("  peer %p: '%s'", t, t->name);
+				t->runnable = true;
+				run_nodes(context, t, nodes, direction, hop + 1);
+			}
 		}
 	}
 	/* now go through all the nodes that have the same link group and
@@ -886,17 +847,18 @@ static inline int run_nodes(struct pw_context *context, struct pw_impl_node *nod
 	 * don't get included here. They were added to the same driver but
 	 * need to otherwise stay idle unless some non-passive link activates
 	 * them. */
-	if (node->link_group != NULL) {
+	if (node->link_groups != NULL) {
 		spa_list_for_each(t, nodes, sort_link) {
-			if (t->exported || !t->active || t->runnable)
+			if (t->exported || !t->active ||
+			    SPA_FLAG_IS_SET(t->checked, 1u<<direction))
 				continue;
-			if (!spa_streq(t->link_group, node->link_group))
+			if (pw_strv_find_common(t->link_groups, node->link_groups) < 0)
 				continue;
 
 			pw_log_debug("  group %p: '%s'", t, t->name);
 			t->runnable = true;
 			if (!t->driving)
-				run_nodes(context, t, nodes);
+				run_nodes(context, t, nodes, direction, hop + 1);
 		}
 	}
 	return 0;
@@ -982,15 +944,15 @@ static int collect_nodes(struct pw_context *context, struct pw_impl_node *node, 
 		}
 		/* now go through all the nodes that have the same group and
 		 * that are not yet visited */
-		if (n->group != NULL || n->link_group != NULL) {
+		if (n->groups != NULL || n->link_groups != NULL) {
 			spa_list_for_each(t, &context->node_list, link) {
 				if (t->exported || !t->active || t->visited)
 					continue;
-				if ((t->group == NULL || !spa_streq(t->group, n->group)) &&
-				    (t->link_group == NULL || !spa_streq(t->link_group, n->link_group)))
+				if (pw_strv_find_common(t->groups, n->groups) < 0 &&
+				    pw_strv_find_common(t->link_groups, n->link_groups) < 0)
 					continue;
-				pw_log_debug("%p: %s join group:%s link-group:%s",
-						t, t->name, n->group, n->link_group);
+				pw_log_debug("%p: %s join group of %s",
+						t, t->name, n->name);
 				t->visited = true;
 				spa_list_append(&queue, &t->sort_link);
 			}
@@ -998,8 +960,10 @@ static int collect_nodes(struct pw_context *context, struct pw_impl_node *node, 
 		pw_log_debug(" next node %p: '%s' runnable:%u", n, n->name, n->runnable);
 	}
 	spa_list_for_each(n, collect, sort_link)
-		if (!n->driving && n->runnable)
-			run_nodes(context, n, collect);
+		if (!n->driving && n->runnable) {
+			run_nodes(context, n, collect, PW_DIRECTION_OUTPUT, 0);
+			run_nodes(context, n, collect, PW_DIRECTION_INPUT, 0);
+		}
 
 	return 0;
 }
@@ -1076,7 +1040,7 @@ static void reconfigure_driver(struct pw_context *context, struct pw_impl_node *
 			context, n, n->name);
 
 	if (n->info.state >= PW_NODE_STATE_IDLE)
-		n->reconfigure = true;
+		n->need_resume = !n->pause_on_idle;
 	pw_impl_node_set_state(n, PW_NODE_STATE_SUSPENDED);
 }
 
@@ -1253,6 +1217,7 @@ again:
 	/* clean up the flags first */
 	spa_list_for_each(n, &context->node_list, link) {
 		n->visited = false;
+		n->checked = 0;
 		n->runnable = n->always_process && n->active;
 	}
 
@@ -1354,9 +1319,10 @@ again:
 		struct spa_fraction latency = SPA_FRACTION(0, 0);
 		struct spa_fraction max_latency = SPA_FRACTION(0, 0);
 		struct spa_fraction rate = SPA_FRACTION(0, 0);
-		uint32_t quantum, target_rate, current_rate;
+		uint32_t target_quantum, target_rate, current_rate, current_quantum;
 		uint64_t quantum_stamp = 0, rate_stamp = 0;
-		bool force_rate, force_quantum, restore_rate = false;
+		bool force_rate, force_quantum, restore_rate = false, restore_quantum = false;
+		bool do_reconfigure = false, need_resume, was_target_pending;
 		const uint32_t *node_rates;
 		uint32_t node_n_rates, node_def_rate;
 		uint32_t node_max_quantum, node_min_quantum, node_def_quantum, node_rate_quantum;
@@ -1412,10 +1378,10 @@ again:
 			     fraction_compare(&s->max_latency, &max_latency) < 0))
 				max_latency = s->max_latency;
 
-			/* largest rate */
+			/* largest rate, which is in fact the smallest fraction */
 			if (rate.denom == 0 ||
 			    (s->rate.denom > 0 &&
-			     fraction_compare(&s->rate, &rate) > 0))
+			     fraction_compare(&s->rate, &rate) < 0))
 				rate = s->rate;
 
 			if (s->active)
@@ -1434,19 +1400,34 @@ again:
 			pw_log_info("(%s-%u) restore rate", n->name, n->info.id);
 			restore_rate = true;
 		}
+		if (n->forced_quantum && !force_quantum && n->runnable) {
+			/* A node that was forced to a quantum but is no longer being
+			 * forced can restore its quantum */
+			pw_log_info("(%s-%u) restore quantum", n->name, n->info.id);
+			restore_quantum = true;
+		}
 
 		if (force_quantum)
 			lock_quantum = false;
 		if (force_rate)
 			lock_rate = false;
 
-		if (n->reconfigure)
+		need_resume = n->need_resume;
+		if (need_resume) {
 			running = true;
+			n->need_resume = false;
+		}
 
 		current_rate = n->target_rate.denom;
 		if (!restore_rate &&
-		   (lock_rate || n->reconfigure || !running ||
-		    (!force_rate && (n->info.state > PW_NODE_STATE_IDLE))))
+		   (lock_rate || need_resume || !running ||
+		    (!force_rate && (n->info.state > PW_NODE_STATE_IDLE)))) {
+			pw_log_debug("%p: keep rate:1/%u restore:%u lock:%u resume:%u "
+					"running:%u force:%u state:%s", context,
+					current_rate, restore_rate, lock_rate, need_resume,
+					running, force_rate,
+					pw_node_state_as_string(n->info.state));
+
 			/* when we don't need to restore or rate and
 			 * when someone wants us to lock the rate of this driver or
 			 * when we are in the process of reconfiguring the driver or
@@ -1454,6 +1435,7 @@ again:
 			 * when the driver is busy and we don't need to force a rate,
 			 * keep the current rate */
 			target_rate = current_rate;
+		}
 		else {
 			/* Here we are allowed to change the rate of the driver.
 			 * Start with the default rate. If the desired rate is
@@ -1464,8 +1446,9 @@ again:
 						rate.denom, target_rate);
 		}
 
+		was_target_pending = n->target_pending;
+
 		if (target_rate != current_rate) {
-			bool do_reconfigure = false;
 			/* we doing a rate switch */
 			pw_log_info("(%s-%u) state:%s new rate:%u/(%u)->%u",
 					n->name, n->info.id,
@@ -1475,23 +1458,17 @@ again:
 
 			if (force_rate) {
 				if (settings->clock_rate_update_mode == CLOCK_RATE_UPDATE_MODE_HARD)
-					do_reconfigure = !n->target_pending;
+					do_reconfigure |= !was_target_pending;
 			} else {
 				if (n->info.state >= PW_NODE_STATE_SUSPENDED)
-					do_reconfigure = !n->target_pending;
+					do_reconfigure |= !was_target_pending;
 			}
-			if (do_reconfigure)
-				reconfigure_driver(context, n);
-
 			/* we're setting the pending rate. This will become the new
 			 * current rate in the next iteration of the graph. */
 			n->target_rate = SPA_FRACTION(1, target_rate);
-			n->target_pending = true;
 			n->forced_rate = force_rate;
+			n->target_pending = true;
 			current_rate = target_rate;
-			/* we might be suspended now and the links need to be prepared again */
-			if (do_reconfigure)
-				goto again;
 		}
 
 		if (node_rate_quantum != 0 && current_rate != node_rate_quantum) {
@@ -1501,53 +1478,79 @@ again:
 			node_max_quantum = node_max_quantum * current_rate / node_rate_quantum;
 		}
 
-		/* calculate desired quantum */
-		if (max_latency.denom != 0) {
+		/* calculate desired quantum. Don't limit to the max_latency when we are
+		 * going to force a quantum or rate and reconfigure the nodes. */
+		if (max_latency.denom != 0 && !force_quantum && !force_rate) {
 			uint32_t tmp = (max_latency.num * current_rate / max_latency.denom);
 			if (tmp < node_max_quantum)
 				node_max_quantum = tmp;
 		}
 
-		quantum = node_def_quantum;
-		if (latency.denom != 0)
-			quantum = (latency.num * current_rate / latency.denom);
-		quantum = SPA_CLAMP(quantum, node_min_quantum, node_max_quantum);
-		quantum = SPA_MIN(quantum, lim_quantum);
+		current_quantum = n->target_quantum;
+		if (!restore_quantum && (lock_quantum || need_resume || !running)) {
+			pw_log_debug("%p: keep quantum:%u restore:%u lock:%u resume:%u "
+					"running:%u force:%u state:%s", context,
+					current_quantum, restore_quantum, lock_quantum, need_resume,
+					running, force_quantum,
+					pw_node_state_as_string(n->info.state));
+			target_quantum = current_quantum;
+		}
+		else {
+			target_quantum = node_def_quantum;
+			if (latency.denom != 0)
+				target_quantum = (latency.num * current_rate / latency.denom);
+			target_quantum = SPA_CLAMP(target_quantum, node_min_quantum, node_max_quantum);
+			target_quantum = SPA_MIN(target_quantum, lim_quantum);
 
-		if (settings->clock_power_of_two_quantum)
-			quantum = flp2(quantum);
+			if (settings->clock_power_of_two_quantum && !force_quantum)
+				target_quantum = flp2(target_quantum);
+		}
 
-		if (running && quantum != n->target_quantum && !lock_quantum) {
+		if (target_quantum != current_quantum) {
 			pw_log_info("(%s-%u) new quantum:%"PRIu64"->%u",
 					n->name, n->info.id,
 					n->target_quantum,
-					quantum);
+					target_quantum);
 			/* this is the new pending quantum */
-			n->target_quantum = quantum;
+			n->target_quantum = target_quantum;
+			n->forced_quantum = force_quantum;
 			n->target_pending = true;
+
+			if (force_quantum)
+				do_reconfigure |= !was_target_pending;
 		}
 
 		if (n->target_pending) {
+			if (do_reconfigure) {
+				reconfigure_driver(context, n);
+				/* we might be suspended now and the links need to be prepared again */
+				goto again;
+			}
 			/* we have a pending change. We place the new values in the
 			 * pending fields so that they are picked up by the driver in
 			 * the next cycle */
 			pw_log_debug("%p: apply duration:%"PRIu64" rate:%u/%u", context,
 					n->target_quantum, n->target_rate.num,
 					n->target_rate.denom);
-			SEQ_WRITE(n->rt.position->clock.target_seq);
+			SPA_SEQ_WRITE(n->rt.position->clock.target_seq);
 			n->rt.position->clock.target_duration = n->target_quantum;
 			n->rt.position->clock.target_rate = n->target_rate;
-			SEQ_WRITE(n->rt.position->clock.target_seq);
+			SPA_SEQ_WRITE(n->rt.position->clock.target_seq);
 
 			if (n->info.state < PW_NODE_STATE_RUNNING) {
 				n->rt.position->clock.duration = n->target_quantum;
 				n->rt.position->clock.rate = n->target_rate;
 			}
 			n->target_pending = false;
+		} else {
+			n->target_quantum = n->rt.position->clock.target_duration;
+			n->target_rate = n->rt.position->clock.target_rate;
 		}
 
-		pw_log_debug("%p: driver %p running:%d runnable:%d quantum:%u '%s'",
-				context, n, running, n->runnable, quantum, n->name);
+		pw_log_debug("%p: driver %p running:%d runnable:%d quantum:%u rate:%u (%"PRIu64"/%u)'%s'",
+				context, n, running, n->runnable, target_quantum, target_rate,
+				n->rt.position->clock.target_duration,
+				n->rt.position->clock.target_rate.denom, n->name);
 
 		/* first change the node states of the followers to the new target */
 		spa_list_for_each(s, &n->follower_list, follower_link) {

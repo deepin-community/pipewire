@@ -15,6 +15,10 @@ extern "C" {
 #include <spa/utils/defs.h>
 #include <spa/support/log.h>
 #include <spa/debug/context.h>
+#include <spa/debug/dict.h>
+#include <spa/debug/format.h>
+#include <spa/debug/mem.h>
+#include <spa/debug/pod.h>
 
 /**
  * \addtogroup spa_debug
@@ -34,7 +38,7 @@ struct spa_debug_log_ctx {
 SPA_PRINTF_FUNC(2,3)
 static inline void spa_debug_log_log(struct spa_debug_context *ctx, const char *fmt, ...)
 {
-	struct spa_debug_log_ctx *c = (struct spa_debug_log_ctx*)ctx;
+	struct spa_debug_log_ctx *c = SPA_CONTAINER_OF(ctx, struct spa_debug_log_ctx, ctx);
 	va_list args;
 	va_start(args, fmt);
 	spa_log_logtv(c->log, c->level, c->topic, c->file, c->line, c->func, fmt, args);
@@ -53,23 +57,30 @@ static inline void spa_debug_log_log(struct spa_debug_context *ctx, const char *
 
 #define spa_debug_log_pod(l,lev,indent,info,pod) 				\
 ({										\
- 	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
+	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
 	if (SPA_UNLIKELY(spa_log_level_topic_enabled(c.log, c.topic, c.level)))	\
 		spa_debugc_pod(&c.ctx, indent, info, pod);			\
 })
 
 #define spa_debug_log_format(l,lev,indent,info,format) 				\
 ({										\
- 	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
+	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
 	if (SPA_UNLIKELY(spa_log_level_topic_enabled(c.log, c.topic, c.level)))	\
 		spa_debugc_format(&c.ctx, indent, info, format);		\
 })
 
 #define spa_debug_log_mem(l,lev,indent,data,len)				\
 ({										\
- 	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
+	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
 	if (SPA_UNLIKELY(spa_log_level_topic_enabled(c.log, c.topic, c.level)))	\
 		spa_debugc_mem(&c.ctx, indent, data, len);			\
+})
+
+#define spa_debug_log_dict(l,lev,indent,dict)					\
+({										\
+	struct spa_debug_log_ctx c = SPA_LOG_DEBUG_INIT(l,lev);			\
+	if (SPA_UNLIKELY(spa_log_level_topic_enabled(c.log, c.topic, c.level)))	\
+		spa_debugc_dict(&c.ctx, indent, dict);				\
 })
 
 /**

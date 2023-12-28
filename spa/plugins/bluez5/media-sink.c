@@ -1405,6 +1405,21 @@ static int impl_node_send_command(void *object, const struct spa_command *comman
 
 static void emit_node_info(struct impl *this, bool full)
 {
+	char node_group_buf[256];
+	char *node_group = NULL;
+
+	if (this->transport && (this->transport->profile & SPA_BT_PROFILE_BAP_SINK)) {
+		spa_scnprintf(node_group_buf, sizeof(node_group_buf), "bluez-iso-%s-cig-%d",
+				this->transport->device->adapter->address,
+				this->transport->bap_cig);
+		node_group = node_group_buf;
+	} else if (this->transport && (this->transport->profile & SPA_BT_PROFILE_BAP_BROADCAST_SINK)) {
+		spa_scnprintf(node_group_buf, sizeof(node_group_buf), "bluez-iso-%s-big-%d",
+				this->transport->device->adapter->address,
+				this->transport->bap_big);
+		node_group = node_group_buf;
+	}
+
 	struct spa_dict_item node_info_items[] = {
 		{ SPA_KEY_DEVICE_API, "bluez5" },
 		{ SPA_KEY_MEDIA_CLASS, this->is_internal ? "Audio/Sink/Internal" :
@@ -1412,6 +1427,7 @@ static void emit_node_info(struct impl *this, bool full)
 		{ "media.name", ((this->transport && this->transport->device->name) ?
 					this->transport->device->name : this->codec->bap ? "BAP" : "A2DP" ) },
 		{ SPA_KEY_NODE_DRIVER, this->is_output ? "true" : "false" },
+		{ "node.group", node_group },
 	};
 	uint64_t old = full ? this->info.change_mask : 0;
 	if (full)
@@ -1694,8 +1710,6 @@ static int port_set_format(struct impl *this, struct port *port,
 
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
 	if (port->have_format) {
-		port->info.change_mask |= SPA_PORT_CHANGE_MASK_FLAGS;
-		port->info.flags = SPA_PORT_FLAG_LIVE;
 		port->info.change_mask |= SPA_PORT_CHANGE_MASK_RATE;
 		port->info.rate = SPA_FRACTION(1, port->current_format.info.raw.rate);
 		port->params[IDX_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
@@ -2078,7 +2092,9 @@ impl_init(const struct spa_handle_factory *factory,
 	port->info_all = SPA_PORT_CHANGE_MASK_FLAGS |
 			SPA_PORT_CHANGE_MASK_PARAMS;
 	port->info = SPA_PORT_INFO_INIT();
-	port->info.flags = 0;
+	port->info.flags = SPA_PORT_FLAG_LIVE |
+			   SPA_PORT_FLAG_PHYSICAL |
+			   SPA_PORT_FLAG_TERMINAL;
 	port->params[IDX_EnumFormat] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
 	port->params[IDX_Meta] = SPA_PARAM_INFO(SPA_PARAM_Meta, SPA_PARAM_INFO_READ);
 	port->params[IDX_IO] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);

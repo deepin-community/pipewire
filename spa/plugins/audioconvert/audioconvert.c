@@ -9,12 +9,14 @@
 
 #include <spa/support/plugin.h>
 #include <spa/support/cpu.h>
+#include <spa/support/loop.h>
 #include <spa/support/log.h>
 #include <spa/utils/result.h>
 #include <spa/utils/list.h>
 #include <spa/utils/json.h>
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
+#include <spa/utils/ratelimit.h>
 #include <spa/node/node.h>
 #include <spa/node/io.h>
 #include <spa/node/utils.h>
@@ -22,6 +24,7 @@
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/param.h>
 #include <spa/param/latency-utils.h>
+#include <spa/param/tag-utils.h>
 #include <spa/pod/filter.h>
 #include <spa/pod/dynamic.h>
 #include <spa/debug/types.h>
@@ -33,8 +36,8 @@
 #include "wavfile.h"
 
 #undef SPA_LOG_TOPIC_DEFAULT
-#define SPA_LOG_TOPIC_DEFAULT log_topic
-static struct spa_log_topic *log_topic = &SPA_LOG_TOPIC(0, "spa.audioconvert");
+#define SPA_LOG_TOPIC_DEFAULT &log_topic
+static struct spa_log_topic log_topic = SPA_LOG_TOPIC(0, "spa.audioconvert");
 
 #define DEFAULT_RATE		48000
 #define DEFAULT_CHANNELS	2
@@ -89,6 +92,7 @@ struct props {
 	unsigned int resample_quality;
 	double rate;
 	char wav_path[512];
+	unsigned int lock_volumes:1;
 };
 
 static void props_reset(struct props *props)
@@ -109,6 +113,7 @@ static void props_reset(struct props *props)
 	props->resample_quality = RESAMPLE_DEFAULT_QUALITY;
 	props->rate = 1.0;
 	spa_zero(props->wav_path);
+	props->lock_volumes = false;
 }
 
 struct buffer {
@@ -134,12 +139,16 @@ struct port {
 #define IDX_Format	3
 #define IDX_Buffers	4
 #define IDX_Latency	5
-#define N_PORT_PARAMS	6
+#define IDX_Tag		6
+#define N_PORT_PARAMS	7
 	struct spa_param_info params[N_PORT_PARAMS];
 	char position[16];
 
 	struct buffer buffers[MAX_BUFFERS];
 	uint32_t n_buffers;
+
+	struct spa_latency_info latency[2];
+	unsigned int have_latency:1;
 
 	struct spa_audio_info format;
 	unsigned int have_format:1;
@@ -149,6 +158,7 @@ struct port {
 
 	uint32_t blocks;
 	uint32_t stride;
+	uint32_t maxsize;
 
 	const struct spa_pod_sequence *ctrl;
 	uint32_t ctrl_offset;
@@ -166,7 +176,7 @@ struct dir {
 	struct spa_audio_info format;
 	unsigned int have_format:1;
 	unsigned int have_profile:1;
-	struct spa_latency_info latency;
+	struct spa_pod *tag;
 
 	uint32_t remap[MAX_PORTS];
 
@@ -187,6 +197,8 @@ struct impl {
 	uint32_t max_align;
 	uint32_t quantum_limit;
 	enum spa_direction direction;
+
+	struct spa_ratelimit rate_limit;
 
 	struct props props;
 
@@ -226,7 +238,8 @@ struct impl {
 	unsigned int rate_adjust:1;
 	unsigned int port_ignore_latency:1;
 
-	uint32_t empty_size;
+	uint32_t scratch_size;
+	uint32_t scratch_ports;
 	float *empty;
 	float *scratch;
 	float *tmp[2];
@@ -317,6 +330,8 @@ static int init_port(struct impl *this, enum spa_direction direction, uint32_t p
 	}
 	port->direction = direction;
 	port->id = port_id;
+	port->latency[SPA_DIRECTION_INPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
+	port->latency[SPA_DIRECTION_OUTPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_OUTPUT);
 
 	name = spa_debug_type_find_short_name(spa_type_audio_channel, position);
 	snprintf(port->position, sizeof(port->position), "%s", name ? name : "UNK");
@@ -333,6 +348,7 @@ static int init_port(struct impl *this, enum spa_direction direction, uint32_t p
 	port->params[IDX_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
 	port->params[IDX_Buffers] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
 	port->params[IDX_Latency] = SPA_PARAM_INFO(SPA_PARAM_Latency, SPA_PARAM_INFO_READWRITE);
+	port->params[IDX_Tag] = SPA_PARAM_INFO(SPA_PARAM_Tag, SPA_PARAM_INFO_READWRITE);
 	port->info.params = port->params;
 	port->info.n_params = N_PORT_PARAMS;
 
@@ -356,8 +372,9 @@ static int init_port(struct impl *this, enum spa_direction direction, uint32_t p
 	}
 	spa_list_init(&port->queue);
 
-	spa_log_info(this->log, "%p: add port %d:%d position:%s %d %d %d",
-			this, direction, port_id, port->position, is_dsp, is_monitor, is_control);
+	spa_log_debug(this->log, "%p: add port %d:%d position:%s %d %d %d",
+			this, direction, port_id, port->position, is_dsp,
+			is_monitor, is_control);
 	emit_port_info(this, port, true);
 
 	return 0;
@@ -695,6 +712,14 @@ static int impl_node_enum_params(void *object, int seq,
 				SPA_PROP_INFO_type, SPA_POD_String(p->wav_path),
 				SPA_PROP_INFO_params, SPA_POD_Bool(true));
 			break;
+		case 27:
+			param = spa_pod_builder_add_object(&b,
+				SPA_TYPE_OBJECT_PropInfo, id,
+				SPA_PROP_INFO_name, SPA_POD_String("channelmix.lock-volumes"),
+				SPA_PROP_INFO_description, SPA_POD_String("Disable volume updates"),
+				SPA_PROP_INFO_type, SPA_POD_CHOICE_Bool(p->lock_volumes),
+				SPA_PROP_INFO_params, SPA_POD_Bool(true));
+			break;
 		default:
 			return 0;
 		}
@@ -773,6 +798,8 @@ static int impl_node_enum_params(void *object, int seq,
 			spa_pod_builder_string(&b, dither_method_info[this->dir[1].conv.method].label);
 			spa_pod_builder_string(&b, "debug.wav-path");
 			spa_pod_builder_string(&b, p->wav_path);
+			spa_pod_builder_string(&b, "channelmix.lock-volumes");
+			spa_pod_builder_bool(&b, p->lock_volumes);
 			spa_pod_builder_pop(&b, &f[1]);
 			param = spa_pod_builder_pop(&b, &f[0]);
 			break;
@@ -854,6 +881,8 @@ static int audioconvert_set_param(struct impl *this, const char *k, const char *
 		spa_scnprintf(this->props.wav_path,
 				sizeof(this->props.wav_path), "%s", s ? s : "");
 	}
+	else if (spa_streq(k, "channelmix.lock-volumes"))
+		this->props.lock_volumes = spa_atob(s);
 	else
 		return 0;
 	return 1;
@@ -978,7 +1007,7 @@ static struct spa_pod *generate_ramp_up_seq(struct impl *this)
 	spa_log_info(this->log, "generating ramp up sequence from %f to %f with a"
 		" step value %f at scale %d", p->prev_volume, p->volume, volume_step, p->vrp.scale);
 	do {
-		// spa_log_debug(this->log, "volume accum %f", get_volume_at_scale(this, volume_accum));
+		spa_log_trace(this->log, "volume accum %f", get_volume_at_scale(this, volume_accum));
 		spa_pod_builder_control(&b.b, volume_offs, SPA_CONTROL_Properties);
 		spa_pod_builder_add_object(&b.b,
 				SPA_TYPE_OBJECT_Props, 0,
@@ -1007,7 +1036,7 @@ static struct spa_pod *generate_ramp_down_seq(struct impl *this)
 	spa_log_info(this->log, "generating ramp down sequence from %f to %f with a"
 		" step value %f at scale %d", p->prev_volume, p->volume, volume_step, p->vrp.scale);
 	do {
-		// spa_log_debug(this->log, "volume accum %f", get_volume_at_scale(this, volume_accum));
+		spa_log_trace(this->log, "volume accum %f", get_volume_at_scale(this, volume_accum));
 		spa_pod_builder_control(&b.b, volume_offs, SPA_CONTROL_Properties);
 		spa_pod_builder_add_object(&b.b,
 				SPA_TYPE_OBJECT_Props, 0,
@@ -1049,13 +1078,15 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 		case SPA_PROP_volume:
 			p->prev_volume = p->volume;
 
-			if (spa_pod_get_float(&prop->value, &p->volume) == 0) {
+			if (!p->lock_volumes &&
+			    spa_pod_get_float(&prop->value, &p->volume) == 0) {
 				spa_log_debug(this->log, "%p new volume %f", this, p->volume);
 				changed++;
 			}
 			break;
 		case SPA_PROP_mute:
-			if (spa_pod_get_bool(&prop->value, &p->channel.mute) == 0) {
+			if (!p->lock_volumes &&
+			    spa_pod_get_bool(&prop->value, &p->channel.mute) == 0) {
 				have_channel_volume = true;
 				changed++;
 			}
@@ -1124,7 +1155,8 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 			}
 			break;
 		case SPA_PROP_channelVolumes:
-			if ((n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
+			if (!p->lock_volumes &&
+			    (n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
 					p->channel.volumes, SPA_AUDIO_MAX_CHANNELS)) > 0) {
 				have_channel_volume = true;
 				p->channel.n_volumes = n;
@@ -1139,13 +1171,15 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 			}
 			break;
 		case SPA_PROP_softMute:
-			if (spa_pod_get_bool(&prop->value, &p->soft.mute) == 0) {
+			if (!p->lock_volumes &&
+			    spa_pod_get_bool(&prop->value, &p->soft.mute) == 0) {
 				have_soft_volume = true;
 				changed++;
 			}
 			break;
 		case SPA_PROP_softVolumes:
-			if ((n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
+			if (!p->lock_volumes &&
+			    (n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
 					p->soft.volumes, SPA_AUDIO_MAX_CHANNELS)) > 0) {
 				have_soft_volume = true;
 				p->soft.n_volumes = n;
@@ -1187,7 +1221,7 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
 		set_volume(this);
 	}
 
-	if (vol_ramp_params_changed) {
+	if (!p->lock_volumes && vol_ramp_params_changed) {
 		void *sequence = NULL;
 		if (p->volume == p->prev_volume)
 			spa_log_error(this->log, "no change in volume, cannot ramp volume");
@@ -1235,8 +1269,9 @@ static int reconfigure_mode(struct impl *this, enum spa_param_port_config_mode m
 	    (info == NULL || memcmp(&dir->format, info, sizeof(*info)) == 0))
 		return 0;
 
-	spa_log_info(this->log, "%p: port config direction:%d monitor:%d control:%d mode:%d %d", this,
-			direction, monitor, control, mode, dir->n_ports);
+	spa_log_debug(this->log, "%p: port config direction:%d monitor:%d "
+			"control:%d mode:%d %d", this, direction, monitor,
+			control, mode, dir->n_ports);
 
 	for (i = 0; i < dir->n_ports; i++) {
 		spa_node_emit_port_info(&this->hooks, direction, i, NULL);
@@ -1721,10 +1756,68 @@ static int setup_out_convert(struct impl *this)
 	return 0;
 }
 
+static void free_tmp(struct impl *this)
+{
+	uint32_t i;
+
+	spa_log_debug(this->log, "free tmp %d", this->scratch_size);
+
+	free(this->empty);
+	this->empty = NULL;
+	this->scratch_size = 0;
+	this->scratch_ports = 0;
+	free(this->scratch);
+	this->scratch = NULL;
+	free(this->tmp[0]);
+	this->tmp[0] = NULL;
+	free(this->tmp[1]);
+	this->tmp[1] = NULL;
+	for (i = 0; i < MAX_PORTS; i++) {
+		this->tmp_datas[0][i] = NULL;
+		this->tmp_datas[1][i] = NULL;
+	}
+}
+
+static int ensure_tmp(struct impl *this, uint32_t maxsize, uint32_t maxports)
+{
+	if (maxsize > this->scratch_size || maxports > this->scratch_ports) {
+		float *empty, *scratch, *tmp[2];
+		uint32_t i;
+
+		spa_log_debug(this->log, "resize tmp %d -> %d", this->scratch_size, maxsize);
+
+		if ((empty = realloc(this->empty, maxsize + MAX_ALIGN)) != NULL)
+			this->empty = empty;
+		if ((scratch = realloc(this->scratch, maxsize + MAX_ALIGN)) != NULL)
+			this->scratch = scratch;
+		if ((tmp[0] = realloc(this->tmp[0], (maxsize + MAX_ALIGN) * maxports)) != NULL)
+			this->tmp[0] = tmp[0];
+		if ((tmp[1] = realloc(this->tmp[1], (maxsize + MAX_ALIGN) * maxports)) != NULL)
+			this->tmp[1] = tmp[1];
+
+		if (empty == NULL || scratch == NULL || tmp[0] == NULL || tmp[1] == NULL) {
+			free_tmp(this);
+			return -ENOMEM;
+		}
+		memset(this->empty, 0, maxsize + MAX_ALIGN);
+		this->scratch_size = maxsize;
+		this->scratch_ports = maxports;
+
+		for (i = 0; i < maxports; i++) {
+			this->tmp_datas[0][i] = SPA_PTROFF(tmp[0], maxsize * i, void);
+			this->tmp_datas[0][i] = SPA_PTR_ALIGN(this->tmp_datas[0][i], MAX_ALIGN, void);
+			this->tmp_datas[1][i] = SPA_PTROFF(tmp[1], maxsize * i, void);
+			this->tmp_datas[1][i] = SPA_PTR_ALIGN(this->tmp_datas[1][i], MAX_ALIGN, void);
+		}
+	}
+	return 0;
+}
+
 static int setup_convert(struct impl *this)
 {
 	struct dir *in, *out;
-	uint32_t i, rate;
+	uint32_t i, rate, maxsize, maxports;
+	struct port *p;
 	int res;
 
 	in = &this->dir[SPA_DIRECTION_INPUT];
@@ -1773,12 +1866,19 @@ static int setup_convert(struct impl *this)
 	if ((res = setup_out_convert(this)) < 0)
 		return res;
 
-	for (i = 0; i < MAX_PORTS; i++) {
-		this->tmp_datas[0][i] = SPA_PTROFF(this->tmp[0], this->empty_size * i, void);
-		this->tmp_datas[0][i] = SPA_PTR_ALIGN(this->tmp_datas[0][i], MAX_ALIGN, void);
-		this->tmp_datas[1][i] = SPA_PTROFF(this->tmp[1], this->empty_size * i, void);
-		this->tmp_datas[1][i] = SPA_PTR_ALIGN(this->tmp_datas[1][i], MAX_ALIGN, void);
+	maxsize = this->quantum_limit * sizeof(float);
+	for (i = 0; i < in->n_ports; i++) {
+		p = GET_IN_PORT(this, i);
+		maxsize = SPA_MAX(maxsize, p->maxsize);
 	}
+	for (i = 0; i < out->n_ports; i++) {
+		p = GET_OUT_PORT(this, i);
+		maxsize = SPA_MAX(maxsize, p->maxsize);
+	}
+	maxports = SPA_MAX(in->format.info.raw.channels, out->format.info.raw.channels);
+	if ((res = ensure_tmp(this, maxsize, maxports)) < 0)
+		return res;
+
 	this->setup = true;
 
 	emit_node_info(this, false);
@@ -2038,7 +2138,7 @@ impl_node_port_enum_params(void *object, int seq,
 
 		param = spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, id,
-			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 1, MAX_BUFFERS),
+			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(port->blocks),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
 								size * port->stride,
@@ -2078,7 +2178,23 @@ impl_node_port_enum_params(void *object, int seq,
 			uint32_t idx = result.index;
 			if (port->is_monitor)
 				idx = idx ^ 1;
-			param = spa_latency_build(&b, id, &this->dir[idx].latency);
+			param = spa_latency_build(&b, id, &port->latency[idx]);
+			break;
+		}
+		default:
+			return 0;
+		}
+		break;
+	case SPA_PARAM_Tag:
+		switch (result.index) {
+		case 0: case 1:
+		{
+			uint32_t idx = result.index;
+			if (port->is_monitor)
+				idx = idx ^ 1;
+			param = this->dir[idx].tag;
+			if (param == NULL)
+				goto next;
 			break;
 		}
 		default:
@@ -2119,33 +2235,111 @@ static int port_set_latency(void *object,
 	struct impl *this = object;
 	struct port *port, *oport;
 	enum spa_direction other = SPA_DIRECTION_REVERSE(direction);
+	struct spa_latency_info info;
+	bool have_latency, emit = false;;
 	uint32_t i;
 
-	spa_log_debug(this->log, "%p: set latency direction:%d id:%d",
-			this, direction, port_id);
+	spa_log_debug(this->log, "%p: set latency direction:%d id:%d %p",
+			this, direction, port_id, latency);
 
 	port = GET_PORT(this, direction, port_id);
 	if (port->is_monitor)
 		return 0;
 
 	if (latency == NULL) {
-		this->dir[other].latency = SPA_LATENCY_INFO(other);
+		info = SPA_LATENCY_INFO(other);
+		have_latency = false;
 	} else {
-		struct spa_latency_info info;
 		if (spa_latency_parse(latency, &info) < 0 ||
 		    info.direction != other)
 			return -EINVAL;
-		this->dir[other].latency = info;
+		have_latency = true;
 	}
+	emit = spa_latency_info_compare(&info, &port->latency[other]) != 0 ||
+	    port->have_latency == have_latency;
+
+	port->latency[other] = info;
+	port->have_latency = have_latency;
+
+	spa_log_debug(this->log, "%p: set %s latency %f-%f %d-%d %"PRIu64"-%"PRIu64, this,
+			info.direction == SPA_DIRECTION_INPUT ? "input" : "output",
+			info.min_quantum, info.max_quantum,
+			info.min_rate, info.max_rate,
+			info.min_ns, info.max_ns);
+
+	spa_latency_info_combine_start(&info, other);
+	for (i = 0; i < this->dir[direction].n_ports; i++) {
+		oport = GET_PORT(this, direction, i);
+		if (oport->is_monitor || !oport->have_latency)
+			continue;
+		spa_log_debug(this->log, "%p: combine %d", this, i);
+		spa_latency_info_combine(&info, &oport->latency[other]);
+	}
+	spa_latency_info_combine_finish(&info);
+
+	spa_log_debug(this->log, "%p: combined %s latency %f-%f %d-%d %"PRIu64"-%"PRIu64, this,
+			info.direction == SPA_DIRECTION_INPUT ? "input" : "output",
+			info.min_quantum, info.max_quantum,
+			info.min_rate, info.max_rate,
+			info.min_ns, info.max_ns);
 
 	for (i = 0; i < this->dir[other].n_ports; i++) {
 		oport = GET_PORT(this, other, i);
-		oport->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
-		oport->params[IDX_Latency].user++;
-		emit_port_info(this, oport, false);
+
+		spa_log_debug(this->log, "%p: change %d", this, i);
+		if (spa_latency_info_compare(&info, &oport->latency[other]) != 0) {
+			oport->latency[other] = info;
+			oport->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
+			oport->params[IDX_Latency].user++;
+			emit_port_info(this, oport, false);
+		}
+	}
+	if (emit) {
+		port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
+		port->params[IDX_Latency].user++;
+		emit_port_info(this, port, false);
+	}
+	return 0;
+}
+
+static int port_set_tag(void *object,
+			   enum spa_direction direction,
+			   uint32_t port_id,
+			   uint32_t flags,
+			   const struct spa_pod *tag)
+{
+	struct impl *this = object;
+	struct port *port, *oport;
+	enum spa_direction other = SPA_DIRECTION_REVERSE(direction);
+	uint32_t i;
+
+	spa_log_debug(this->log, "%p: set tag direction:%d id:%d %p",
+			this, direction, port_id, tag);
+
+	port = GET_PORT(this, direction, port_id);
+	if (port->is_monitor)
+		return 0;
+
+	if (tag != NULL) {
+		struct spa_tag_info info;
+		void *state = NULL;
+		if (spa_tag_parse(tag, &info, &state) < 0 ||
+		    info.direction != other)
+			return -EINVAL;
+	}
+	if (spa_tag_compare(tag, this->dir[other].tag) != 0) {
+		free(this->dir[other].tag);
+		this->dir[other].tag = tag ? spa_pod_copy(tag) : NULL;
+
+		for (i = 0; i < this->dir[other].n_ports; i++) {
+			oport = GET_PORT(this, other, i);
+			oport->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
+			oport->params[IDX_Tag].user++;
+			emit_port_info(this, oport, false);
+		}
 	}
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
-	port->params[IDX_Latency].user++;
+	port->params[IDX_Tag].user++;
 	emit_port_info(this, port, false);
 	return 0;
 }
@@ -2273,6 +2467,8 @@ impl_node_port_set_param(void *object,
 	switch (id) {
 	case SPA_PARAM_Latency:
 		return port_set_latency(this, direction, port_id, flags, param);
+	case SPA_PARAM_Tag:
+		return port_set_tag(this, direction, port_id, flags, param);
 	case SPA_PARAM_Format:
 		return port_set_format(this, direction, port_id, flags, param);
 	default:
@@ -2297,12 +2493,8 @@ static inline struct buffer *peek_buffer(struct impl *this, struct port *port)
 {
 	struct buffer *b;
 
-	if (spa_list_is_empty(&port->queue)) {
-		if (port->n_buffers > 0)
-			spa_log_warn(this->log, "%p: out of buffers on port %d %d",
-				this, port->id, port->n_buffers);
+	if (spa_list_is_empty(&port->queue))
 		return NULL;
-	}
 
 	b = spa_list_first(&port->queue, struct buffer, link);
 	spa_log_trace_fp(this->log, "%p: peek buffer %d/%d on port %d %u",
@@ -2312,10 +2504,12 @@ static inline struct buffer *peek_buffer(struct impl *this, struct port *port)
 
 static inline void dequeue_buffer(struct impl *this, struct port *port, struct buffer *b)
 {
-	spa_list_remove(&b->link);
-	SPA_FLAG_CLEAR(b->flags, BUFFER_FLAG_QUEUED);
 	spa_log_trace_fp(this->log, "%p: dequeue buffer %d on port %d %u",
 			this, b->id, port->id, b->flags);
+	if (!SPA_FLAG_IS_SET(b->flags, BUFFER_FLAG_QUEUED))
+		return;
+	spa_list_remove(&b->link);
+	SPA_FLAG_CLEAR(b->flags, BUFFER_FLAG_QUEUED);
 }
 
 static int
@@ -2385,17 +2579,7 @@ impl_node_port_use_buffers(void *object,
 		if (direction == SPA_DIRECTION_OUTPUT)
 			queue_buffer(this, port, i);
 	}
-	if (maxsize > this->empty_size) {
-		this->empty = realloc(this->empty, maxsize + MAX_ALIGN);
-		this->scratch = realloc(this->scratch, maxsize + MAX_ALIGN);
-		this->tmp[0] = realloc(this->tmp[0], (maxsize + MAX_ALIGN) * MAX_PORTS);
-		this->tmp[1] = realloc(this->tmp[1], (maxsize + MAX_ALIGN) * MAX_PORTS);
-		if (this->empty == NULL || this->scratch == NULL ||
-		    this->tmp[0] == NULL || this->tmp[1] == NULL)
-			return -errno;
-		memset(this->empty, 0, maxsize + MAX_ALIGN);
-		this->empty_size = maxsize;
-	}
+	port->maxsize = maxsize;
 	port->n_buffers = n_buffers;
 
 	return 0;
@@ -2573,7 +2757,7 @@ static uint32_t resample_update_rate_match(struct impl *this, bool passthrough, 
 	spa_log_trace_fp(this->log, "%p: next match %u", this, match_size);
 
 	if (this->io_rate_match) {
-		this->io_rate_match->delay = delay;
+		this->io_rate_match->delay = delay + in_queued;
 		this->io_rate_match->size = match_size;
 	}
 	return match_size;
@@ -2595,6 +2779,14 @@ static inline bool resample_is_passthrough(struct impl *this)
 	return true;
 }
 
+static uint64_t get_time_ns(struct impl *impl)
+{
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+		return 0;
+	return SPA_TIMESPEC_TO_NSEC(&now);
+}
+
 static int impl_node_process(void *object)
 {
 	struct impl *this = object;
@@ -2607,11 +2799,13 @@ static int impl_node_process(void *object)
 	struct buffer *buf, *out_bufs[MAX_PORTS];
 	struct spa_data *bd;
 	struct dir *dir;
-	int tmp = 0, res = 0;
+	int tmp = 0, res = 0, suppressed;
 	bool in_passthrough, mix_passthrough, resample_passthrough, out_passthrough;
-	bool in_avail = false, flush_in = false, flush_out = false, draining = false, in_empty = true;
+	bool in_avail = false, flush_in = false, flush_out = false;
+	bool draining = false, in_empty = this->out_offset == 0;
 	struct spa_io_buffers *io, *ctrlio = NULL;
 	const struct spa_pod_sequence *ctrl = NULL;
+	uint64_t current_time;
 
 	/* calculate quantum scale, this is how many samples we need to produce or
 	 * consume. Also update the rate scale, this is sent to the resampler to adjust
@@ -2620,6 +2814,7 @@ static int impl_node_process(void *object)
 	if (SPA_LIKELY(this->io_position)) {
 		double r =  this->rate_scale;
 
+		current_time = this->io_position->clock.nsec;
 		quant_samples = this->io_position->clock.duration;
 		if (this->direction == SPA_DIRECTION_INPUT) {
 			if (this->io_position->clock.rate.denom != this->resample.o_rate)
@@ -2640,8 +2835,10 @@ static int impl_node_process(void *object)
 			this->rate_scale = r;
 		}
 	}
-	else
+	else {
+		current_time = get_time_ns(this);
 		quant_samples = this->quantum_limit;
+	}
 
 	dir = &this->dir[SPA_DIRECTION_INPUT];
 	in_passthrough = dir->conv.is_passthrough;
@@ -2689,7 +2886,7 @@ static int impl_node_process(void *object)
 					src_datas[remap] = SPA_PTR_ALIGN(this->empty, MAX_ALIGN, void);
 					spa_log_trace_fp(this->log, "%p: empty input %d->%d", this,
 							i * port->blocks + j, remap);
-					max_in = SPA_MIN(max_in, this->empty_size / port->stride);
+					max_in = SPA_MIN(max_in, this->scratch_size / port->stride);
 				}
 			}
 		} else {
@@ -2769,6 +2966,11 @@ static int impl_node_process(void *object)
 				queue_buffer(this, port, io->buffer_id);
 
 			buf = peek_buffer(this, port);
+			if (buf == NULL && port->n_buffers > 0 &&
+			    (suppressed = spa_ratelimit_test(&this->rate_limit, current_time)) >= 0) {
+				spa_log_warn(this->log, "%p: (%d suppressed) out of buffers on port %d %d",
+					this, suppressed, port->id, port->n_buffers);
+			}
 		}
 		out_bufs[i] = buf;
 
@@ -2785,7 +2987,7 @@ static int impl_node_process(void *object)
 					dst_datas[remap] = SPA_PTR_ALIGN(this->scratch, MAX_ALIGN, void);
 					spa_log_trace_fp(this->log, "%p: empty output %d->%d", this,
 						i * port->blocks + j, remap);
-					max_out = SPA_MIN(max_out, this->empty_size / port->stride);
+					max_out = SPA_MIN(max_out, this->scratch_size / port->stride);
 				}
 			}
 		} else {
@@ -3084,30 +3286,31 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 	return 0;
 }
 
+static void free_dir(struct dir *dir)
+{
+	uint32_t i;
+	for (i = 0; i < MAX_PORTS; i++)
+		free(dir->ports[i]);
+	if (dir->conv.free)
+		convert_free(&dir->conv);
+	free(dir->tag);
+}
+
 static int impl_clear(struct spa_handle *handle)
 {
 	struct impl *this;
-	uint32_t i;
 
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
 
 	this = (struct impl *) handle;
 
-	for (i = 0; i < MAX_PORTS; i++)
-		free(this->dir[SPA_DIRECTION_INPUT].ports[i]);
-	for (i = 0; i < MAX_PORTS; i++)
-		free(this->dir[SPA_DIRECTION_OUTPUT].ports[i]);
-	free(this->empty);
-	free(this->scratch);
-	free(this->tmp[0]);
-	free(this->tmp[1]);
+	free_dir(&this->dir[SPA_DIRECTION_INPUT]);
+	free_dir(&this->dir[SPA_DIRECTION_OUTPUT]);
+
+	free_tmp(this);
 
 	if (this->resample.free)
 		resample_free(&this->resample);
-	if (this->dir[0].conv.free)
-		convert_free(&this->dir[0].conv);
-	if (this->dir[1].conv.free)
-		convert_free(&this->dir[1].conv);
 	if (this->wav_file != NULL)
 		wav_file_close(this->wav_file);
 	free (this->vol_ramp_sequence);
@@ -3168,15 +3371,17 @@ impl_init(const struct spa_handle_factory *factory,
 	this = (struct impl *) handle;
 
 	this->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
-	spa_log_topic_init(this->log, log_topic);
+	spa_log_topic_init(this->log, &log_topic);
 
 	this->cpu = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_CPU);
 	if (this->cpu) {
 		this->cpu_flags = spa_cpu_get_flags(this->cpu);
 		this->max_align = SPA_MIN(MAX_ALIGN, spa_cpu_get_max_align(this->cpu));
 	}
-
 	props_reset(&this->props);
+
+	this->rate_limit.interval = 2 * SPA_NSEC_PER_SEC;
+	this->rate_limit.burst = 1;
 
 	this->mix.options = CHANNELMIX_OPTION_UPMIX | CHANNELMIX_OPTION_MIX_LFE;
 	this->mix.upmix = CHANNELMIX_UPMIX_NONE;
@@ -3217,9 +3422,7 @@ impl_init(const struct spa_handle_factory *factory,
 	this->props.monitor.n_volumes = this->props.n_channels;
 
 	this->dir[SPA_DIRECTION_INPUT].direction = SPA_DIRECTION_INPUT;
-	this->dir[SPA_DIRECTION_INPUT].latency = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
 	this->dir[SPA_DIRECTION_OUTPUT].direction = SPA_DIRECTION_OUTPUT;
-	this->dir[SPA_DIRECTION_OUTPUT].latency = SPA_LATENCY_INFO(SPA_DIRECTION_OUTPUT);
 
 	this->node.iface = SPA_INTERFACE_INIT(
 			SPA_TYPE_INTERFACE_Node,

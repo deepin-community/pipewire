@@ -25,8 +25,8 @@ include:
 .fedora:
   variables:
     # Update this tag when you want to trigger a rebuild
-    FDO_DISTRIBUTION_TAG: '2023-05-31.0'
-    FDO_DISTRIBUTION_VERSION: '37'
+    FDO_DISTRIBUTION_TAG: '2023-11-22.0'
+    FDO_DISTRIBUTION_VERSION: '39'
     FDO_DISTRIBUTION_PACKAGES: >-
       alsa-lib-devel
       avahi-devel
@@ -75,6 +75,7 @@ include:
       pulseaudio-utils
       openal-soft
       readline-devel
+      pandoc
 # Uncommenting the following two lines and disabling the meson entry above
 # will re-enable use of Meson via pip but please consider using a newer distro
 # image first or making the build system compatible instead! This is because
@@ -343,7 +344,7 @@ build_with_asan_ubsan:
     - echo "Building with ASan and UBSan"
     - meson setup "$BUILD_DIR" --prefix="$PREFIX" -D debug=true -D optimization=g -D b_sanitize=address,undefined -D session-managers=[]
     - meson compile -C "$BUILD_DIR" $COMPILE_ARGS
-    - meson test -C "$BUILD_DIR" --no-rebuild
+    - env UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1 meson test -C "$BUILD_DIR" --no-rebuild
 
 # A release build with NDEBUG, all options on auto() but tests explicitly
 # enabled. This should show issues with tests failing due to different
@@ -458,8 +459,15 @@ shellcheck:
   extends:
     - .build_on_fedora
   stage: analysis
+  variables:
+    MESON_OPTIONS: >-
+        -Dpipewire-v4l2=enabled
+        -Dpipewire-jack=enabled
   script:
-    - shellcheck $(git grep -l "#\!/.*bin/.*sh")
+    - echo "Configuring with meson options $MESON_OPTIONS"
+    - meson setup "$BUILD_DIR" --prefix="$PREFIX" $MESON_OPTIONS
+    - shellcheck $(git ls-files '*.sh')
+    - shellcheck $(grep -rl "#\!/.*bin/.*sh" "$BUILD_DIR")
 
 spellcheck:
   extends:

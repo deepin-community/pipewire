@@ -125,6 +125,8 @@ extern "C" {
 #define SPA_BT_UUID_PACS        "00001850-0000-1000-8000-00805f9b34fb"
 #define SPA_BT_UUID_BAP_SINK    "00002bc9-0000-1000-8000-00805f9b34fb"
 #define SPA_BT_UUID_BAP_SOURCE  "00002bcb-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_BAP_BROADCAST_SOURCE  "00001852-0000-1000-8000-00805f9b34fb"
+#define SPA_BT_UUID_BAP_BROADCAST_SINK    "00001851-0000-1000-8000-00805f9b34fb"
 
 #define PROFILE_HSP_AG	"/Profile/HSPAG"
 #define PROFILE_HSP_HS	"/Profile/HSPHS"
@@ -149,6 +151,8 @@ extern "C" {
 #define BAP_OBJECT_MANAGER_PATH "/MediaEndpointLE"
 #define BAP_SINK_ENDPOINT	BAP_OBJECT_MANAGER_PATH "/BAPSink"
 #define BAP_SOURCE_ENDPOINT	BAP_OBJECT_MANAGER_PATH "/BAPSource"
+#define BAP_BROADCAST_SOURCE_ENDPOINT	BAP_OBJECT_MANAGER_PATH "/BAPBroadcastSource"
+#define BAP_BROADCAST_SINK_ENDPOINT		BAP_OBJECT_MANAGER_PATH "/BAPBroadcastSink"
 
 #define SPA_BT_UNKNOWN_DELAY			0
 
@@ -163,6 +167,9 @@ extern "C" {
 enum spa_bt_media_direction {
 	SPA_BT_MEDIA_SOURCE,
 	SPA_BT_MEDIA_SINK,
+	SPA_BT_MEDIA_SOURCE_BROADCAST,
+	SPA_BT_MEDIA_SINK_BROADCAST,
+	SPA_BT_MEDIA_DIRECTION_LAST,
 };
 
 enum spa_bt_profile {
@@ -175,6 +182,8 @@ enum spa_bt_profile {
 	SPA_BT_PROFILE_HSP_AG =		(1 << 5),
 	SPA_BT_PROFILE_HFP_HF =		(1 << 6),
 	SPA_BT_PROFILE_HFP_AG =		(1 << 7),
+	SPA_BT_PROFILE_BAP_BROADCAST_SOURCE =	(1 << 8),
+	SPA_BT_PROFILE_BAP_BROADCAST_SINK   =	(1 << 9),
 
 	SPA_BT_PROFILE_A2DP_DUPLEX =	(SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_A2DP_SOURCE),
 	SPA_BT_PROFILE_BAP_DUPLEX =     (SPA_BT_PROFILE_BAP_SINK | SPA_BT_PROFILE_BAP_SOURCE),
@@ -182,8 +191,10 @@ enum spa_bt_profile {
 	SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY = (SPA_BT_PROFILE_HSP_AG | SPA_BT_PROFILE_HFP_AG),
 	SPA_BT_PROFILE_HEADSET_AUDIO =  (SPA_BT_PROFILE_HEADSET_HEAD_UNIT | SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY),
 
-	SPA_BT_PROFILE_MEDIA_SINK =		(SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_BAP_SINK),
-	SPA_BT_PROFILE_MEDIA_SOURCE =	(SPA_BT_PROFILE_A2DP_SOURCE | SPA_BT_PROFILE_BAP_SOURCE),
+	SPA_BT_PROFILE_MEDIA_SINK =		(SPA_BT_PROFILE_A2DP_SINK | SPA_BT_PROFILE_BAP_SINK |
+										SPA_BT_PROFILE_BAP_BROADCAST_SINK),
+	SPA_BT_PROFILE_MEDIA_SOURCE =	(SPA_BT_PROFILE_A2DP_SOURCE | SPA_BT_PROFILE_BAP_SOURCE |
+										SPA_BT_PROFILE_BAP_BROADCAST_SOURCE),
 };
 
 static inline enum spa_bt_profile spa_bt_profile_from_uuid(const char *uuid)
@@ -206,6 +217,10 @@ static inline enum spa_bt_profile spa_bt_profile_from_uuid(const char *uuid)
 		return SPA_BT_PROFILE_BAP_SINK;
 	else if (strcasecmp(uuid, SPA_BT_UUID_BAP_SOURCE) == 0)
 		return SPA_BT_PROFILE_BAP_SOURCE;
+	else if (strcasecmp(uuid, SPA_BT_UUID_BAP_BROADCAST_SOURCE) == 0)
+		return SPA_BT_PROFILE_BAP_BROADCAST_SOURCE;
+	else if (strcasecmp(uuid, SPA_BT_UUID_BAP_BROADCAST_SINK) == 0)
+		return SPA_BT_PROFILE_BAP_BROADCAST_SINK;
 	else
 		return 0;
 }
@@ -307,8 +322,10 @@ static inline const char *spa_bt_profile_name (enum spa_bt_profile profile) {
       case SPA_BT_PROFILE_HEADSET_AUDIO:
 	return "headset-audio";
       case SPA_BT_PROFILE_BAP_SOURCE:
+      case SPA_BT_PROFILE_BAP_BROADCAST_SOURCE:
         return "bap-source";
       case SPA_BT_PROFILE_BAP_SINK:
+      case SPA_BT_PROFILE_BAP_BROADCAST_SINK:
         return "bap-sink";
       case SPA_BT_PROFILE_BAP_DUPLEX:
         return "bap-duplex";
@@ -349,6 +366,7 @@ struct spa_bt_adapter {
 	unsigned int le_audio_supported:1;
 	unsigned int has_adapter1_interface:1;
 	unsigned int has_media1_interface:1;
+	unsigned int le_audio_bcast_supported:1;
 };
 
 enum spa_bt_form_factor {
@@ -521,8 +539,8 @@ int spa_bt_device_add_profile(struct spa_bt_device *device, enum spa_bt_profile 
 int spa_bt_device_connect_profile(struct spa_bt_device *device, enum spa_bt_profile profile);
 int spa_bt_device_check_profiles(struct spa_bt_device *device, bool force);
 int spa_bt_device_ensure_media_codec(struct spa_bt_device *device, const struct media_codec * const *codecs);
-bool spa_bt_device_supports_media_codec(struct spa_bt_device *device, const struct media_codec *codec, bool sink);
-const struct media_codec **spa_bt_device_get_supported_media_codecs(struct spa_bt_device *device, size_t *count, bool sink);
+bool spa_bt_device_supports_media_codec(struct spa_bt_device *device, const struct media_codec *codec, enum spa_bt_profile profile);
+const struct media_codec **spa_bt_device_get_supported_media_codecs(struct spa_bt_device *device, size_t *count);
 int spa_bt_device_ensure_hfp_codec(struct spa_bt_device *device, unsigned int codec);
 int spa_bt_device_supports_hfp_codec(struct spa_bt_device *device, unsigned int codec);
 int spa_bt_device_release_transports(struct spa_bt_device *device);
@@ -630,6 +648,8 @@ struct spa_bt_transport {
 	unsigned int latency_us;
 	uint8_t bap_cig;
 	uint8_t bap_cis;
+	uint8_t bap_big;
+	uint8_t bap_bis;
 	uint32_t bap_interval;
 
 	struct spa_bt_iso_io *iso_io;

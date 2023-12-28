@@ -11,6 +11,8 @@ extern "C" {
 
 /** \page page_streams Streams
  *
+ * \see \ref pw_stream
+ *
  * \section sec_overview Overview
  *
  * \ref pw_stream "Streams" are used to exchange data with the
@@ -162,7 +164,7 @@ extern "C" {
  * The stream object provides a convenient way to send and
  * receive data streams from/to PipeWire.
  *
- * See also \ref page_streams and \ref api_pw_core
+ * \see \ref page_streams, \ref api_pw_core
  */
 
 /**
@@ -226,10 +228,12 @@ struct pw_stream_control {
  * value, and pw_time.ticks, were captured at pw_time.now and can be extrapolated
  * to the current time like this:
  *
+ *\code{.c}
  *    struct timespec ts;
  *    clock_gettime(CLOCK_MONOTONIC, &ts);
  *    int64_t diff = SPA_TIMESPEC_TO_NSEC(&ts) - pw_time.now;
  *    int64_t elapsed = (pw_time.rate.denom * diff) / (pw_time.rate.num * SPA_NSEC_PER_SEC);
+ *\endcode
  *
  * pw_time.delay contains the total delay that a signal will travel through the
  * graph. This includes the delay caused by filters in the graph as well as delays
@@ -255,15 +259,21 @@ struct pw_stream_control {
  * in milliseconds for the first sample in the newly queued buffer to be played
  * by the hardware can be calculated as:
  *
+ *\code{.unparsed}
  *  (pw_time.buffered * 1000 / stream.samplerate) +
  *    (pw_time.queued * 1000 / app.rate) +
  *     ((pw_time.delay - elapsed) * 1000 * pw_time.rate.num / pw_time.rate.denom)
+ *\endcode
  *
  * The current extrapolated time (in ms) in the source or sink can be calculated as:
  *
+ *\code{.unparsed}
  *  (pw_time.ticks + elapsed) * 1000 * pw_time.rate.num / pw_time.rate.denom
+ *\endcode
  *
+ * Below is an overview of the different timing values:
  *
+ *\code{.unparsed}
  *           stream time domain           graph time domain
  *         /-----------------------\/-----------------------------\
  *
@@ -275,6 +285,7 @@ struct pw_stream_control {
  *                                    latency             latency
  *         \--------/\-------------/\-----------------------------/
  *           queued      buffered            delay
+ *\endcode
  */
 struct pw_time {
 	int64_t now;			/**< the monotonic time in nanoseconds. This is the time
@@ -385,6 +396,11 @@ enum pw_stream_flags {
 							  *  does a trigger_process() that will then
 							  *  dequeue/queue a buffer from another process()
 							  *  function. since 0.3.73 */
+	PW_STREAM_FLAG_EARLY_PROCESS	= (1 << 11),	/**< Call process as soon as there is a buffer
+							  *  to dequeue. This is only relevant for
+							  *  playback and when not using RT_PROCESS. It
+							  *  can be used to keep the maximum number of
+							  *  buffers queued. Since 0.3.81 */
 };
 
 /** Create a new unconneced \ref pw_stream
@@ -460,9 +476,7 @@ int pw_stream_set_error(struct pw_stream *stream,	/**< a \ref pw_stream */
 /** Update the param exposed on the stream. */
 int
 pw_stream_update_params(struct pw_stream *stream,	/**< a \ref pw_stream */
-			const struct spa_pod **params,	/**< an array of params. The params should
-							  *  ideally contain parameters for doing
-							  *  buffer allocation. */
+			const struct spa_pod **params,	/**< an array of params. */
 			uint32_t n_params		/**< number of elements in \a params */);
 
 /**

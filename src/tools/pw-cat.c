@@ -20,6 +20,7 @@
 #include <spa/param/audio/layout.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/type-info.h>
+#include <spa/param/tag-utils.h>
 #include <spa/param/props.h>
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -40,6 +41,7 @@
 #endif
 
 #include "midifile.h"
+#include "dfffile.h"
 #include "dsffile.h"
 
 #define DEFAULT_MEDIA_TYPE	"Audio"
@@ -142,6 +144,11 @@ struct data {
 		struct dsf_file_info info;
 		struct dsf_layout layout;
 	} dsf;
+	struct {
+		struct dff_file *file;
+		struct dff_file_info info;
+		struct dff_layout layout;
+	} dff;
 
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 	struct {
@@ -745,6 +752,11 @@ on_state_changed(void *userdata, enum pw_stream_state old,
 				error);
 		pw_main_loop_quit(data->loop);
 		break;
+	case PW_STREAM_STATE_UNCONNECTED:
+		printf("stream node %"PRIu32" unconnected\n",
+				pw_stream_get_node_id(data->stream));
+		pw_main_loop_quit(data->loop);
+		break;
 	default:
 		break;
 	}
@@ -791,6 +803,10 @@ on_param_changed(void *userdata, uint32_t id, const struct spa_pod *param)
 	data->dsf.layout.interleave = info.info.dsd.interleave,
 	data->dsf.layout.channels = info.info.dsd.channels;
 	data->dsf.layout.lsb = info.info.dsd.bitorder == SPA_PARAM_BITORDER_lsb;
+
+	data->dff.layout.interleave = info.info.dsd.interleave,
+	data->dff.layout.channels = info.info.dsd.channels;
+	data->dff.layout.lsb = info.info.dsd.bitorder == SPA_PARAM_BITORDER_lsb;
 
 	data->stride = data->dsf.layout.channels * SPA_ABS(data->dsf.layout.interleave);
 
@@ -1158,26 +1174,46 @@ static int dsf_play(struct data *d, void *src, unsigned int n_frames, bool *null
 	return dsf_file_read(d->dsf.file, src, n_frames, &d->dsf.layout);
 }
 
-static int setup_dsffile(struct data *data)
+static int dff_play(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
+{
+	return dff_file_read(d->dff.file, src, n_frames, &d->dff.layout);
+}
+
+static int setup_dsdfile(struct data *data)
 {
 	if (data->mode == mode_record)
 		return -ENOTSUP;
 
 	data->dsf.file = dsf_file_open(data->filename, "r", &data->dsf.info);
 	if (data->dsf.file == NULL) {
-		fprintf(stderr, "dsffile: can't read dsf file '%s': %m\n", data->filename);
-		return -errno;
+		data->dff.file = dff_file_open(data->filename, "r", &data->dff.info);
+		if (data->dff.file == NULL) {
+			fprintf(stderr, "dsdfile: can't read dsd file '%s': %m\n", data->filename);
+			return -errno;
+		}
 	}
 
-	if (data->verbose)
-		printf("dsffile: opened file \"%s\" channels:%d rate:%d samples:%"PRIu64" bitorder:%s\n",
+	if (data->dsf.file != NULL) {
+		if (data->verbose)
+			printf("dsffile: opened file \"%s\" channels:%d rate:%d "
+					"samples:%"PRIu64" bitorder:%s\n",
 				data->filename,
 				data->dsf.info.channels, data->dsf.info.rate,
 				data->dsf.info.samples,
 				data->dsf.info.lsb ? "lsb" : "msb");
 
-	data->fill = dsf_play;
+		data->fill = dsf_play;
+	} else {
+		if (data->verbose)
+			printf("dfffile: opened file \"%s\" channels:%d rate:%d "
+					"samples:%"PRIu64" bitorder:%s\n",
+				data->filename,
+				data->dff.info.channels, data->dff.info.rate,
+				data->dff.info.samples,
+				data->dff.info.lsb ? "lsb" : "msb");
 
+		data->fill = dff_play;
+	}
 	return 0;
 }
 
@@ -1564,7 +1600,8 @@ int main(int argc, char *argv[])
 {
 	struct data data = { 0, };
 	struct pw_loop *l;
-	const struct spa_pod *params[1];
+	const struct spa_pod *params[2];
+	uint32_t n_params = 0;
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 	const char *prog;
@@ -1788,19 +1825,6 @@ int main(int argc, char *argv[])
 	}
 	data.filename = argv[optind++];
 
-	if (pw_properties_get(data.props, PW_KEY_MEDIA_TYPE) == NULL)
-		pw_properties_set(data.props, PW_KEY_MEDIA_TYPE, data.media_type);
-	if (pw_properties_get(data.props, PW_KEY_MEDIA_CATEGORY) == NULL)
-		pw_properties_set(data.props, PW_KEY_MEDIA_CATEGORY, data.media_category);
-	if (pw_properties_get(data.props, PW_KEY_MEDIA_ROLE) == NULL)
-		pw_properties_set(data.props, PW_KEY_MEDIA_ROLE, data.media_role);
-	if (pw_properties_get(data.props, PW_KEY_MEDIA_FILENAME) == NULL)
-		pw_properties_set(data.props, PW_KEY_MEDIA_FILENAME, data.filename);
-	if (pw_properties_get(data.props, PW_KEY_MEDIA_NAME) == NULL)
-		pw_properties_set(data.props, PW_KEY_MEDIA_NAME, data.filename);
-	if (pw_properties_get(data.props, PW_KEY_TARGET_OBJECT) == NULL)
-		pw_properties_set(data.props, PW_KEY_TARGET_OBJECT, data.target);
-
 	/* make a main loop. If you already have another main loop, you can add
 	 * the fd of this pipewire mainloop to it. */
 	data.loop = pw_main_loop_new(NULL);
@@ -1845,7 +1869,7 @@ int main(int argc, char *argv[])
 			ret = setup_midifile(&data);
 			break;
 		case TYPE_DSD:
-			ret = setup_dsffile(&data);
+			ret = setup_dsdfile(&data);
 			break;
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 		case TYPE_ENCODED:
@@ -1869,6 +1893,19 @@ int main(int argc, char *argv[])
 	}
 	ret = setup_properties(&data);
 
+	if (pw_properties_get(data.props, PW_KEY_MEDIA_TYPE) == NULL)
+		pw_properties_set(data.props, PW_KEY_MEDIA_TYPE, data.media_type);
+	if (pw_properties_get(data.props, PW_KEY_MEDIA_CATEGORY) == NULL)
+		pw_properties_set(data.props, PW_KEY_MEDIA_CATEGORY, data.media_category);
+	if (pw_properties_get(data.props, PW_KEY_MEDIA_ROLE) == NULL)
+		pw_properties_set(data.props, PW_KEY_MEDIA_ROLE, data.media_role);
+	if (pw_properties_get(data.props, PW_KEY_MEDIA_FILENAME) == NULL)
+		pw_properties_set(data.props, PW_KEY_MEDIA_FILENAME, data.filename);
+	if (pw_properties_get(data.props, PW_KEY_MEDIA_NAME) == NULL)
+		pw_properties_set(data.props, PW_KEY_MEDIA_NAME, data.filename);
+	if (pw_properties_get(data.props, PW_KEY_TARGET_OBJECT) == NULL)
+		pw_properties_set(data.props, PW_KEY_TARGET_OBJECT, data.target);
+
 	switch (data.data_type) {
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 	case TYPE_ENCODED:
@@ -1881,7 +1918,7 @@ int main(int argc, char *argv[])
 		ret = av_codec_params_to_audio_info(&data, data.encoded.audio_stream->codecpar, &info);
 		if (ret < 0)
 			goto error_bad_file;
-		params[0] = spa_format_audio_build(&b, SPA_PARAM_EnumFormat, &info);
+		params[n_params++] = spa_format_audio_build(&b, SPA_PARAM_EnumFormat, &info);
 		break;
 	}
 #endif
@@ -1897,11 +1934,11 @@ int main(int argc, char *argv[])
 		if (data.channelmap.n_channels)
 			memcpy(info.position, data.channelmap.channels, data.channels * sizeof(int));
 
-		params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
+		params[n_params++] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 		break;
 	}
 	case TYPE_MIDI:
-		params[0] = spa_pod_builder_add_object(&b,
+		params[n_params++] = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 				SPA_FORMAT_mediaType,		SPA_POD_Id(SPA_MEDIA_TYPE_application),
 				SPA_FORMAT_mediaSubtype,	SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
@@ -1911,21 +1948,45 @@ int main(int argc, char *argv[])
 	case TYPE_DSD:
 	{
 		struct spa_audio_info_dsd info;
+		uint32_t channel_type;
 
 		spa_zero(info);
-		info.channels = data.dsf.info.channels;
-		info.rate = data.dsf.info.rate / 8;
+		if (data.dsf.file != NULL) {
+			info.channels = data.dsf.info.channels;
+			info.rate = data.dsf.info.rate / 8;
+			channel_type = data.dsf.info.channel_type;
+		} else {
+			info.channels = data.dff.info.channels;
+			info.rate = data.dff.info.rate / 8;
+			channel_type = data.dff.info.channel_type;
+		}
 
 		SPA_FOR_EACH_ELEMENT_VAR(dsd_layouts, i) {
-			if (i->type != data.dsf.info.channel_type)
+			if (i->type != channel_type)
 				continue;
 			info.channels = i->info.n_channels;
 			memcpy(info.position, i->info.position,
 					info.channels * sizeof(uint32_t));
 		}
-		params[0] = spa_format_audio_dsd_build(&b, SPA_PARAM_EnumFormat, &info);
+		params[n_params++] = spa_format_audio_dsd_build(&b, SPA_PARAM_EnumFormat, &info);
 		break;
 	}
+	}
+	if (data.mode == mode_playback) {
+		struct spa_dict_item items[64];
+		uint32_t i, n_items = 0;
+
+		for (i = 0; i < data.props->dict.n_items; i++) {
+			if (n_items < SPA_N_ELEMENTS(items) &&
+			    spa_strstartswith(data.props->dict.items[i].key, "media."))
+				items[n_items++] = data.props->dict.items[i];
+		}
+		if (n_items > 0) {
+			struct spa_pod_frame f;
+			spa_tag_build_start(&b, &f, SPA_PARAM_Tag, SPA_DIRECTION_OUTPUT);
+			spa_tag_build_add_dict(&b, &SPA_DICT_INIT(items, n_items));
+			params[n_params++] = spa_tag_build_end(&b, &f);
+		}
 	}
 
 	data.stream = pw_stream_new(data.core, prog, data.props);
@@ -1950,7 +2011,7 @@ int main(int argc, char *argv[])
 			  PW_ID_ANY,
 			  flags |
 			  PW_STREAM_FLAG_MAP_BUFFERS,
-			  params, 1);
+			  params, n_params);
 	if (ret < 0) {
 		fprintf(stderr, "error: failed connect: %s\n", spa_strerror(ret));
 		goto error_connect_fail;
@@ -1998,6 +2059,10 @@ error_no_main_loop:
 		sf_close(data.file);
 	if (data.midi.file)
 		midi_file_close(data.midi.file);
+	if (data.dsf.file)
+		dsf_file_close(data.dsf.file);
+	if (data.dff.file)
+		dff_file_close(data.dff.file);
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 	if (data.encoded.packet)
 		av_packet_free(&data.encoded.packet);

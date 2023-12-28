@@ -26,7 +26,7 @@
 #include "module-protocol-pulse/format.h"
 #include "module-zeroconf-discover/avahi-poll.h"
 
-/** \page page_module_raop_discover PipeWire Module: RAOP Discover
+/** \page page_module_raop_discover RAOP Discover
  *
  * Automatically creates RAOP (Airplay) sink devices based on zeroconf
  * information.
@@ -36,6 +36,10 @@
  *
  * If no stream.rules are given, it will create a sink for all announced
  * streams.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-raop-discover`
  *
  * ## Module Options
  *
@@ -229,12 +233,12 @@ static void pw_properties_from_avahi_string(const char *key, const char *value,
 			value = "tcp";
 		pw_properties_set(props, "raop.transport", value);
 	} else if (spa_streq(key, "et")) {
-		/* Supported encryption types:
+		/* RAOP encryption types:
 		 *  0 = none,
 		 *  1 = RSA,
-		 *  2 = FairPlay,
-		 *  3 = MFiSAP,
-		 *  4 = FairPlay SAPv2.5. */
+		 *  3 = FairPlay,
+		 *  4 = MFiSAP (/auth-setup),
+		 *  5 = FairPlay SAPv2.5 */
 		if (str_in_list(value, ",", "1"))
 			value = "RSA";
 		else if (str_in_list(value, ",", "4"))
@@ -254,7 +258,7 @@ static void pw_properties_from_avahi_string(const char *key, const char *value,
 			value = "ALAC";
 		else if (str_in_list(value, ",", "2"))
 			value = "AAC";
-		else if (str_in_list(value, ",", "2"))
+		else if (str_in_list(value, ",", "3"))
 			value = "AAC-ELD";
 		else
 			value = "unknown";

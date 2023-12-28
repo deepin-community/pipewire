@@ -21,12 +21,19 @@ libjack_path = get_option('libjack-path')
 if libjack_path == ''
   libjack_path = modules_install_dir / 'jack'
   libjack_path_dlopen = modules_install_dir_dlopen / 'jack'
+  libjack_path_enable = ''
+elif libjack_path == get_option('libdir') or libjack_path == pipewire_libdir
+  libjack_path = pipewire_libdir
+  libjack_path_dlopen = libjack_path
+  libjack_path_enable = '#'
 else
   libjack_path_dlopen = libjack_path
+  libjack_path_enable = ''
 endif
 
 tools_config = configuration_data()
 tools_config.set('LIBJACK_PATH', libjack_path_dlopen)
+tools_config.set('LIBJACK_PATH_ENABLE', libjack_path_enable)
 
 configure_file(input : 'pw-jack.in',
                output : 'pw-jack',
@@ -36,7 +43,7 @@ configure_file(input : 'pw-jack.in',
 pipewire_jack = shared_library('jack',
     pipewire_jack_sources,
     soversion : soversion,
-    version : libversion,
+    version : libjackversion,
     c_args : pipewire_jack_c_args,
     include_directories : [configinc, jack_inc],
     dependencies : [pipewire_dep, mathlib],
@@ -47,7 +54,7 @@ pipewire_jack = shared_library('jack',
 pipewire_jackserver = shared_library('jackserver',
     pipewire_jackserver_sources,
     soversion : soversion,
-    version : libversion,
+    version : libjackversion,
     c_args : pipewire_jack_c_args,
     include_directories : [configinc, jack_inc],
     dependencies : [pipewire_dep, mathlib],
@@ -58,7 +65,7 @@ pipewire_jackserver = shared_library('jackserver',
 pipewire_jacknet = shared_library('jacknet',
     pipewire_net_sources,
     soversion : soversion,
-    version : libversion,
+    version : libjackversion,
     c_args : pipewire_jack_c_args,
     include_directories : [configinc, jack_inc],
     dependencies : [pipewire_dep, mathlib],

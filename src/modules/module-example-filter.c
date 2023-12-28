@@ -22,10 +22,14 @@
 #include <pipewire/impl.h>
 #include <pipewire/extensions/profiler.h>
 
-/** \page page_module_example_filter PipeWire Module: Example Filter
+/** \page page_module_example_filter Example Filter
  *
  * The example filter is a good starting point for writing a custom
  * filter. We refer to the source code for more information.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-example-filter`
  *
  * ## Module Options
  *
@@ -227,7 +231,7 @@ static void param_latency_changed(struct impl *impl, const struct spa_pod *param
 	struct spa_pod_builder b;
 	const struct spa_pod *params[1];
 
-	if (spa_latency_parse(param, &latency) < 0)
+	if (param == NULL || spa_latency_parse(param, &latency) < 0)
 		return;
 
 	*info = latency;

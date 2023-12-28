@@ -140,6 +140,30 @@ static void info_changed(struct pw_impl_link *link)
 	link->info.change_mask = 0;
 }
 
+static inline void input_set_busy_id(struct pw_impl_link *link, uint32_t id)
+{
+	struct impl *impl = SPA_CONTAINER_OF(link, struct impl, this);
+	if (impl->input_busy_id != SPA_ID_INVALID)
+		link->input->busy_count--;
+	if (id != SPA_ID_INVALID)
+		link->input->busy_count++;
+	impl->input_busy_id = id;
+	if (link->input->busy_count < 0)
+		pw_log_error("%s: invalid busy count:%d", link->name, link->input->busy_count);
+}
+
+static inline void output_set_busy_id(struct pw_impl_link *link, uint32_t id)
+{
+	struct impl *impl = SPA_CONTAINER_OF(link, struct impl, this);
+	if (impl->output_busy_id != SPA_ID_INVALID)
+		link->output->busy_count--;
+	if (id != SPA_ID_INVALID)
+		link->output->busy_count++;
+	impl->output_busy_id = id;
+	if (link->output->busy_count < 0)
+		pw_log_error("%s: invalid busy count:%d", link->name, link->output->busy_count);
+}
+
 static void link_update_state(struct pw_impl_link *link, enum pw_link_state state, int res, char *error)
 {
 	struct impl *impl = SPA_CONTAINER_OF(link, struct impl, this);
@@ -194,15 +218,11 @@ static void link_update_state(struct pw_impl_link *link, enum pw_link_state stat
 	} else if (state == PW_LINK_STATE_INIT) {
 		link->prepared = false;
 		link->preparing = false;
-		if (impl->output_busy_id != SPA_ID_INVALID) {
-			impl->output_busy_id = SPA_ID_INVALID;
-			link->output->busy_count--;
-		}
+
+		output_set_busy_id(link, SPA_ID_INVALID);
 		pw_work_queue_cancel(impl->work, &link->output_link, SPA_ID_INVALID);
-		if (impl->input_busy_id != SPA_ID_INVALID) {
-			impl->input_busy_id = SPA_ID_INVALID;
-			link->input->busy_count--;
-		}
+
+		input_set_busy_id(link, SPA_ID_INVALID);
 		pw_work_queue_cancel(impl->work, &link->input_link, SPA_ID_INVALID);
 	}
 }
@@ -218,14 +238,15 @@ static void complete_ready(void *obj, void *data, int res, uint32_t id)
 	else
 		port = this->output;
 
-	if (id == impl->input_busy_id) {
-		impl->input_busy_id = SPA_ID_INVALID;
-		port->busy_count--;
-	} else if (id == impl->output_busy_id) {
-		impl->output_busy_id = SPA_ID_INVALID;
-		port->busy_count--;
-	} else if (id != SPA_ID_INVALID)
-		return;
+	if (id != SPA_ID_INVALID) {
+		if (id == impl->input_busy_id) {
+			input_set_busy_id(this, SPA_ID_INVALID);
+		} else if (id == impl->output_busy_id) {
+			output_set_busy_id(this, SPA_ID_INVALID);
+		} else {
+			return;
+		}
+	}
 
 	pw_log_debug("%p: obj:%p port %p complete state:%d: %s", this, obj, port,
 			port->state, spa_strerror(res));
@@ -258,14 +279,15 @@ static void complete_paused(void *obj, void *data, int res, uint32_t id)
 		mix = &this->rt.out_mix;
 	}
 
-	if (id == impl->input_busy_id) {
-		impl->input_busy_id = SPA_ID_INVALID;
-		port->busy_count--;
-	} else if (id == impl->output_busy_id) {
-		impl->output_busy_id = SPA_ID_INVALID;
-		port->busy_count--;
-	} else if (id != SPA_ID_INVALID)
-		return;
+	if (id != SPA_ID_INVALID) {
+		if (id == impl->input_busy_id) {
+			input_set_busy_id(this, SPA_ID_INVALID);
+		} else if (id == impl->output_busy_id) {
+			output_set_busy_id(this, SPA_ID_INVALID);
+		} else {
+			return;
+		}
+	}
 
 	pw_log_debug("%p: obj:%p port %p complete state:%d: %s", this, obj, port,
 			port->state, spa_strerror(res));
@@ -309,7 +331,7 @@ static int do_negotiate(struct pw_impl_link *this)
 	struct pw_impl_port *input, *output;
 	uint8_t buffer[4096];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-	uint32_t index;
+	uint32_t index, busy_id;
 	uint32_t in_state, out_state;
 
 	if (this->info.state >= PW_LINK_STATE_NEGOTIATING)
@@ -430,10 +452,10 @@ static int do_negotiate(struct pw_impl_link *this)
 			goto error;
 		}
 		if (SPA_RESULT_IS_ASYNC(res)) {
-			output->busy_count++;
 			res = spa_node_sync(output->node->node, res);
-			impl->output_busy_id = pw_work_queue_add(impl->work, &this->output_link, res,
+			busy_id = pw_work_queue_add(impl->work, &this->output_link, res,
 					complete_ready, this);
+			output_set_busy_id(this, busy_id);
 		} else {
 			complete_ready(&this->output_link, this, res, SPA_ID_INVALID);
 		}
@@ -449,10 +471,10 @@ static int do_negotiate(struct pw_impl_link *this)
 			goto error;
 		}
 		if (SPA_RESULT_IS_ASYNC(res2)) {
-			input->busy_count++;
 			res2 = spa_node_sync(input->node->node, res2);
-			impl->input_busy_id = pw_work_queue_add(impl->work, &this->input_link, res2,
+			busy_id = pw_work_queue_add(impl->work, &this->input_link, res2,
 					complete_ready, this);
+			input_set_busy_id(this, busy_id);
 			if (res == 0)
 				res = res2;
 		} else {
@@ -524,7 +546,7 @@ static int do_allocation(struct pw_impl_link *this)
 {
 	struct impl *impl = SPA_CONTAINER_OF(this, struct impl, this);
 	int res;
-	uint32_t in_flags, out_flags;
+	uint32_t in_flags, out_flags, busy_id;
 	char *error = NULL;
 	struct pw_impl_port *input, *output;
 
@@ -597,10 +619,10 @@ static int do_allocation(struct pw_impl_link *this)
 			goto error_clear;
 		}
 		if (SPA_RESULT_IS_ASYNC(res)) {
-			output->busy_count++;
 			res = spa_node_sync(output->node->node, res);
-			impl->output_busy_id = pw_work_queue_add(impl->work, &this->output_link, res,
+			busy_id = pw_work_queue_add(impl->work, &this->output_link, res,
 					complete_paused, this);
+			output_set_busy_id(this, busy_id);
 			if (flags & SPA_NODE_BUFFERS_FLAG_ALLOC)
 				return 0;
 		} else {
@@ -620,10 +642,10 @@ static int do_allocation(struct pw_impl_link *this)
 	}
 
 	if (SPA_RESULT_IS_ASYNC(res)) {
-		input->busy_count++;
 		res = spa_node_sync(input->node->node, res);
-		impl->input_busy_id = pw_work_queue_add(impl->work, &this->input_link, res,
+		busy_id = pw_work_queue_add(impl->work, &this->input_link, res,
 				complete_paused, this);
+		input_set_busy_id(this, busy_id);
 	} else {
 		complete_paused(&this->input_link, this, res, SPA_ID_INVALID);
 	}
@@ -726,13 +748,13 @@ static void check_states(void *obj, void *user_data, int res, uint32_t id)
 	}
 
 	if (output->busy_count > 0) {
-		pw_log_debug("%p: output port %p was busy", this, output);
+		pw_log_debug("%p: output port %p was busy %d", this, output, output->busy_count);
 		res = spa_node_sync(output->node->node, 0);
 		pw_work_queue_add(impl->work, &this->output_link, res, complete_sync, this);
 		goto exit;
 	}
 	else if (input->busy_count > 0) {
-		pw_log_debug("%p: input port %p was busy", this, input);
+		pw_log_debug("%p: input port %p was busy %d", this, input, input->busy_count);
 		res = spa_node_sync(input->node->node, 0);
 		pw_work_queue_add(impl->work, &this->input_link, res, complete_sync, this);
 		goto exit;
@@ -762,10 +784,8 @@ static void input_remove(struct pw_impl_link *this, struct pw_impl_port *port)
 
 	pw_log_debug("%p: remove input port %p", this, port);
 
-	if (impl->input_busy_id != SPA_ID_INVALID) {
-		impl->input_busy_id = SPA_ID_INVALID;
-		port->busy_count--;
-	}
+	input_set_busy_id(this, SPA_ID_INVALID);
+
 	spa_hook_remove(&impl->input_port_listener);
 	spa_hook_remove(&impl->input_node_listener);
 	spa_hook_remove(&impl->input_global_listener);
@@ -774,6 +794,7 @@ static void input_remove(struct pw_impl_link *this, struct pw_impl_port *port)
 	pw_impl_port_emit_link_removed(this->input, this);
 
 	pw_impl_port_recalc_latency(this->input);
+	pw_impl_port_recalc_tag(this->input);
 
 	if ((res = pw_impl_port_use_buffers(port, mix, 0, NULL, 0)) < 0) {
 		pw_log_warn("%p: port %p clear error %s", this, port, spa_strerror(res));
@@ -791,10 +812,8 @@ static void output_remove(struct pw_impl_link *this, struct pw_impl_port *port)
 
 	pw_log_debug("%p: remove output port %p", this, port);
 
-	if (impl->output_busy_id != SPA_ID_INVALID) {
-		impl->output_busy_id = SPA_ID_INVALID;
-		port->busy_count--;
-	}
+	output_set_busy_id(this, SPA_ID_INVALID);
+
 	spa_hook_remove(&impl->output_port_listener);
 	spa_hook_remove(&impl->output_node_listener);
 	spa_hook_remove(&impl->output_global_listener);
@@ -803,6 +822,7 @@ static void output_remove(struct pw_impl_link *this, struct pw_impl_port *port)
 	pw_impl_port_emit_link_removed(this->output, this);
 
 	pw_impl_port_recalc_latency(this->output);
+	pw_impl_port_recalc_tag(this->output);
 
 	/* we don't clear output buffers when the link goes away. They will get
 	 * cleared when the node goes to suspend */
@@ -864,9 +884,11 @@ int pw_impl_link_deactivate(struct pw_impl_link *this)
 
 	impl->activated = false;
 	pw_log_info("(%s) deactivated", this->name);
-	link_update_state(this, this->destroyed ?
-			PW_LINK_STATE_INIT : PW_LINK_STATE_PAUSED,
-			0, NULL);
+	
+	if (this->info.state < PW_LINK_STATE_PAUSED || this->destroyed)
+		link_update_state(this, PW_LINK_STATE_INIT, 0, NULL);
+	else
+		link_update_state(this, PW_LINK_STATE_PAUSED, 0, NULL);
 	return 0;
 }
 
@@ -988,6 +1010,14 @@ static void input_port_latency_changed(void *data)
 		pw_impl_port_recalc_latency(this->output);
 }
 
+static void input_port_tag_changed(void *data)
+{
+	struct impl *impl = data;
+	struct pw_impl_link *this = &impl->this;
+	if (!this->feedback)
+		pw_impl_port_recalc_tag(this->output);
+}
+
 static void output_port_latency_changed(void *data)
 {
 	struct impl *impl = data;
@@ -996,11 +1026,20 @@ static void output_port_latency_changed(void *data)
 		pw_impl_port_recalc_latency(this->input);
 }
 
+static void output_port_tag_changed(void *data)
+{
+	struct impl *impl = data;
+	struct pw_impl_link *this = &impl->this;
+	if (!this->feedback)
+		pw_impl_port_recalc_tag(this->input);
+}
+
 static const struct pw_impl_port_events input_port_events = {
 	PW_VERSION_IMPL_PORT_EVENTS,
 	.param_changed = input_port_param_changed,
 	.state_changed = input_port_state_changed,
 	.latency_changed = input_port_latency_changed,
+	.tag_changed = input_port_tag_changed,
 };
 
 static const struct pw_impl_port_events output_port_events = {
@@ -1008,6 +1047,7 @@ static const struct pw_impl_port_events output_port_events = {
 	.param_changed = output_port_param_changed,
 	.state_changed = output_port_state_changed,
 	.latency_changed = output_port_latency_changed,
+	.tag_changed = output_port_tag_changed,
 };
 
 static void node_result(struct impl *impl, void *obj,
@@ -1130,18 +1170,84 @@ static void try_unlink_controls(struct impl *impl, struct pw_impl_port *output, 
 	}
 }
 
+static int check_owner_permissions(struct pw_context *context,
+		struct pw_impl_node *node, struct pw_global *other, uint32_t permissions)
+{
+	const char *str;
+	struct pw_impl_client *client;
+	struct pw_global *global;
+	uint32_t perms;
+	uint32_t client_id;
+
+	str = pw_properties_get(node->properties, PW_KEY_CLIENT_ID);
+	if (str == NULL)
+		/* node not owned by client */
+		return 0;
+
+	if (!spa_atou32(str, &client_id, 0))
+		/* invalid client_id, something is wrong */
+		return -EIO;
+	if ((global = pw_context_find_global(context, client_id)) == NULL)
+		/* current client can't see the owner client */
+		return -errno;
+	if (!pw_global_is_type(global, PW_TYPE_INTERFACE_Client) ||
+	    (client = global->object) == NULL)
+		/* not the right object, something wrong */
+		return -EIO;
+
+	perms = pw_global_get_permissions(other, client);
+	if ((perms & permissions) != permissions)
+		/* owner client can't see other node */
+		return -EPERM;
+
+	return 0;
+}
+
 static int
 check_permission(struct pw_context *context,
 		 struct pw_impl_port *output,
 		 struct pw_impl_port *input,
 		 struct pw_properties *properties)
 {
+	int res;
+	uint32_t in_perms, out_perms;
+	struct pw_global *in_global, *out_global;
+
+	if ((in_global = input->node->global) == NULL)
+		return -ENOENT;
+	if ((out_global = output->node->global) == NULL)
+		return -ENOENT;
+
+	in_perms = out_perms = PW_PERM_R | PW_PERM_L;
+	if (context->current_client != NULL) {
+		in_perms = pw_global_get_permissions(in_global, context->current_client);
+		out_perms = pw_global_get_permissions(out_global, context->current_client);
+	}
+	/* current client can't see input node or output node */
+	if (!PW_PERM_IS_R(in_perms) || !PW_PERM_IS_R(out_perms))
+		return -ENOENT;
+
+	if ((res = check_owner_permissions(context, output->node,
+					in_global, PW_PERM_R)) < 0) {
+		/* output node owner can't see input node, check if the current
+		 * client has universal link permissions for the output node */
+		if (!PW_PERM_IS_L(out_perms))
+			return res;
+	}
+	if ((res = check_owner_permissions(context, input->node,
+					out_global, PW_PERM_R)) < 0) {
+		/* input node owner can't see output node, check if the current
+		 * client has universal link permissions for the input node */
+		if (!PW_PERM_IS_L(in_perms))
+			return res;
+	}
 	return 0;
 }
 
 static void permissions_changed(struct pw_impl_link *this, struct pw_impl_port *other,
 		struct pw_impl_client *client, uint32_t old, uint32_t new)
 {
+	int res;
 	uint32_t perm;
 
 	perm = pw_global_get_permissions(other->global, client);
@@ -1149,17 +1255,36 @@ static void permissions_changed(struct pw_impl_link *this, struct pw_impl_port *
 	new &= perm;
 	pw_log_debug("%p: permissions changed %08x -> %08x", this, old, new);
 
-	if (check_permission(this->context, this->output, this->input, this->properties) < 0) {
+	if ((res = check_permission(this->context, this->output, this->input, this->properties)) < 0) {
+		pw_log_info("%p: link permissions removed: %s", this, spa_strerror(res));
 		pw_impl_link_destroy(this);
 	} else if (this->global != NULL) {
 		pw_global_update_permissions(this->global, client, old, new);
 	}
 }
 
+static bool is_port_owner(struct pw_impl_client *client, struct pw_impl_port *port)
+{
+	const char *str;
+	uint32_t client_id;
+
+	str = pw_properties_get(port->node->properties, PW_KEY_CLIENT_ID);
+	if (str == NULL)
+		return false;
+
+	if (!spa_atou32(str, &client_id, 0))
+		return false;
+
+	return client_id == client->info.id;
+}
+
 static void output_permissions_changed(void *data,
 		struct pw_impl_client *client, uint32_t old, uint32_t new)
 {
 	struct pw_impl_link *this = data;
+	if (!is_port_owner(client, this->output) &&
+	    !is_port_owner(client, this->input))
+		return;
 	permissions_changed(this, this->input, client, old, new);
 }
 
@@ -1172,6 +1297,9 @@ static void input_permissions_changed(void *data,
 		struct pw_impl_client *client, uint32_t old, uint32_t new)
 {
 	struct pw_impl_link *this = data;
+	if (!is_port_owner(client, this->output) &&
+	    !is_port_owner(client, this->input))
+		return;
 	permissions_changed(this, this->output, client, old, new);
 }
 
@@ -1307,6 +1435,8 @@ struct pw_impl_link *pw_context_create_link(struct pw_context *context,
 
 	pw_impl_port_recalc_latency(output);
 	pw_impl_port_recalc_latency(input);
+	pw_impl_port_recalc_tag(output);
+	pw_impl_port_recalc_tag(input);
 
 	if (impl->onode != impl->inode)
 		this->peer = pw_node_peer_ref(impl->onode, impl->inode);
@@ -1395,6 +1525,7 @@ int pw_impl_link_register(struct pw_impl_link *link,
 	link->global = pw_global_new(context,
 				     PW_TYPE_INTERFACE_Link,
 				     PW_VERSION_LINK,
+				     PW_LINK_PERM_MASK,
 				     properties,
 				     global_bind,
 				     link);
@@ -1434,6 +1565,7 @@ SPA_EXPORT
 void pw_impl_link_destroy(struct pw_impl_link *link)
 {
 	struct impl *impl = SPA_CONTAINER_OF(link, struct impl, this);
+	bool was_prepared = link->prepared;
 
 	pw_log_debug("%p: destroy", impl);
 	pw_log_info("(%s) destroy", link->name);
@@ -1459,7 +1591,7 @@ void pw_impl_link_destroy(struct pw_impl_link *link)
 		pw_global_destroy(link->global);
 	}
 
-	if (link->prepared)
+	if (was_prepared)
 		pw_context_recalc_graph(link->context, "link destroy");
 
 	pw_log_debug("%p: free", impl);

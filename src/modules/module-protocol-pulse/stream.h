@@ -34,7 +34,6 @@ enum stream_type {
 };
 
 struct stream {
-	struct spa_list link;
 	uint32_t create_tag;
 	uint32_t channel;	/* index in map */
 	uint32_t id;		/* id of global */
@@ -117,5 +116,6 @@ int stream_send_started(struct stream *stream);
 int stream_send_request(struct stream *stream);
 int stream_update_minreq(struct stream *stream, uint32_t minreq);
 int stream_send_moved(struct stream *stream, uint32_t peer_index, const char *peer_name);
+int stream_update_tag_param(struct stream *stream);
 
 #endif /* PULSER_SERVER_STREAM_H */
