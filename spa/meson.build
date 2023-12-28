@@ -80,7 +80,6 @@ if get_option('spa-plugins').allowed()
     summary({'Opus': opus_dep.found()}, bool_yn: true, section: 'Bluetooth audio codecs')
     lc3_dep = dependency('lc3', required : get_option('bluez5-codec-lc3'))
     summary({'LC3': lc3_dep.found()}, bool_yn: true, section: 'Bluetooth audio codecs')
-    cdata.set('HAVE_BLUETOOTH_BAP', get_option('bluez5-codec-lc3').allowed() and lc3_dep.found())
     if get_option('bluez5-backend-hsp-native').allowed() or get_option('bluez5-backend-hfp-native').allowed()
       mm_dep = dependency('ModemManager', version : '>= 1.10.0', required : get_option('bluez5-backend-native-mm'))
       summary({'ModemManager': mm_dep.found()}, bool_yn: true, section: 'Bluetooth backends')
@@ -88,12 +87,18 @@ if get_option('spa-plugins').allowed()
   endif
   jack_dep = dependency('jack', version : '>= 1.9.10', required: get_option('jack'))
   summary({'JACK2': jack_dep.found()}, bool_yn: true, section: 'Backend')
-  vulkan_dep = dependency('vulkan', disabler : true, version : '>= 1.1.69', required: get_option('vulkan'))
-  vulkan_headers = cc.has_header('vulkan/vulkan.h', dependencies : vulkan_dep)
-  #summary({'Vulkan': vulkan_headers}, bool_yn: true, section: 'Misc dependencies')
+
+  have_vulkan = false
+  vulkan_dep = dependency('vulkan', version : '>= 1.2.170', required: get_option('vulkan'))
+  if vulkan_dep.found()
+    have_vulkan = cc.has_header('vulkan/vulkan.h', dependencies : vulkan_dep)
+    assert((not get_option('vulkan').enabled()) or have_vulkan, 'Vulkan headers are missing')
+  endif
+  summary({'Vulkan': have_vulkan}, bool_yn: true, section: 'Misc dependencies')
 
   libcamera_dep = dependency('libcamera', required: get_option('libcamera'))
   summary({'libcamera': libcamera_dep.found()}, bool_yn: true, section: 'Backend')
+  cdata.set('HAVE_LIBCAMERA_SYSTEM_DEVICES', libcamera_dep.version().version_compare('>= 0.1.0'))
 
   compress_offload_option = get_option('compress-offload')
   summary({'Compress-Offload': compress_offload_option.allowed()}, bool_yn: true, section: 'Backend')

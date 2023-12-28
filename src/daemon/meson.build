@@ -2,10 +2,6 @@ pipewire_daemon_sources = [
   'pipewire.c',
 ]
 
-pipewire_c_args = [
-  '-DG_LOG_DOMAIN=g_log_domain_pipewire',
-]
-
 conf_config = configuration_data()
 conf_config.set('VERSION', '"@0@"'.format(pipewire_version))
 conf_config.set('PIPEWIRE_CONFIG_DIR', pipewire_configdir)
@@ -26,6 +22,8 @@ conf_config_uninstalled.set('pulse_comment', '')
 build_ms = 'media-session' in get_option('session-managers')
 build_wp = 'wireplumber' in get_option('session-managers')
 default_sm = get_option('session-managers').get(0, '')
+
+build_vk = get_option('vulkan').enabled()
 
 summary({'Build media-session': build_ms,
          'Build wireplumber': build_wp,
@@ -75,6 +73,10 @@ conf_files = [
  'pipewire-aes67.conf',
 ]
 
+if build_vk
+  conf_files += 'pipewire-vulkan.conf'
+endif
+
 foreach c : conf_files
   configure_file(input : '@0@.in'.format(c),
                  output : c,
@@ -100,14 +102,23 @@ endforeach
 pipewire_exec = executable('pipewire',
   pipewire_daemon_sources,
   install: true,
-  c_args : pipewire_c_args,
   include_directories : [ configinc ],
   dependencies : [ spa_dep, pipewire_dep, ],
 )
 
 ln = find_program('ln')
 
-foreach alias : ['pipewire-pulse', 'pipewire-avb', 'pipewire-aes67']
+pipewire_aliases = [
+  'pipewire-pulse',
+  'pipewire-avb',
+  'pipewire-aes67',
+]
+
+if build_vk
+ pipewire_aliases += 'pipewire-vulkan'
+endif
+
+foreach alias : pipewire_aliases
   custom_target(
     alias,
     build_by_default: true,

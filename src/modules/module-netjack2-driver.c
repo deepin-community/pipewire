@@ -40,10 +40,14 @@
 #define IPTOS_DSCP(x) ((x) & IPTOS_DSCP_MASK)
 #endif
 
-/** \page page_module_netjack2_driver PipeWire Module: Netjack2 driver
+/** \page page_module_netjack2_driver Netjack2 driver
  *
  * The netjack2-driver module provides a source or sink that is following a
- * netjack2 driver.
+ * netjack2 manager.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-netjack2-driver`
  *
  * ## Module Options
  *
@@ -199,6 +203,7 @@ struct impl {
 	int dscp;
 	int mtu;
 	uint32_t latency;
+	uint32_t quantum_limit;
 
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
@@ -371,7 +376,7 @@ static void param_latency_changed(struct stream *s, const struct spa_pod *param,
 	bool update = false;
 	enum spa_direction direction = port->direction;
 
-	if (spa_latency_parse(param, &latency) < 0)
+	if (param == NULL || spa_latency_parse(param, &latency) < 0)
 		return;
 
 	if (spa_latency_info_compare(&port->latency[direction], &latency)) {
@@ -868,6 +873,7 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
 	peer->other_stream = 's';
 	peer->send_volume = &impl->sink.volume;
 	peer->recv_volume = &impl->source.volume;
+	peer->quantum_limit = impl->quantum_limit;
 	netjack2_init(peer);
 
 	int bufsize = NETWORK_MAX_LATENCY * (peer->params.mtu +
@@ -1238,6 +1244,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->props = props;
 	data_loop = pw_context_get_data_loop(context);
 	impl->data_loop = pw_data_loop_get_loop(data_loop);
+	impl->quantum_limit = pw_properties_get_uint32(
+			pw_context_get_properties(context),
+			"default.clock.quantum-limit", 8192u);
 
 	impl->sink.props = pw_properties_new(NULL, NULL);
 	impl->source.props = pw_properties_new(NULL, NULL);

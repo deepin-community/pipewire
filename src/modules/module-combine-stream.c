@@ -29,7 +29,7 @@
 #include <pipewire/impl.h>
 #include <pipewire/i18n.h>
 
-/** \page page_module_combine_stream PipeWire Module: Combine Stream
+/** \page page_module_combine_stream Combine Stream
  *
  * The combine stream can make:
  *
@@ -40,12 +40,17 @@
  * rules. This makes it possible to combine static nodes or nodes based on certain
  * properties.
  *
+ * ## Module Name
+ *
+ * `libpipewire-module-combine-stream`
+ *
  * ## Module Options
  *
  * - `node.name`: a unique name for the stream
  * - `node.description`: a human readable name for the stream
  * - `combine.mode` = capture | playback | sink | source, default sink
  * - `combine.latency-compensate`: use delay buffers to match stream latencies
+ * - `combine.on-demand-streams`: use metadata to create streams on demand
  * - `combine.props = {}`: properties to be passed to the sink/source
  * - `stream.props = {}`: properties to be passed to the streams
  * - `stream.rules = {}`: rules for matching streams, use create-stream actions
@@ -93,7 +98,7 @@
  *                     # any of the items in matches needs to match, if one does,
  *                     # actions are emited.
  *                     {
- *                         # all keys must match the value. ~ in value starts regex.
+ *                         # all keys must match the value. ! negates. ~ starts regex.
  *                         #node.name = "~alsa_input.*"
  *                         media.class = "Audio/Sink"
  *                     }
@@ -250,6 +255,10 @@ struct impl {
 	struct pw_registry *registry;
 	struct spa_hook registry_listener;
 
+	struct pw_metadata *metadata;
+	struct spa_hook metadata_listener;
+	uint32_t metadata_id;
+
 	struct spa_source *update_delay_event;
 
 	struct pw_properties *combine_props;
@@ -268,6 +277,7 @@ struct impl {
 
 	unsigned int do_disconnect:1;
 	unsigned int latency_compensate:1;
+	unsigned int on_demand_streams:1;
 
 	struct spa_list streams;
 	uint32_t n_streams;
@@ -281,6 +291,7 @@ struct ringbuffer {
 
 struct stream {
 	uint32_t id;
+	char *on_demand_id;
 
 	struct impl *impl;
 
@@ -398,6 +409,15 @@ static struct stream *find_stream(struct impl *impl, uint32_t id)
 	struct stream *s;
 	spa_list_for_each(s, &impl->streams, link)
 		if (s->id == id)
+			return s;
+	return NULL;
+}
+
+static struct stream *find_on_demand_stream(struct impl *impl, const char *on_demand_id)
+{
+	struct stream *s;
+	spa_list_for_each(s, &impl->streams, link)
+		if (spa_streq(s->on_demand_id, on_demand_id))
 			return s;
 	return NULL;
 }
@@ -624,6 +644,7 @@ static void remove_stream(struct stream *s, bool destroy)
 		pw_stream_destroy(s->stream);
 	}
 
+	free(s->on_demand_id);
 	free(s->delaybuf);
 	free(s);
 }
@@ -631,6 +652,14 @@ static void remove_stream(struct stream *s, bool destroy)
 static void destroy_stream(struct stream *s)
 {
 	remove_stream(s, true);
+}
+
+static void destroy_all_on_demand_streams(struct impl *impl)
+{
+	struct stream *s, *tmp;
+	spa_list_for_each_safe(s, tmp, &impl->streams, link)
+		if (s->on_demand_id)
+			destroy_stream(s);
 }
 
 static void stream_destroy(void *d)
@@ -697,7 +726,7 @@ static void stream_param_changed(void *d, uint32_t id, const struct spa_pod *par
 		update_delay(s->impl);
 		break;
 	case SPA_PARAM_Latency:
-		if (!param) {
+		if (param == NULL) {
 			s->have_latency = false;
 		} else if (spa_latency_parse(param, &latency) == 0 &&
 				latency.direction == get_combine_direction(s->impl)) {
@@ -721,6 +750,7 @@ static const struct pw_stream_events stream_events = {
 struct stream_info {
 	struct impl *impl;
 	uint32_t id;
+	const char *on_demand_id;
 	const struct spa_dict *props;
 	struct pw_properties *stream_props;
 };
@@ -739,13 +769,18 @@ static int create_stream(struct stream_info *info)
 	enum pw_stream_flags flags;
 	enum pw_direction direction;
 
-	node_name = spa_dict_lookup(info->props, "node.name");
-	if (node_name == NULL)
-		node_name = spa_dict_lookup(info->props, "object.serial");
-	if (node_name == NULL)
-		return -EIO;
+	if (info->on_demand_id) {
+		node_name = info->on_demand_id;
+		pw_log_info("create on demand stream: %s", node_name);
+	} else {
+		node_name = spa_dict_lookup(info->props, PW_KEY_NODE_NAME);
+		if (node_name == NULL)
+			node_name = spa_dict_lookup(info->props, PW_KEY_OBJECT_SERIAL);
+		if (node_name == NULL)
+			return -EIO;
 
-	pw_log_info("create stream for %d %s", info->id, node_name);
+		pw_log_info("create stream for %d %s", info->id, node_name);
+	}
 
 	s = calloc(1, sizeof(*s));
 	if (s == NULL)
@@ -798,8 +833,14 @@ static int create_stream(struct stream_info *info)
 	if (pw_properties_get(info->stream_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(info->stream_props, PW_KEY_NODE_NAME,
 				"output.%s_%s", str, node_name);
-	if (pw_properties_get(info->stream_props, PW_KEY_TARGET_OBJECT) == NULL)
-		pw_properties_set(info->stream_props, PW_KEY_TARGET_OBJECT, node_name);
+
+	if (info->on_demand_id) {
+		s->on_demand_id = strdup(info->on_demand_id);
+		pw_properties_set(info->stream_props, "combine.on-demand-id", s->on_demand_id);
+	} else {
+		if (pw_properties_get(info->stream_props, PW_KEY_TARGET_OBJECT) == NULL)
+			pw_properties_set(info->stream_props, PW_KEY_TARGET_OBJECT, node_name);
+	}
 
 	s->stream = pw_stream_new(impl->core, "Combine stream", info->stream_props);
 	info->stream_props = NULL;
@@ -810,7 +851,8 @@ static int create_stream(struct stream_info *info)
 
 	flags = PW_STREAM_FLAG_AUTOCONNECT |
 			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_RT_PROCESS;
+			PW_STREAM_FLAG_RT_PROCESS |
+			PW_STREAM_FLAG_ASYNC;
 
 	if (impl->mode == MODE_SINK || impl->mode == MODE_CAPTURE) {
 		direction = PW_DIRECTION_OUTPUT;
@@ -818,7 +860,6 @@ static int create_stream(struct stream_info *info)
 	} else {
 		direction = PW_DIRECTION_INPUT;
 		s->stream_events.process = stream_input_process;
-		flags |= PW_STREAM_FLAG_ASYNC;
 	}
 
 	pw_stream_add_listener(s->stream,
@@ -866,6 +907,62 @@ static int rule_matched(void *data, const char *location, const char *action,
 	return res;
 }
 
+static int metadata_property(void *data, uint32_t id,
+		const char *key, const char *type, const char *value)
+{
+	struct impl *impl = data;
+	const char *on_demand_id;
+	struct stream *s;
+
+	if (id != impl->combine_id)
+		return 0;
+
+	if (!key) {
+		destroy_all_on_demand_streams(impl);
+		goto out;
+	}
+
+	if (!spa_strstartswith(key, "combine.on-demand-stream."))
+		return 0;
+
+	on_demand_id = key + strlen("combine.on-demand-stream.");
+	if (*on_demand_id == '\0')
+		return 0;
+
+	if (value) {
+		struct stream_info info;
+
+		s = find_on_demand_stream(impl, on_demand_id);
+		if (s)
+			destroy_stream(s);
+
+		spa_zero(info);
+		info.impl = impl;
+		info.id = SPA_ID_INVALID;
+		info.on_demand_id = on_demand_id;
+		info.stream_props = pw_properties_copy(impl->stream_props);
+
+		pw_properties_update_string(info.stream_props, value, strlen(value));
+
+		create_stream(&info);
+
+		pw_properties_free(info.stream_props);
+	} else {
+		s = find_on_demand_stream(impl, on_demand_id);
+		if (s)
+			destroy_stream(s);
+	}
+
+out:
+	update_delay(impl);
+	return 0;
+}
+
+static const struct pw_metadata_events metadata_events = {
+	PW_VERSION_METADATA_EVENTS,
+	.property = metadata_property
+};
+
 static void registry_event_global(void *data, uint32_t id,
 			uint32_t permissions, const char *type, uint32_t version,
 			const struct spa_dict *props)
@@ -873,6 +970,22 @@ static void registry_event_global(void *data, uint32_t id,
 	struct impl *impl = data;
 	const char *str;
 	struct stream_info info;
+
+	if (impl->on_demand_streams && spa_streq(type, PW_TYPE_INTERFACE_Metadata)) {
+		if (!props)
+			return;
+
+		if (!spa_streq(spa_dict_lookup(props, "metadata.name"), "default"))
+			return;
+
+		impl->metadata = pw_registry_bind(impl->registry,
+				id, type, PW_VERSION_METADATA, 0);
+		pw_metadata_add_listener(impl->metadata,
+				&impl->metadata_listener,
+				&metadata_events, impl);
+		impl->metadata_id = id;
+		return;
+	}
 
 	if (!spa_streq(type, PW_TYPE_INTERFACE_Node) || props == NULL)
 		return;
@@ -901,6 +1014,15 @@ static void registry_event_global_remove(void *data, uint32_t id)
 {
 	struct impl *impl = data;
 	struct stream *s;
+
+	if (impl->metadata && id == impl->metadata_id) {
+		destroy_all_on_demand_streams(impl);
+		update_delay(impl);
+		spa_hook_remove(&impl->metadata_listener);
+		pw_proxy_destroy((struct pw_proxy*)impl->metadata);
+		impl->metadata = NULL;
+		return;
+	}
 
 	s = find_stream(impl, id);
 	if (s == NULL)
@@ -1235,6 +1357,11 @@ static void core_removed(void *d)
 		pw_proxy_destroy((struct pw_proxy*)impl->registry);
 		impl->registry = NULL;
 	}
+	if (impl->metadata) {
+		spa_hook_remove(&impl->metadata_listener);
+		pw_proxy_destroy((struct pw_proxy*)impl->metadata);
+		impl->metadata = NULL;
+	}
 	pw_impl_module_schedule_destroy(impl->module);
 }
 
@@ -1256,6 +1383,11 @@ static void impl_destroy(struct impl *impl)
 	if (impl->update_delay_event)
 		pw_loop_destroy_source(impl->main_loop, impl->update_delay_event);
 
+	if (impl->metadata) {
+		spa_hook_remove(&impl->metadata_listener);
+		pw_proxy_destroy((struct pw_proxy*)impl->metadata);
+		impl->metadata = NULL;
+	}
 	if (impl->registry) {
 		spa_hook_remove(&impl->registry_listener);
 		pw_proxy_destroy((struct pw_proxy*)impl->registry);
@@ -1354,6 +1486,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	if ((str = pw_properties_get(props, "combine.latency-compensate")) != NULL)
 		impl->latency_compensate = spa_atob(str);
+	if ((str = pw_properties_get(props, "combine.on-demand-streams")) != NULL)
+		impl->on_demand_streams = spa_atob(str);
 
 	impl->combine_props = pw_properties_new(NULL, NULL);
 	impl->stream_props = pw_properties_new(NULL, NULL);

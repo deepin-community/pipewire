@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <stdio.h>
-#if !defined(__FreeBSD__) && !defined(__MidnightBSD__)
+#if !defined(__FreeBSD__) && !defined(__MidnightBSD__) && !defined(__GNU__)
 #include <sys/prctl.h>
 #endif
 #include <pwd.h>
@@ -149,7 +149,7 @@ unref_plugin(struct plugin *plugin)
 	if (--plugin->ref == 0) {
 		spa_list_remove(&plugin->link);
 		pw_log_debug("unloaded plugin:'%s'", plugin->filename);
-		if (global_support.do_dlclose)
+		if (pw_should_dlclose())
 			dlclose(plugin->hnd);
 		free(plugin->filename);
 		free(plugin);
@@ -598,8 +598,11 @@ void pw_init(int *argc, char **argv[])
 		char *patterns = NULL;
 
 		n_items = 0;
-		if (!support->no_color)
-			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_LOG_COLORS, "true");
+		if (!support->no_color) {
+			if ((str = getenv("PIPEWIRE_LOG_COLOR")) == NULL)
+				str = "true";
+			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_LOG_COLORS, str);
+		}
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_LOG_TIMESTAMP, "true");
 		if ((str = getenv("PIPEWIRE_LOG_LINE")) == NULL || spa_atob(str))
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_LOG_LINE, "true");
@@ -717,7 +720,7 @@ static void init_prgname(void)
 	static char name[PATH_MAX];
 
 	spa_memzero(name, sizeof(name));
-#if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__MidnightBSD_kernel__)
+#if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__MidnightBSD_kernel__) || defined(__GNU__)
 	{
 		if (readlink("/proc/self/exe", name, sizeof(name)-1) > 0) {
 			prgname = strrchr(name, '/') + 1;
@@ -735,7 +738,7 @@ static void init_prgname(void)
 		}
 	}
 #endif
-#if !defined(__FreeBSD__) && !defined(__MidnightBSD__)
+#if !defined(__FreeBSD__) && !defined(__MidnightBSD__) && !defined(__GNU__)
 	{
 		if (prctl(PR_GET_NAME, (unsigned long) name, 0, 0, 0) == 0) {
 			prgname = name;
@@ -782,10 +785,10 @@ const char *pw_get_host_name(void)
 	return hname;
 }
 
-SPA_EXPORT
-bool pw_in_valgrind(void)
+bool
+pw_should_dlclose(void)
 {
-	return global_support.in_valgrind;
+	return global_support.do_dlclose;
 }
 
 SPA_EXPORT
@@ -836,6 +839,12 @@ SPA_EXPORT
 const char* pw_get_library_version(void)
 {
 	return pw_get_headers_version();
+}
+
+SPA_EXPORT
+bool pw_check_library_version(int major, int minor, int micro)
+{
+	return PW_CHECK_VERSION(major, minor, micro);
 }
 
 static const struct spa_type_info type_info[] = {

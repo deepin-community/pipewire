@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <spa/utils/string.h>
 
+#include "dbus-helpers.h"
 #include "upower.h"
 
 #define UPOWER_SERVICE "org.freedesktop.UPower"
@@ -16,6 +17,8 @@ struct impl {
 
 	struct spa_log *log;
 	DBusConnection *conn;
+
+	DBusPendingCall *pending_get_call;
 
 	bool filters_added;
 
@@ -40,30 +43,50 @@ static DBusHandlerResult upower_parse_percentage(struct impl *this, DBusMessageI
 static void upower_get_percentage_properties_reply(DBusPendingCall *pending, void *user_data)
 {
 	struct impl *backend = user_data;
-	DBusMessage *r;
 	DBusMessageIter i, variant_i;
 
-	r = dbus_pending_call_steal_reply(pending);
-	dbus_pending_call_unref(pending);
+	spa_assert(backend->pending_get_call == pending);
+	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&backend->pending_get_call);
 	if (r == NULL)
 		return;
 
 	if (dbus_message_get_type(r) == DBUS_MESSAGE_TYPE_ERROR) {
 		spa_log_error(backend->log, "Failed to get percentage from UPower: %s",
 				dbus_message_get_error_name(r));
-		goto finish;
+		return;
 	}
 
 	if (!dbus_message_iter_init(r, &i) || !spa_streq(dbus_message_get_signature(r), "v")) {
 		spa_log_error(backend->log, "Invalid arguments in Get() reply");
-		goto finish;
+		return;
 	}
 
 	dbus_message_iter_recurse(&i, &variant_i);
 	upower_parse_percentage(backend, &variant_i);
+}
 
-finish:
-	dbus_message_unref(r);
+static int update_battery_percentage(struct impl *this)
+{
+	cancel_and_unref(&this->pending_get_call);
+
+	spa_autoptr(DBusMessage) m = dbus_message_new_method_call(UPOWER_SERVICE,
+								  UPOWER_DISPLAY_DEVICE_OBJECT,
+								  DBUS_INTERFACE_PROPERTIES,
+								  "Get");
+	if (!m)
+		return -ENOMEM;
+
+	dbus_message_append_args(m,
+				 DBUS_TYPE_STRING, &(const char *){ UPOWER_DEVICE_INTERFACE },
+				 DBUS_TYPE_STRING, &(const char *){ "Percentage" },
+				 DBUS_TYPE_INVALID);
+	dbus_message_set_auto_start(m, false);
+
+	this->pending_get_call = send_with_reply(this->conn, m, upower_get_percentage_properties_reply, this);
+	if (!this->pending_get_call)
+		return -EIO;
+
+	return 0;
 }
 
 static void upower_clean(struct impl *this)
@@ -74,12 +97,10 @@ static void upower_clean(struct impl *this)
 static DBusHandlerResult upower_filter_cb(DBusConnection *bus, DBusMessage *m, void *user_data)
 {
 	struct impl *this = user_data;
-	DBusError err;
-
-	dbus_error_init(&err);
 
 	if (dbus_message_is_signal(m, "org.freedesktop.DBus", "NameOwnerChanged")) {
 		const char *name, *old_owner, *new_owner;
+		spa_auto(DBusError) err = DBUS_ERROR_INIT;
 
 		spa_log_debug(this->log, "Name owner changed %s", dbus_message_get_path(m));
 
@@ -99,20 +120,8 @@ static DBusHandlerResult upower_filter_cb(DBusConnection *bus, DBusMessage *m, v
 			}
 
 			if (new_owner && *new_owner) {
-				DBusPendingCall *call;
-				static const char* upower_device_interface = UPOWER_DEVICE_INTERFACE;
-				static const char* percentage_property = "Percentage";
-
 				spa_log_debug(this->log, "UPower daemon appeared (%s)", new_owner);
-
-				m = dbus_message_new_method_call(UPOWER_SERVICE, UPOWER_DISPLAY_DEVICE_OBJECT, DBUS_INTERFACE_PROPERTIES, "Get");
-				if (m == NULL)
-					goto finish;
-				dbus_message_append_args(m, DBUS_TYPE_STRING, &upower_device_interface,
-						         DBUS_TYPE_STRING, &percentage_property, DBUS_TYPE_INVALID);
-				dbus_connection_send_with_reply(this->conn, m, &call, -1);
-				dbus_pending_call_set_notify(call, upower_get_percentage_properties_reply, this, NULL);
-				dbus_message_unref(m);
+				update_battery_percentage(this);
 			}
 		}
 	} else if (dbus_message_is_signal(m, DBUS_INTERFACE_PROPERTIES, DBUS_SIGNAL_PROPERTIES_CHANGED)) {
@@ -160,17 +169,15 @@ finish:
 
 static int add_filters(struct impl *this)
 {
-	DBusError err;
-
 	if (this->filters_added)
 		return 0;
 
-	dbus_error_init(&err);
-
 	if (!dbus_connection_add_filter(this->conn, upower_filter_cb, this, NULL)) {
 		spa_log_error(this->log, "failed to add filter function");
-		goto fail;
+		return -EIO;
 	}
+
+	spa_auto(DBusError) err = DBUS_ERROR_INIT;
 
 	dbus_bus_add_match(this->conn,
 			"type='signal',sender='org.freedesktop.DBus',"
@@ -183,10 +190,6 @@ static int add_filters(struct impl *this)
 	this->filters_added = true;
 
 	return 0;
-
-fail:
-	dbus_error_free(&err);
-	return -EIO;
 }
 
 void *upower_register(struct spa_log *log,
@@ -210,25 +213,11 @@ void *upower_register(struct spa_log *log,
 	this->set_battery_level = set_battery_level;
 	this->user_data = user_data;
 
-	if (add_filters(this) < 0) {
-		goto fail4;
-	}
-
-	DBusMessage *m;
-	DBusPendingCall *call;
-
-	m = dbus_message_new_method_call(UPOWER_SERVICE, UPOWER_DISPLAY_DEVICE_OBJECT, DBUS_INTERFACE_PROPERTIES, "Get");
-	if (m == NULL)
+	if (add_filters(this) < 0)
 		goto fail4;
 
-	dbus_message_append_args(m,
-				 DBUS_TYPE_STRING, &(const char *){ UPOWER_DEVICE_INTERFACE },
-				 DBUS_TYPE_STRING, &(const char *){ "Percentage" },
-				 DBUS_TYPE_INVALID);
-	dbus_message_set_auto_start(m, false);
-	dbus_connection_send_with_reply(this->conn, m, &call, -1);
-	dbus_pending_call_set_notify(call, upower_get_percentage_properties_reply, this, NULL);
-	dbus_message_unref(m);
+	if (update_battery_percentage(this) < 0)
+		goto fail4;
 
 	return this;
 
@@ -240,6 +229,8 @@ fail4:
 void upower_unregister(void *data)
 {
 	struct impl *this = data;
+
+	cancel_and_unref(&this->pending_get_call);
 
 	if (this->filters_added) {
 		dbus_connection_remove_filter(this->conn, upower_filter_cb, this);

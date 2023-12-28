@@ -38,6 +38,8 @@ module_sources = [
   'module-rtp-session.c',
   'module-rtp-source.c',
   'module-rtp-sink.c',
+  'module-vban-recv.c',
+  'module-vban-send.c',
   'module-session-manager.c',
   'module-zeroconf-discover.c',
   'module-roc-source.c',
@@ -216,8 +218,10 @@ endif
 summary({'ffado-driver': build_module_ffado_driver}, bool_yn: true, section: 'Optional Modules')
 
 opus_custom_h = cc.has_header('opus/opus_custom.h', dependencies: opus_dep)
+opus_custom_lib = cc.has_function('opus_custom_encoder_ctl', dependencies: opus_dep)
+
 # One would imagine that opus_dep is a requirement but for some reason it's not, so we need to manually check that
-if opus_dep.found() and opus_custom_h
+if opus_dep.found() and opus_custom_h and opus_custom_lib
   opus_custom_dep = declare_dependency(compile_args: ['-DHAVE_OPUS_CUSTOM'], dependencies: opus_dep)
 else
   opus_custom_dep = dependency('', required: false)
@@ -311,6 +315,10 @@ if systemd_dep.found()
   pipewire_module_protocol_deps += systemd_dep
 endif
 
+if selinux_dep.found()
+  pipewire_module_protocol_deps += selinux_dep
+endif
+
 pipewire_module_protocol_native = shared_library('pipewire-module-protocol-native',
   [ 'module-protocol-native.c',
     'module-protocol-native/local-socket.c',
@@ -354,6 +362,8 @@ pipewire_module_protocol_pulse_sources = [
   'module-protocol-pulse/stream.c',
   'module-protocol-pulse/utils.c',
   'module-protocol-pulse/volume.c',
+  'module-protocol-pulse/modules/module-alsa-sink.c',
+  'module-protocol-pulse/modules/module-alsa-source.c',
   'module-protocol-pulse/modules/module-always-sink.c',
   'module-protocol-pulse/modules/module-combine-sink.c',
   'module-protocol-pulse/modules/module-echo-cancel.c',
@@ -603,17 +613,18 @@ build_module_raop = openssl_lib.found()
 if build_module_raop
   pipewire_module_raop_sink = shared_library('pipewire-module-raop-sink',
     [ 'module-raop-sink.c',
-      'module-raop/rtsp-client.c' ],
+      'module-raop/rtsp-client.c',
+      'module-rtp/stream.c' ],
     include_directories : [configinc],
     install : true,
     install_dir : modules_install_dir,
     install_rpath: modules_install_dir,
-    dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, openssl_lib],
+    dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, opus_dep, openssl_lib],
   )
 endif
 summary({'raop-sink (requires OpenSSL)': build_module_raop}, bool_yn: true, section: 'Optional Modules')
 
-roc_dep = dependency('roc', required: get_option('roc'))
+roc_dep = dependency('roc', version: '>= 0.3.0', required: get_option('roc'))
 summary({'ROC': roc_dep.found()}, bool_yn: true, section: 'Streaming between daemons')
 
 pipewire_module_rtp_source = shared_library('pipewire-module-rtp-source',
@@ -652,6 +663,26 @@ endif
 
 pipewire_module_rtp_sap = shared_library('pipewire-module-rtp-sap',
   [ 'module-rtp-sap.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
+)
+
+pipewire_module_vban_send = shared_library('pipewire-module-vban-send',
+  [ 'module-vban-send.c',
+    'module-vban/stream.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
+)
+
+pipewire_module_vban_recv = shared_library('pipewire-module-vban-recv',
+  [ 'module-vban-recv.c',
+    'module-vban/stream.c' ],
   include_directories : [configinc],
   install : true,
   install_dir : modules_install_dir,

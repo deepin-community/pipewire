@@ -18,7 +18,7 @@
 #ifdef HAVE_PWD_H
 #include <pwd.h>
 #endif
-#if defined(__FreeBSD__) || defined(__MidnightBSD__)
+#if defined(__FreeBSD__) || defined(__MidnightBSD__) || defined(__GNU__)
 #ifndef O_PATH
 #define O_PATH 0
 #endif
@@ -586,6 +586,7 @@ static int load_module(struct pw_context *context, const char *key, const char *
 /*
  * {
  *     # all keys must match the value. ~ in value starts regex.
+ *     # ! as the first char of the value negates the match
  *     <key> = <value>
  *     ...
  * }
@@ -602,6 +603,7 @@ static bool find_match(struct spa_json *arr, const struct spa_dict *props)
 
 		while (spa_json_get_string(&it[0], key, sizeof(key)) > 0) {
 			bool success = false;
+			int skip = 0;
 
 			if ((len = spa_json_next(&it[0], &value)) <= 0)
 				break;
@@ -615,18 +617,28 @@ static bool find_match(struct spa_json *arr, const struct spa_dict *props)
 					continue;
 				value = val;
 				len = strlen(val);
+				if (len > 0 && value[0] == '!') {
+					success = !success;
+					skip++;
+				}
 			}
 			if (str != NULL) {
-				if (value[0] == '~') {
+				if (value[skip] == '~') {
 					regex_t preg;
-					if (regcomp(&preg, value+1, REG_EXTENDED | REG_NOSUB) == 0) {
+					int res;
+					skip++;
+					if ((res = regcomp(&preg, value+skip, REG_EXTENDED | REG_NOSUB)) != 0) {
+						char errbuf[1024];
+						regerror(res, &preg, errbuf, sizeof(errbuf));
+						pw_log_warn("invalid regex %s: %s", value+skip, errbuf);
+					} else {
 						if (regexec(&preg, str, 0, NULL, 0) == 0)
-							success = true;
+							success = !success;
 						regfree(&preg);
 					}
-				} else if (strncmp(str, value, len) == 0 &&
-				    strlen(str) == (size_t)len) {
-					success = true;
+				} else if (strncmp(str, value+skip, len-skip) == 0 &&
+				    strlen(str) == (size_t)(len-skip)) {
+					success = !success;
 				}
 			}
 			if (success) {
@@ -634,6 +646,7 @@ static bool find_match(struct spa_json *arr, const struct spa_dict *props)
 				pw_log_debug("'%s' match '%s' < > '%.*s'", key, str, len, value);
 			}
 			else {
+				pw_log_debug("'%s' fail '%s' < > '%.*s'", key, str, len, value);
 				fail++;
 				break;
 			}
@@ -984,6 +997,11 @@ int pw_conf_section_update_props(const struct spa_dict *conf,
 	return res == 0 ? data.count : res;
 }
 
+static bool valid_conf_name(const char *str)
+{
+	return spa_streq(str, "null") || spa_strendswith(str, ".conf");
+}
+
 static int try_load_conf(const char *conf_prefix, const char *conf_name,
 			 struct pw_properties *conf)
 {
@@ -1018,6 +1036,11 @@ int pw_conf_load_conf_for_context(struct pw_properties *props, struct pw_propert
 		conf_name = pw_properties_get(props, PW_KEY_CONFIG_NAME);
 		if (conf_name == NULL)
 			conf_name = "client.conf";
+		else if (!valid_conf_name(conf_name)) {
+			pw_log_error("%s '%s' does not end with .conf",
+				PW_KEY_CONFIG_NAME, conf_name);
+			return -EINVAL;
+		}
 		if ((res = try_load_conf(conf_prefix, conf_name, conf)) < 0) {
 			pw_log_error("can't load config %s: %s",
 				conf_name, spa_strerror(res));
@@ -1029,6 +1052,12 @@ int pw_conf_load_conf_for_context(struct pw_properties *props, struct pw_propert
 	if (conf_name != NULL) {
 		struct pw_properties *override;
 		const char *path, *name;
+
+		if (!valid_conf_name(conf_name)) {
+			pw_log_error("%s '%s' does not end with .conf",
+				PW_KEY_CONFIG_OVERRIDE_NAME, conf_name);
+			return -EINVAL;
+		}
 
 		override = pw_properties_new(NULL, NULL);
 		if (override == NULL) {
@@ -1059,7 +1088,7 @@ int pw_conf_load_conf_for_context(struct pw_properties *props, struct pw_propert
  *             # any of the items in matches needs to match, if one does,
  *             # actions are emited.
  *             {
- *                 # all keys must match the value. ~ in value starts regex.
+ *                 # all keys must match the value. ! negates. ~ starts regex.
  *                 <key> = <value>
  *                 ...
  *             }

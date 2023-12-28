@@ -41,7 +41,7 @@
 #define ifr_ifindex ifr_index
 #endif
 
-/** \page page_module_rtp_session PipeWire Module: RTP session
+/** \page page_module_rtp_session RTP session
  *
  * The `rtp-session` module creates a media session that is announced
  * with avahi/mDNS/Bonjour.
@@ -51,6 +51,10 @@
  *
  * The session setup is based on apple-midi and is compatible with
  * apple-midi when the session is using midi.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-rtp-session`
  *
  * ## Module Options
  *
@@ -1335,7 +1339,8 @@ static struct service *make_service(struct impl *impl, const struct service_info
 	if (spa_streq(service_name, "_pipewire-audio._udp")) {
 		uint32_t mask = 0;
 		for (l = txt; l && compatible; l = l->next) {
-			char *key, *value, *k = NULL;
+			const char *k = NULL;
+			char *key, *value;
 
 			if (avahi_string_list_get_pair(l, &key, &value, NULL) != 0)
 				break;

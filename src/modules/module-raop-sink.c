@@ -44,14 +44,20 @@
 #include <pipewire/i18n.h>
 
 #include "module-raop/rtsp-client.h"
+#include "module-rtp/rtp.h"
+#include "module-rtp/stream.h"
 
-/** \page page_module_raop_sink PipeWire Module: AirPlay Sink
+/** \page page_module_raop_sink AirPlay Sink
  *
  * Creates a new Sink to stream to an Airplay device.
  *
  * Normally this sink is automatically created with \ref page_module_raop_discover
  * with the right parameters but it is possible to manually create a RAOP sink
  * as well.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-raop-sink`
  *
  * ## Module Options
  *
@@ -120,36 +126,37 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
-#define FRAMES_PER_TCP_PACKET 4096
-#define FRAMES_PER_UDP_PACKET 352
+#define BUFFER_SIZE		(1u<<22)
+#define BUFFER_MASK		(BUFFER_SIZE-1)
+#define BUFFER_SIZE2		(BUFFER_SIZE>>1)
+#define BUFFER_MASK2		(BUFFER_SIZE2-1)
 
-#define RAOP_LATENCY_MIN	11025u
-#define DEFAULT_LATENCY_MS	"1000"
+#define FRAMES_PER_TCP_PACKET	4096
+#define FRAMES_PER_UDP_PACKET	352
 
-#define DEFAULT_TCP_AUDIO_PORT   6000
-#define DEFAULT_UDP_AUDIO_PORT   6000
-#define DEFAULT_UDP_CONTROL_PORT 6001
-#define DEFAULT_UDP_TIMING_PORT  6002
+#define RAOP_AUDIO_PORT		6000
+#define RAOP_UDP_CONTROL_PORT	6001
+#define RAOP_UDP_TIMING_PORT	6002
 
 #define AES_CHUNK_SIZE		16
 #ifndef MD5_DIGEST_LENGTH
 #define MD5_DIGEST_LENGTH	16
 #endif
-#define MD5_HASH_LENGTH (2*MD5_DIGEST_LENGTH)
+#define MD5_HASH_LENGTH		(2*MD5_DIGEST_LENGTH)
 
-#define DEFAULT_USER_AGENT	"iTunes/11.0.4 (Windows; N)"
-#define DEFAULT_USER_NAME	"iTunes"
+#define DEFAULT_USER_NAME	"PipeWire"
+#define RAOP_AUTH_USER_NAME	"iTunes"
 
-#define MAX_PORT_RETRY	128
+#define MAX_PORT_RETRY		128
 
-#define DEFAULT_FORMAT "S16"
-#define DEFAULT_RATE 44100
-#define DEFAULT_CHANNELS 2
-#define DEFAULT_POSITION "[ FL FR ]"
+#define RAOP_FORMAT		"S16LE"
+#define RAOP_STRIDE		(2*DEFAULT_CHANNELS)
+#define RAOP_RATE		44100
+#define RAOP_LATENCY_MS		250
 
-#define VOLUME_MAX  0.0
-#define VOLUME_DEF -30.0
-#define VOLUME_MIN -144.0
+#define VOLUME_MAX		0.0
+#define VOLUME_MIN		-30.0
+#define VOLUME_MUTE		-144.0
 
 #define MODULE_USAGE	"( raop.ip=<ip address of host> ) "					\
 			"( raop.port=<remote port> ) "						\
@@ -162,8 +169,8 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 			"( node.latency=<latency as fraction> ) "				\
 			"( node.name=<name of the nodes> ) "					\
 			"( node.description=<description of the nodes> ) "			\
-			"( audio.format=<format, default:"DEFAULT_FORMAT"> ) "			\
-			"( audio.rate=<sample rate, default: "SPA_STRINGIFY(DEFAULT_RATE)"> ) "			\
+			"( audio.format=<format, default:"RAOP_FORMAT"> ) "			\
+			"( audio.rate=<sample rate, default: "SPA_STRINGIFY(RAOP_RATE)"> ) "			\
 			"( audio.channels=<number of channels, default:"SPA_STRINGIFY(DEFAULT_CHANNELS)"> ) "	\
 			"( audio.position=<channel map, default:"DEFAULT_POSITION"> ) "		\
 			"( stream.props=<properties> ) "
@@ -211,10 +218,7 @@ struct impl {
 	struct spa_hook core_listener;
 
 	struct pw_properties *stream_props;
-	struct pw_stream *stream;
-	struct spa_hook stream_listener;
-	struct spa_audio_info_raw info;
-	uint32_t frame_size;
+	struct rtp_stream *stream;
 
 	struct pw_rtsp_client *rtsp;
 	struct spa_hook rtsp_listener;
@@ -228,13 +232,14 @@ struct impl {
 
 	unsigned int do_disconnect:1;
 
-	uint8_t key[AES_CHUNK_SIZE]; /* Key for aes-cbc */
-	uint8_t iv[AES_CHUNK_SIZE];  /* Initialization vector for cbc */
+	uint8_t aes_key[AES_CHUNK_SIZE]; /* Key for aes-cbc */
+	uint8_t aes_iv[AES_CHUNK_SIZE];  /* Initialization vector for cbc */
 	EVP_CIPHER_CTX *ctx;
 
 	uint16_t control_port;
 	int control_fd;
 	struct spa_source *control_source;
+	struct spa_source *feedback_timer;
 
 	uint16_t timing_port;
 	int timing_fd;
@@ -244,15 +249,15 @@ struct impl {
 	int server_fd;
 	struct spa_source *server_source;
 
-	uint32_t block_size;
+	uint32_t psamples;
+	uint64_t rate;
+	uint32_t mtu;
+	uint32_t stride;
 	uint32_t latency;
 
-	uint16_t seq;
-	uint32_t rtptime;
 	uint32_t ssrc;
 	uint32_t sync;
 	uint32_t sync_period;
-	unsigned int first:1;
 	unsigned int connected:1;
 	unsigned int ready:1;
 	unsigned int recording:1;
@@ -260,16 +265,13 @@ struct impl {
 	bool mute;
 	float volume;
 
-	uint8_t buffer[FRAMES_PER_TCP_PACKET * 4];
+	struct spa_ringbuffer ring;
+	uint8_t buffer[BUFFER_SIZE];
+
+	struct spa_io_position *io_position;
+
 	uint32_t filled;
 };
-
-static void stream_destroy(void *d)
-{
-	struct impl *impl = d;
-	spa_hook_remove(&impl->stream_listener);
-	impl->stream = NULL;
-}
 
 static inline void bit_writer(uint8_t **p, int *pos, uint8_t data, int len)
 {
@@ -287,7 +289,7 @@ static inline void bit_writer(uint8_t **p, int *pos, uint8_t data, int len)
 static int aes_encrypt(struct impl *impl, uint8_t *data, int len)
 {
 	int i = len & ~0xf, clen = i;
-	EVP_EncryptInit(impl->ctx, EVP_aes_128_cbc(), impl->key, impl->iv);
+	EVP_EncryptInit(impl->ctx, EVP_aes_128_cbc(), impl->aes_key, impl->aes_iv);
 	EVP_EncryptUpdate(impl->ctx, data, &clen, data, i);
 	return i;
 }
@@ -305,49 +307,103 @@ static inline uint64_t ntp_now(void)
 	return timespec_to_ntp(&now);
 }
 
-static int send_udp_sync_packet(struct impl *impl,
-		struct sockaddr *dest_addr, socklen_t addrlen)
+static int send_udp_sync_packet(struct impl *impl, uint32_t rtptime, unsigned int first)
 {
-	uint32_t pkt[5];
-	uint32_t rtptime = impl->rtptime;
+	uint32_t out[3];
 	uint32_t latency = impl->latency;
 	uint64_t transmitted;
+	struct rtp_header header;
+	struct iovec iov[2];
+	struct msghdr msg;
+	int res;
 
-	pkt[0] = htonl(0x80d40007);
-	if (impl->first)
-		pkt[0] |= htonl(0x10000000);
-	pkt[1] = htonl(rtptime - latency);
+	spa_zero(header);
+	header.v = 2;
+	if (first)
+		header.x = 1;
+	header.m = 1;
+	header.pt = 84;
+	header.sequence_number = 7;
+	header.timestamp = htonl(rtptime - latency);
+
+	iov[0].iov_base = &header;
+	iov[0].iov_len = 8;
+
 	transmitted = ntp_now();
-	pkt[2] = htonl((transmitted >> 32) & 0x0000ffff);
-	pkt[3] = htonl(transmitted & 0xffffffff);
-	pkt[4] = htonl(rtptime);
+	out[0] = htonl(transmitted >> 32);
+	out[1] = htonl(transmitted & 0xffffffff);
+	out[2] = htonl(rtptime);
 
-	pw_log_debug("sync: first:%d latency:%u now:%"PRIx64" rtptime:%u",
-			impl->first, latency, transmitted, rtptime);
+	iov[1].iov_base = out;
+	iov[1].iov_len = sizeof(out);
 
-	return sendto(impl->control_fd, pkt, sizeof(pkt), 0, dest_addr, addrlen);
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_iov = iov;
+	msg.msg_iovlen = 2;
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_flags = 0;
+
+	res = sendmsg(impl->control_fd, &msg, MSG_NOSIGNAL);
+	if (res < 0) {
+		res = -errno;
+		pw_log_warn("error sending control packet: %d", res);
+	}
+
+	pw_log_debug("raop control sync: first:%d latency:%u now:%"PRIx64" rtptime:%u",
+			first, latency, transmitted, rtptime);
+
+	return res;
 }
 
 static int send_udp_timing_packet(struct impl *impl, uint64_t remote, uint64_t received,
 		struct sockaddr *dest_addr, socklen_t addrlen)
 {
-	uint32_t pkt[8];
+	uint32_t out[6];
 	uint64_t transmitted;
+	struct rtp_header header;
+	struct iovec iov[2];
+	struct msghdr msg;
+	int res;
 
-	pkt[0] = htonl(0x80d30007);
-	pkt[1] = 0x00000000;
-	pkt[2] = htonl(remote >> 32);
-	pkt[3] = htonl(remote & 0xffffffff);
-	pkt[4] = htonl(received >> 32);
-	pkt[5] = htonl(received & 0xffffffff);
+	spa_zero(header);
+	header.v = 2;
+	header.pt = 83;
+	header.m = 1;
+
+	iov[0].iov_base = &header;
+	iov[0].iov_len = 8;
+
+	out[0] = htonl(remote >> 32);
+	out[1] = htonl(remote & 0xffffffff);
+
+	out[2] = htonl(received >> 32);
+	out[3] = htonl(received & 0xffffffff);
 	transmitted = ntp_now();
-	pkt[6] = htonl(transmitted >> 32);
-	pkt[7] = htonl(transmitted & 0xffffffff);
+	out[4] = htonl(transmitted >> 32);
+	out[5] = htonl(transmitted & 0xffffffff);
 
-	pw_log_debug("sync: remote:%"PRIx64" received:%"PRIx64" transmitted:%"PRIx64,
+	iov[1].iov_base = out;
+	iov[1].iov_len = sizeof(out);
+
+	msg.msg_name = dest_addr;
+	msg.msg_namelen = addrlen;
+	msg.msg_iov = iov;
+	msg.msg_iovlen = 2;
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_flags = 0;
+
+	res = sendmsg(impl->timing_fd, &msg, MSG_NOSIGNAL);
+	if (res < 0) {
+		res = -errno;
+		pw_log_warn("error sending timing packet: %d", res);
+	}
+	pw_log_debug("raop timing sync: remote:%"PRIx64" received:%"PRIx64" transmitted:%"PRIx64,
 			remote, received, transmitted);
 
-	return sendto(impl->timing_fd, pkt, sizeof(pkt), 0, dest_addr, addrlen);
+	return res;
 }
 
 static int write_codec_pcm(void *dst, void *frames, uint32_t n_frames)
@@ -380,145 +436,86 @@ static int write_codec_pcm(void *dst, void *frames, uint32_t n_frames)
 	return bp - b + 1;
 }
 
-static int flush_to_udp_packet(struct impl *impl)
+static ssize_t send_packet(int fd, struct msghdr *msg)
 {
-	const size_t max = 12 + 8 + impl->block_size;
-	uint32_t pkt[max], len, n_frames;
-	uint8_t *dst;
-	int res;
-
-	if (!impl->recording)
-		return 0;
-
-	if (impl->first || ++impl->sync == impl->sync_period) {
-		impl->sync = 0;
-		send_udp_sync_packet(impl, NULL, 0);
-	}
-	pkt[0] = htonl(0x80600000);
-	if (impl->first)
-		pkt[0] |= htonl((uint32_t)0x80 << 16);
-	pkt[0] |= htonl((uint32_t)impl->seq);
-	pkt[1] = htonl(impl->rtptime);
-	pkt[2] = htonl(impl->ssrc);
-
-	n_frames = impl->filled / impl->frame_size;
-	dst = (uint8_t*)&pkt[3];
-
-	switch (impl->codec) {
-	case CODEC_PCM:
-	case CODEC_ALAC:
-		len = write_codec_pcm(dst, impl->buffer, n_frames);
-		break;
-	default:
-		len = 8 + impl->block_size;
-		memset(dst, 0, len);
-		break;
-	}
-	if (impl->encryption == CRYPTO_RSA)
-		aes_encrypt(impl, dst, len);
-
-	impl->rtptime += n_frames;
-	impl->seq = (impl->seq + 1) & 0xffff;
-
-	pw_log_debug("send %u", len + 12);
-	res = send(impl->server_fd, pkt, len + 12, 0);
-
-	impl->first = false;
-
-	return res;
+	ssize_t n;
+	n = sendmsg(fd, msg, MSG_NOSIGNAL);
+	if (n < 0)
+		pw_log_debug("sendmsg() failed: %m");
+	return n;
 }
 
-static int flush_to_tcp_packet(struct impl *impl)
+static void stream_send_packet(void *data, struct iovec *iov, size_t iovlen)
 {
-	const size_t max = 16 + 8 + impl->block_size;
-	uint32_t pkt[max], len, n_frames;
+	struct impl *impl = data;
+	const size_t max = 8 + impl->mtu;
+	uint32_t tcp_pkt[1], out[max], len, n_frames, rtptime;
+	struct iovec out_vec[3];
+	struct rtp_header *header;
+	struct msghdr msg;
 	uint8_t *dst;
-	int res;
 
 	if (!impl->recording)
-		return 0;
-
-	pkt[0] = htonl(0x24000000);
-	pkt[1] = htonl(0x80e00000);
-	pkt[1] |= htonl((uint32_t)impl->seq);
-	pkt[2] = htonl(impl->rtptime);
-	pkt[3] = htonl(impl->ssrc);
-
-	n_frames = impl->filled / impl->frame_size;
-	dst = (uint8_t*)&pkt[4];
-
-	switch (impl->codec) {
-	case CODEC_PCM:
-	case CODEC_ALAC:
-		len = write_codec_pcm(dst, impl->buffer, n_frames);
-		break;
-	default:
-		len = 8 + impl->block_size;
-		memset(dst, 0, len);
-		break;
-	}
-	if (impl->encryption == CRYPTO_RSA)
-		aes_encrypt(impl, dst, len);
-
-	pkt[0] |= htonl((uint32_t) len + 12);
-
-	impl->rtptime += n_frames;
-	impl->seq = (impl->seq + 1) & 0xffff;
-
-	pw_log_debug("send %u", len + 16);
-	res = send(impl->server_fd, pkt, len + 16, 0);
-
-	impl->first = false;
-
-	return res;
-}
-
-static void playback_stream_process(void *d)
-{
-	struct impl *impl = d;
-	struct pw_buffer *buf;
-	struct spa_data *bd;
-	uint8_t *data;
-	uint32_t offs, size;
-
-	if ((buf = pw_stream_dequeue_buffer(impl->stream)) == NULL) {
-		pw_log_debug("out of buffers: %m");
 		return;
+
+	header = (struct rtp_header*)iov[0].iov_base;
+	if (header->v != 2)
+		pw_log_warn("invalid rtp packet version");
+
+	rtptime = htonl(header->timestamp);
+
+	if (header->m || ++impl->sync == impl->sync_period) {
+		send_udp_sync_packet(impl, rtptime, header->m);
+		impl->sync = 0;
 	}
 
-	bd = &buf->buffer->datas[0];
+	n_frames = iov[1].iov_len / impl->stride;
 
-	offs = SPA_MIN(bd->chunk->offset, bd->maxsize);
-	size = SPA_MIN(bd->chunk->size, bd->maxsize - offs);
-	data = SPA_PTROFF(bd->data, offs, uint8_t);
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_iov = out_vec;
+	msg.msg_iovlen = 0;
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_flags = 0;
 
-	while (size > 0 && impl->block_size > 0) {
-		uint32_t avail, to_fill;
+	dst = (uint8_t*)&out[0];
 
-		avail = impl->block_size - impl->filled;
-		to_fill = SPA_MIN(avail, size);
+	switch (impl->codec) {
+	case CODEC_PCM:
+	case CODEC_ALAC:
+		len = write_codec_pcm(dst, (void *)iov[1].iov_base, n_frames);
+		break;
+	default:
+		len = 8 + impl->mtu;
+		memset(dst, 0, len);
+		break;
+	}
+	if (impl->encryption == CRYPTO_RSA)
+		aes_encrypt(impl, dst, len);
 
-		memcpy(&impl->buffer[impl->filled], data, to_fill);
-
-		impl->filled += to_fill;
-		avail -= to_fill;
-		size -= to_fill;
-		data += to_fill;
-
-		if (avail == 0) {
-			switch (impl->protocol) {
-			case PROTO_UDP:
-				flush_to_udp_packet(impl);
-				break;
-			case PROTO_TCP:
-				flush_to_tcp_packet(impl);
-				break;
-			}
-			impl->filled = 0;
-		}
+	if (impl->protocol == PROTO_TCP) {
+		out[0] |= htonl((uint32_t) len + 12);
+		tcp_pkt[0] = htonl(0x24000000);
+  		out_vec[msg.msg_iovlen++] = (struct iovec) { tcp_pkt, 4 };
 	}
 
-	pw_stream_queue_buffer(impl->stream, buf);
+	out_vec[msg.msg_iovlen++] = (struct iovec) { header, 12 };
+	out_vec[msg.msg_iovlen++] = (struct iovec) { out, len };
+
+	pw_log_debug("raop sending %ld", out_vec[0].iov_len + out_vec[1].iov_len + out_vec[2].iov_len);
+
+	send_packet(impl->server_fd, &msg);
+}
+
+static inline void
+set_iovec(struct spa_ringbuffer *rbuf, void *buffer, uint32_t size,
+		uint32_t offset, struct iovec *iov, uint32_t len)
+{
+	iov[0].iov_len = SPA_MIN(len, size - offset);
+	iov[0].iov_base = SPA_PTROFF(buffer, offset, void);
+	iov[1].iov_len = len - iov[0].iov_len;
+	iov[1].iov_base = buffer;
 }
 
 static int create_udp_socket(struct impl *impl, uint16_t *port)
@@ -783,7 +780,7 @@ static int MD5_hash(char hash[MD5_HASH_LENGTH+1], const char *fmt, ...)
 	return 0;
 }
 
-static int rtsp_add_auth(struct impl *impl, const char *method)
+static int rtsp_add_raop_auth_header(struct impl *impl, const char *method)
 {
 	char auth[1024];
 
@@ -793,7 +790,7 @@ static int rtsp_add_auth(struct impl *impl, const char *method)
 	if (spa_streq(impl->auth_method, "Basic")) {
 		char buf[256];
 		char enc[512];
-		spa_scnprintf(buf, sizeof(buf), "%s:%s", DEFAULT_USER_NAME, impl->password);
+		spa_scnprintf(buf, sizeof(buf), "%s:%s", RAOP_AUTH_USER_NAME, impl->password);
 		base64_encode((uint8_t*)buf, strlen(buf), enc, '=');
 		spa_scnprintf(auth, sizeof(auth), "Basic %s", enc);
 	}
@@ -805,13 +802,13 @@ static int rtsp_add_auth(struct impl *impl, const char *method)
 
 		url = pw_rtsp_client_get_url(impl->rtsp);
 
-		MD5_hash(h1, "%s:%s:%s", DEFAULT_USER_NAME, impl->realm, impl->password);
+		MD5_hash(h1, "%s:%s:%s", RAOP_AUTH_USER_NAME, impl->realm, impl->password);
 		MD5_hash(h2, "%s:%s", method, url);
 		MD5_hash(resp, "%s:%s:%s", h1, impl->nonce, h2);
 
 		spa_scnprintf(auth, sizeof(auth),
 				"username=\"%s\", realm=\"%s\", nonce=\"%s\", uri=\"%s\", response=\"%s\"",
-				DEFAULT_USER_NAME, impl->realm, impl->nonce, url, resp);
+				RAOP_AUTH_USER_NAME, impl->realm, impl->nonce, url, resp);
 	}
 	else
 		goto error;
@@ -821,48 +818,27 @@ static int rtsp_add_auth(struct impl *impl, const char *method)
 
 	return 0;
 error:
-	pw_log_error("error adding auth");
+	pw_log_error("error adding raop RSA auth");
 	return -EINVAL;
 }
 
 static int rtsp_send(struct impl *impl, const char *method,
 		const char *content_type, const char *content,
-		int (*reply) (void *data, int status, const struct spa_dict *headers))
+		int (*reply) (void *data, int status, const struct spa_dict *headers, const struct pw_array *content))
 {
 	int res;
 
-	rtsp_add_auth(impl, method);
+	rtsp_add_raop_auth_header(impl, method);
 
 	res = pw_rtsp_client_send(impl->rtsp, method, &impl->headers->dict,
 			content_type, content, reply, impl);
 	return res;
 }
 
-static int rtsp_flush_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_log_reply_status(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
-	pw_log_info("reply %d", status);
+	pw_log_info("reply status: %d", status);
 	return 0;
-}
-
-static int rtsp_do_flush(struct impl *impl)
-{
-	int res;
-
-	if (!impl->recording)
-		return 0;
-
-	pw_properties_set(impl->headers, "Range", "npt=0-");
-	pw_properties_setf(impl->headers, "RTP-Info",
-			"seq=%u;rtptime=%u", impl->seq, impl->rtptime);
-
-	impl->recording = false;
-
-	res = rtsp_send(impl, "FLUSH", NULL, NULL, rtsp_flush_reply);
-
-	pw_properties_set(impl->headers, "Range", NULL);
-	pw_properties_set(impl->headers, "RTP-Info", NULL);
-
-	return res;
 }
 
 static int rtsp_send_volume(struct impl *impl)
@@ -872,11 +848,24 @@ static int rtsp_send_volume(struct impl *impl)
 
 	char header[128], volstr[64];
 	snprintf(header, sizeof(header), "volume: %s\r\n",
-			spa_dtoa(volstr, sizeof(volstr), impl->volume));
-	return rtsp_send(impl, "SET_PARAMETER", "text/parameters", header, NULL);
+			spa_dtoa(volstr, sizeof(volstr), impl->mute ? VOLUME_MUTE : impl->volume));
+	return rtsp_send(impl, "SET_PARAMETER", "text/parameters", header, rtsp_log_reply_status);
 }
 
-static int rtsp_record_reply(void *data, int status, const struct spa_dict *headers)
+static void rtsp_do_post_feedback(void *data, uint64_t expirations)
+{
+	struct impl *impl = data;
+
+	pw_rtsp_client_url_send(impl->rtsp, "/feedback", "POST", &impl->headers->dict,
+					NULL, NULL, 0, rtsp_log_reply_status, impl);
+}
+
+static uint32_t msec_to_samples(struct impl *impl, uint32_t msec)
+{
+	return msec * impl->rate / 1000;
+}
+
+static int rtsp_record_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 	const char *str;
@@ -886,8 +875,18 @@ static int rtsp_record_reply(void *data, int status, const struct spa_dict *head
 	struct spa_pod_builder b;
 	struct spa_latency_info latency;
 	char progress[128];
+	struct timespec timeout, interval;
 
-	pw_log_info("reply %d", status);
+	pw_log_info("record status: %d", status);
+
+	timeout.tv_sec = 2;
+	timeout.tv_nsec = 0;
+	interval.tv_sec = 2;
+	interval.tv_nsec = 0;
+
+	if (!impl->feedback_timer)
+		impl->feedback_timer = pw_loop_add_timer(impl->loop, rtsp_do_post_feedback, impl);
+	pw_loop_update_timer(impl->loop, impl->feedback_timer, &timeout, &interval, false);
 
 	if ((str = spa_dict_lookup(headers, "Audio-Latency")) != NULL) {
 		uint32_t l;
@@ -897,35 +896,41 @@ static int rtsp_record_reply(void *data, int status, const struct spa_dict *head
 
 	spa_zero(latency);
 	latency.direction = PW_DIRECTION_INPUT;
-	latency.min_rate = latency.max_rate = impl->latency + RAOP_LATENCY_MIN;
+	latency.min_rate = latency.max_rate = impl->latency + msec_to_samples(impl, RAOP_LATENCY_MS);
 
 	n_params = 0;
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
 	params[n_params++] = spa_latency_build(&b, SPA_PARAM_Latency, &latency);
 
-	pw_stream_update_params(impl->stream, params, n_params);
+	rtp_stream_update_params(impl->stream, params, n_params);
 
-	impl->first = true;
+	rtp_stream_set_first(impl->stream);
+
 	impl->sync = 0;
-	impl->sync_period = impl->info.rate / (impl->block_size / impl->frame_size);
+	impl->sync_period = impl->rate / (impl->mtu / impl->stride);
 	impl->recording = true;
 
 	rtsp_send_volume(impl);
 
 	snprintf(progress, sizeof(progress), "progress: %s/%s/%s\r\n", "0", "0", "0");
-	return rtsp_send(impl, "SET_PARAMETER", "text/parameters", progress, NULL);
+	return rtsp_send(impl, "SET_PARAMETER", "text/parameters", progress, rtsp_log_reply_status);
 }
 
 static int rtsp_do_record(struct impl *impl)
 {
 	int res;
+	uint16_t seq;
+	uint32_t rtptime;
 
 	if (!impl->ready || impl->recording)
 		return 0;
 
+	seq = rtp_stream_get_seq(impl->stream);
+	rtptime = rtp_stream_get_time(impl->stream, &impl->rate);
+
 	pw_properties_set(impl->headers, "Range", "npt=0-");
 	pw_properties_setf(impl->headers, "RTP-Info",
-			"seq=%u;rtptime=%u", impl->seq, impl->rtptime);
+			"seq=%u;rtptime=%u", seq, rtptime);
 
 	res = rtsp_send(impl, "RECORD", NULL, NULL, rtsp_record_reply);
 
@@ -958,7 +963,7 @@ on_server_source_io(void *data, int fd, uint32_t mask)
 			goto error;
 
 		impl->ready = true;
-		if (pw_stream_get_state(impl->stream, NULL) == PW_STREAM_STATE_STREAMING)
+		if (rtp_stream_get_state(impl->stream, NULL) == PW_STREAM_STATE_STREAMING)
 			rtsp_do_record(impl);
 	}
 	return;
@@ -966,16 +971,15 @@ error:
 	pw_loop_update_io(impl->loop, impl->server_source, 0);
 }
 
-static int rtsp_setup_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_setup_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 	const char *str, *state = NULL, *s;
 	size_t len;
 	uint64_t ntp;
 	uint16_t control_port, timing_port;
-	int res;
 
-	pw_log_info("reply %d", status);
+	pw_log_info("setup status: %d", status);
 
 	if ((str = spa_dict_lookup(headers, "Session")) == NULL) {
 		pw_log_error("missing Session header");
@@ -1002,12 +1006,6 @@ static int rtsp_setup_reply(void *data, int status, const struct spa_dict *heade
 	}
 	if (impl->server_port == 0) {
 		pw_log_error("missing server port in Transport");
-		return 0;
-	}
-
-	if ((res = pw_getrandom(&impl->seq, sizeof(impl->seq), 0)) < 0 ||
-	    (res = pw_getrandom(&impl->rtptime, sizeof(impl->rtptime), 0)) <  0) {
-		pw_log_error("error generating random seq and rtptime: %s", spa_strerror(res));
 		return 0;
 	}
 
@@ -1049,7 +1047,7 @@ static int rtsp_setup_reply(void *data, int status, const struct spa_dict *heade
 				SPA_IO_IN, false, on_control_source_io, impl);
 
 		impl->ready = true;
-		if (pw_stream_get_state(impl->stream, NULL) == PW_STREAM_STATE_STREAMING)
+		if (rtp_stream_get_state(impl->stream, NULL) == PW_STREAM_STATE_STREAMING)
 			rtsp_do_record(impl);
 		break;
 	default:
@@ -1069,8 +1067,8 @@ static int rtsp_do_setup(struct impl *impl)
 		break;
 
 	case PROTO_UDP:
-		impl->control_port = DEFAULT_UDP_CONTROL_PORT;
-		impl->timing_port = DEFAULT_UDP_TIMING_PORT;
+		impl->control_port = RAOP_UDP_CONTROL_PORT;
+		impl->timing_port = RAOP_UDP_TIMING_PORT;
 
 		impl->control_fd = create_udp_socket(impl, &impl->control_port);
 		impl->timing_fd = create_udp_socket(impl, &impl->timing_port);
@@ -1105,11 +1103,11 @@ error:
 	return -EIO;
 }
 
-static int rtsp_announce_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_announce_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 
-	pw_log_info("reply %d", status);
+	pw_log_info("announce status: %d", status);
 
 	pw_properties_set(impl->headers, "Apple-Challenge", NULL);
 
@@ -1209,19 +1207,14 @@ static int rtsp_do_announce(struct impl *impl)
 {
 	const char *host;
 	uint8_t rsakey[512];
+	uint32_t rtp_latency;
 	char key[512*2];
 	char iv[16*2];
-	int res, frames, rsa_len, ip_version;
+	int res, rsa_len, ip_version;
 	spa_autofree char *sdp = NULL;
 	char local_ip[256];
 	host = pw_properties_get(impl->props, "raop.ip");
-
-	if (impl->protocol == PROTO_TCP)
-		frames = FRAMES_PER_TCP_PACKET;
-	else
-		frames = FRAMES_PER_UDP_PACKET;
-
-	impl->block_size = frames * impl->frame_size;
+	rtp_latency = msec_to_samples(impl, RAOP_LATENCY_MS);
 
 	pw_rtsp_client_get_local_ip(impl->rtsp, &ip_version,
 			local_ip, sizeof(local_ip));
@@ -1237,11 +1230,10 @@ static int rtsp_do_announce(struct impl *impl)
 				"a=rtpmap:96 AppleLossless\r\n"
 				"a=fmtp:96 %d 0 16 40 10 14 2 255 0 0 %u\r\n",
 				impl->session_id, ip_version, local_ip,
-				ip_version, host, frames, impl->info.rate);
+				ip_version, host, impl->psamples, (uint32_t)impl->rate);
 		if (!sdp)
 			return -errno;
 		break;
-
 	case CRYPTO_AUTH_SETUP:
 		sdp = spa_aprintf("v=0\r\n"
 				"o=iTunes %s 0 IN IP%d %s\r\n"
@@ -1253,23 +1245,31 @@ static int rtsp_do_announce(struct impl *impl)
 				"a=fmtp:96 %d 0 16 40 10 14 2 255 0 0 %u\r\n"
 				"a=min-latency:%d",
 				impl->session_id, ip_version, local_ip,
-				ip_version, host, frames, impl->info.rate,
-				RAOP_LATENCY_MIN);
+				ip_version, host, impl->psamples, (uint32_t)impl->rate,
+				rtp_latency);
 		if (!sdp)
 			return -errno;
 		break;
 
 	case CRYPTO_RSA:
-		if ((res = pw_getrandom(impl->key, sizeof(impl->key), 0)) < 0 ||
-		    (res = pw_getrandom(impl->iv, sizeof(impl->iv), 0)) < 0)
+	{
+		uint8_t rac[16];
+		char sac[16*4];
+
+		if ((res = pw_getrandom(rac, sizeof(rac), 0)) < 0 ||
+		    (res = pw_getrandom(impl->aes_key, sizeof(impl->aes_key), 0)) < 0 ||
+		    (res = pw_getrandom(impl->aes_iv, sizeof(impl->aes_iv), 0)) < 0)
 			return res;
 
-		rsa_len = rsa_encrypt(impl->key, 16, rsakey);
+		base64_encode(rac, sizeof(rac), sac, '\0');
+		pw_properties_set(impl->headers, "Apple-Challenge", sac);
+
+		rsa_len = rsa_encrypt(impl->aes_key, 16, rsakey);
 		if (rsa_len < 0)
 			return -rsa_len;
 
-	        base64_encode(rsakey, rsa_len, key, '=');
-	        base64_encode(impl->iv, 16, iv, '=');
+		base64_encode(rsakey, rsa_len, key, '=');
+		base64_encode(impl->aes_iv, 16, iv, '=');
 
 		sdp = spa_aprintf("v=0\r\n"
 				"o=iTunes %s 0 IN IP%d %s\r\n"
@@ -1282,11 +1282,12 @@ static int rtsp_do_announce(struct impl *impl)
 				"a=rsaaeskey:%s\r\n"
 				"a=aesiv:%s\r\n",
 				impl->session_id, ip_version, local_ip,
-				ip_version, host, frames, impl->info.rate,
+				ip_version, host, impl->psamples, (uint32_t)impl->rate,
 				key, iv);
 		if (!sdp)
 			return -errno;
 		break;
+	}
 	default:
 		return -ENOTSUP;
 	}
@@ -1294,16 +1295,16 @@ static int rtsp_do_announce(struct impl *impl)
 	return rtsp_send(impl, "ANNOUNCE", "application/sdp", sdp, rtsp_announce_reply);
 }
 
-static int rtsp_auth_setup_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_post_auth_setup_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 
-	pw_log_info("reply %d", status);
+	pw_log_info("auth-setup status: %d", status);
 
 	return rtsp_do_announce(impl);
 }
 
-static int rtsp_do_auth_setup(struct impl *impl)
+static int rtsp_do_post_auth_setup(struct impl *impl)
 {
 	static const unsigned char content[33] =
 		"\x01"
@@ -1312,20 +1313,20 @@ static int rtsp_do_auth_setup(struct impl *impl)
 
 	return pw_rtsp_client_url_send(impl->rtsp, "/auth-setup", "POST", &impl->headers->dict,
 				       "application/octet-stream", content, sizeof(content),
-				       rtsp_auth_setup_reply, impl);
+				       rtsp_post_auth_setup_reply, impl);
 }
 
-static int rtsp_auth_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_options_auth_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 	int res = 0;
 
-	pw_log_info("auth %d", status);
+	pw_log_info("auth status: %d", status);
 
 	switch (status) {
 	case 200:
 		if (impl->encryption == CRYPTO_AUTH_SETUP)
-			res = rtsp_do_auth_setup(impl);
+			res = rtsp_do_post_auth_setup(impl);
 		else
 			res = rtsp_do_announce(impl);
 		break;
@@ -1351,7 +1352,7 @@ static const char *find_attr(char **tokens, const char *key)
 	return NULL;
 }
 
-static int rtsp_do_auth(struct impl *impl, const struct spa_dict *headers)
+static int rtsp_do_options_auth(struct impl *impl, const struct spa_dict *headers)
 {
 	const char *str, *realm, *nonce;
 	int n_tokens;
@@ -1382,23 +1383,23 @@ static int rtsp_do_auth(struct impl *impl, const struct spa_dict *headers)
 		impl->nonce = strdup(nonce);
 	}
 
-	return rtsp_send(impl, "OPTIONS", NULL, NULL, rtsp_auth_reply);
+	return rtsp_send(impl, "OPTIONS", NULL, NULL, rtsp_options_auth_reply);
 }
 
-static int rtsp_options_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_options_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 	int res = 0;
 
-	pw_log_info("options %d", status);
+	pw_log_info("options status: %d", status);
 
 	switch (status) {
 	case 401:
-		res = rtsp_do_auth(impl, headers);
+		res = rtsp_do_options_auth(impl, headers);
 		break;
 	case 200:
 		if (impl->encryption == CRYPTO_AUTH_SETUP)
-			res = rtsp_do_auth_setup(impl);
+			res = rtsp_do_post_auth_setup(impl);
 		else
 			res = rtsp_do_announce(impl);
 		break;
@@ -1410,27 +1411,24 @@ static void rtsp_connected(void *data)
 {
 	struct impl *impl = data;
 	uint32_t sci[2];
-	uint8_t rac[16];
-	char sac[16*4];
 	int res;
 
 	pw_log_info("connected");
 
 	impl->connected = true;
 
-	if ((res = pw_getrandom(sci, sizeof(sci), 0)) < 0 ||
-	    (res = pw_getrandom(rac, sizeof(rac), 0)) < 0) {
+	if ((res = pw_getrandom(sci, sizeof(sci), 0)) < 0) {
 		pw_log_error("error generating random data: %s", spa_strerror(res));
 		return;
 	}
 
 	pw_properties_setf(impl->headers, "Client-Instance",
-			"%08x%08x", sci[0], sci[1]);
+			"%08X%08X", sci[0], sci[1]);
 
-	base64_encode(rac, sizeof(rac), sac, '\0');
-	pw_properties_set(impl->headers, "Apple-Challenge", sac);
+	pw_properties_setf(impl->headers, "DACP-ID",
+			"%08X%08X", sci[0], sci[1]);
 
-	pw_properties_set(impl->headers, "User-Agent", DEFAULT_USER_AGENT);
+	pw_properties_set(impl->headers, "User-Agent", DEFAULT_USER_NAME "/" PACKAGE_VERSION);
 
 	pw_rtsp_client_send(impl->rtsp, "OPTIONS", &impl->headers->dict,
 			NULL, NULL, rtsp_options_reply, impl);
@@ -1462,6 +1460,10 @@ static void connection_cleanup(struct impl *impl)
 	if (impl->timing_fd >= 0) {
 		close(impl->timing_fd);
 		impl->timing_fd = -1;
+	}
+	if (impl->feedback_timer != NULL) {
+		pw_loop_destroy_source(impl->loop, impl->feedback_timer);
+		impl->feedback_timer = NULL;
 	}
 	free(impl->auth_method);
 	impl->auth_method = NULL;
@@ -1502,24 +1504,23 @@ static const struct pw_rtsp_client_events rtsp_events = {
 	.message = rtsp_message,
 };
 
-static void stream_state_changed(void *d, enum pw_stream_state old,
-		enum pw_stream_state state, const char *error)
+static void stream_destroy(void *d)
 {
 	struct impl *impl = d;
-	switch (state) {
-	case PW_STREAM_STATE_ERROR:
-	case PW_STREAM_STATE_UNCONNECTED:
+	impl->stream = NULL;
+}
+
+static void stream_state_changed(void *data, bool started, const char *error)
+{
+	struct impl *impl = data;
+
+	if (error) {
+		pw_log_error("stream error: %s", error);
 		pw_impl_module_schedule_destroy(impl->module);
-		break;
-	case PW_STREAM_STATE_PAUSED:
-		rtsp_do_flush(impl);
-		break;
-	case PW_STREAM_STATE_STREAMING:
-		rtsp_do_record(impl);
-		break;
-	default:
-		break;
+		return;
 	}
+	if (started)
+		rtsp_do_record(impl);
 }
 
 static int rtsp_do_connect(struct impl *impl)
@@ -1547,12 +1548,12 @@ static int rtsp_do_connect(struct impl *impl)
 	return pw_rtsp_client_connect(impl->rtsp, hostname, atoi(port), impl->session_id);
 }
 
-static int rtsp_teardown_reply(void *data, int status, const struct spa_dict *headers)
+static int rtsp_teardown_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
 {
 	struct impl *impl = data;
 	const char *str;
 
-	pw_log_info("reply");
+	pw_log_info("teardown status: %d", status);
 
 	connection_cleanup(impl);
 
@@ -1565,6 +1566,8 @@ static int rtsp_teardown_reply(void *data, int status, const struct spa_dict *he
 
 static int rtsp_do_teardown(struct impl *impl)
 {
+	impl->recording = false;
+
 	if (!impl->ready)
 		return 0;
 
@@ -1587,10 +1590,13 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
 		{
 			bool mute;
 			if (spa_pod_get_bool(&prop->value, &mute) == 0) {
-				impl->mute = mute;
+				if (impl->mute != mute) {
+					impl->mute = mute;
+					rtsp_send_volume(impl);
+				}
                         }
 			spa_pod_builder_prop(&b, SPA_PROP_softMute, 0);
-			spa_pod_builder_bool(&b, impl->mute);
+			spa_pod_builder_bool(&b, false);
 			spa_pod_builder_raw_padded(&b, prop, SPA_POD_PROP_SIZE(prop));
 			break;
 		}
@@ -1608,12 +1614,11 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
 					soft_vols[i] = 1.0f;
 				}
 				volume /= n_vols;
-				volume = SPA_CLAMPF(20.0 * log10(volume), VOLUME_MIN, VOLUME_MAX);
+				volume = SPA_CLAMPF(cbrt(volume) * 30 - 30, VOLUME_MIN, VOLUME_MAX);
 				impl->volume = volume;
 
 				rtsp_send_volume(impl);
 			}
-
 			spa_pod_builder_prop(&b, SPA_PROP_softVolumes, 0);
 			spa_pod_builder_array(&b, sizeof(float), SPA_TYPE_Float,
 					n_vols, soft_vols);
@@ -1630,7 +1635,7 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
 	}
 	param = spa_pod_builder_pop(&b, &f[0]);
 
-	pw_stream_set_param(impl->stream, id, param);
+	rtp_stream_set_param(impl->stream, id, param);
 }
 
 static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *param)
@@ -1653,56 +1658,13 @@ static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *
 	}
 }
 
-static const struct pw_stream_events playback_stream_events = {
-	PW_VERSION_STREAM_EVENTS,
+static const struct rtp_stream_events stream_events = {
+	RTP_VERSION_STREAM_EVENTS,
 	.destroy = stream_destroy,
 	.state_changed = stream_state_changed,
 	.param_changed = stream_param_changed,
-	.process = playback_stream_process
+	.send_packet = stream_send_packet
 };
-
-static int create_stream(struct impl *impl)
-{
-	int res;
-	uint32_t n_params;
-	const struct spa_pod *params[1];
-	uint8_t buffer[1024];
-	struct spa_pod_builder b;
-
-	impl->stream = pw_stream_new(impl->core, "RAOP sink", impl->stream_props);
-	impl->stream_props = NULL;
-
-	if (impl->stream == NULL)
-		return -errno;
-
-	pw_stream_add_listener(impl->stream,
-			&impl->stream_listener,
-			&playback_stream_events, impl);
-
-	n_params = 0;
-	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	params[n_params++] = spa_format_audio_raw_build(&b,
-			SPA_PARAM_EnumFormat, &impl->info);
-
-	if ((res = pw_stream_connect(impl->stream,
-			PW_DIRECTION_INPUT,
-			PW_ID_ANY,
-			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_RT_PROCESS,
-			params, n_params)) < 0)
-		return res;
-
-	impl->headers = pw_properties_new(NULL, NULL);
-
-	impl->rtsp = pw_rtsp_client_new(impl->loop, NULL, 0);
-	if (impl->rtsp == NULL)
-		return -errno;
-
-	pw_rtsp_client_add_listener(impl->rtsp, &impl->rtsp_listener,
-			&rtsp_events, impl);
-
-	return 0;
-}
 
 static void core_error(void *data, uint32_t id, int seq, int res, const char *message)
 {
@@ -1735,7 +1697,7 @@ static const struct pw_proxy_events core_proxy_events = {
 static void impl_destroy(struct impl *impl)
 {
 	if (impl->stream)
-		pw_stream_destroy(impl->stream);
+		rtp_stream_destroy(impl->stream);
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
@@ -1764,97 +1726,6 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static inline uint32_t format_from_name(const char *name, size_t len)
-{
-	int i;
-	for (i = 0; spa_type_audio_format[i].name; i++) {
-		if (strncmp(name, spa_debug_type_short_name(spa_type_audio_format[i].name), len) == 0)
-			return spa_type_audio_format[i].type;
-	}
-	return SPA_AUDIO_FORMAT_UNKNOWN;
-}
-
-static uint32_t channel_from_name(const char *name)
-{
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static void parse_position(struct spa_audio_info_raw *info, const char *val, size_t len)
-{
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	info->channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    info->channels < SPA_AUDIO_MAX_CHANNELS) {
-		info->position[info->channels++] = channel_from_name(v);
-	}
-}
-
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
-{
-	const char *str;
-
-	spa_zero(*info);
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_FORMAT)) == NULL)
-		str = DEFAULT_FORMAT;
-	info->format = format_from_name(str, strlen(str));
-
-	info->rate = pw_properties_get_uint32(props, PW_KEY_AUDIO_RATE, info->rate);
-	if (info->rate == 0)
-		info->rate = DEFAULT_RATE;
-
-	info->channels = pw_properties_get_uint32(props, PW_KEY_AUDIO_CHANNELS, info->channels);
-	info->channels = SPA_MIN(info->channels, SPA_AUDIO_MAX_CHANNELS);
-	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
-		parse_position(info, str, strlen(str));
-	if (info->channels == 0)
-		parse_position(info, DEFAULT_POSITION, strlen(DEFAULT_POSITION));
-}
-
-static int calc_frame_size(struct spa_audio_info_raw *info)
-{
-	int res = info->channels;
-	switch (info->format) {
-	case SPA_AUDIO_FORMAT_U8:
-	case SPA_AUDIO_FORMAT_S8:
-	case SPA_AUDIO_FORMAT_ALAW:
-	case SPA_AUDIO_FORMAT_ULAW:
-		return res;
-	case SPA_AUDIO_FORMAT_S16:
-	case SPA_AUDIO_FORMAT_S16_OE:
-	case SPA_AUDIO_FORMAT_U16:
-		return res * 2;
-	case SPA_AUDIO_FORMAT_S24:
-	case SPA_AUDIO_FORMAT_S24_OE:
-	case SPA_AUDIO_FORMAT_U24:
-		return res * 3;
-	case SPA_AUDIO_FORMAT_S24_32:
-	case SPA_AUDIO_FORMAT_S24_32_OE:
-	case SPA_AUDIO_FORMAT_S32:
-	case SPA_AUDIO_FORMAT_S32_OE:
-	case SPA_AUDIO_FORMAT_U32:
-	case SPA_AUDIO_FORMAT_U32_OE:
-	case SPA_AUDIO_FORMAT_F32:
-	case SPA_AUDIO_FORMAT_F32_OE:
-		return res * 4;
-	case SPA_AUDIO_FORMAT_F64:
-	case SPA_AUDIO_FORMAT_F64_OE:
-		return res * 8;
-	default:
-		return 0;
-	}
-}
-
 static void copy_props(struct impl *impl, struct pw_properties *props, const char *key)
 {
 	const char *str;
@@ -1871,7 +1742,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_properties *props = NULL;
 	struct impl *impl;
 	const char *str, *name, *hostname, *ip, *port;
-	int res;
+	int res = 0;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -1919,67 +1790,15 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		goto error;
 	}
 
-	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
-		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
-
-	if (pw_properties_get(props, PW_KEY_MEDIA_CLASS) == NULL)
-		pw_properties_set(props, PW_KEY_MEDIA_CLASS, "Audio/Sink");
-
-	if (pw_properties_get(props, PW_KEY_DEVICE_ICON_NAME) == NULL)
-		pw_properties_set(props, PW_KEY_DEVICE_ICON_NAME, "audio-speakers");
-
-	if ((name = pw_properties_get(props, "raop.name")) == NULL)
-		name = "RAOP";
-
-	if ((str = strstr(name, "@"))) {
-		str++;
-		if (strlen(str) > 0)
-			name = str;
-	}
-	if ((hostname = pw_properties_get(props, "raop.hostname")) == NULL)
-		hostname = name;
-
-	if (pw_properties_get(props, PW_KEY_NODE_NAME) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_NAME, "raop_sink.%s.%s.%s",
-				hostname, ip, port);
-	if (pw_properties_get(props, PW_KEY_NODE_DESCRIPTION) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION,
-					"%s", name);
-	if (pw_properties_get(props, PW_KEY_NODE_LATENCY) == NULL)
-		pw_properties_set(props, PW_KEY_NODE_LATENCY, "352/44100");
-
-	if ((str = pw_properties_get(props, "stream.props")) != NULL)
-		pw_properties_update_string(impl->stream_props, str, strlen(str));
-
-	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
-	copy_props(impl, props, PW_KEY_AUDIO_RATE);
-	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
-	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
-	copy_props(impl, props, PW_KEY_DEVICE_ICON_NAME);
-	copy_props(impl, props, PW_KEY_NODE_NAME);
-	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
-	copy_props(impl, props, PW_KEY_NODE_GROUP);
-	copy_props(impl, props, PW_KEY_NODE_LATENCY);
-	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);
-	copy_props(impl, props, PW_KEY_MEDIA_CLASS);
-
-	parse_audio_info(impl->stream_props, &impl->info);
-
-	impl->frame_size = calc_frame_size(&impl->info);
-	if (impl->frame_size == 0) {
-		pw_log_error("unsupported audio format:%d channels:%d",
-				impl->info.format, impl->info.channels);
-		res = -EINVAL;
-		goto error;
-	}
-
 	if ((str = pw_properties_get(props, "raop.transport")) == NULL)
 		str = "udp";
-	if (spa_streq(str, "udp"))
+	if (spa_streq(str, "udp")) {
 		impl->protocol = PROTO_UDP;
-	else if (spa_streq(str, "tcp"))
+		impl->psamples = FRAMES_PER_UDP_PACKET;
+	} else if (spa_streq(str, "tcp")) {
 		impl->protocol = PROTO_TCP;
-	else {
+		impl->psamples = FRAMES_PER_TCP_PACKET;
+	} else {
 		pw_log_error( "can't handle transport %s", str);
 		res = -EINVAL;
 		goto error;
@@ -2013,9 +1832,81 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	str = pw_properties_get(props, "raop.password");
 	impl->password = str ? strdup(str) : NULL;
 
-	if ((str = pw_properties_get(props, "raop.latency.ms")) == NULL)
-		str = DEFAULT_LATENCY_MS;
-	impl->latency = SPA_MAX(atoi(str) * impl->info.rate / 1000u, RAOP_LATENCY_MIN);
+	if ((name = pw_properties_get(props, "raop.name")) == NULL)
+		name = "RAOP";
+
+	if ((str = strchr(name, '@')) != NULL) {
+		str++;
+		if (strlen(str) > 0)
+			name = str;
+	}
+	if ((hostname = pw_properties_get(props, "raop.hostname")) == NULL)
+		hostname = name;
+
+	impl->rate = RAOP_RATE;
+	impl->latency = msec_to_samples(impl, RAOP_LATENCY_MS);
+	impl->stride = RAOP_STRIDE;
+	impl->mtu = impl->stride * impl->psamples;
+	impl->sync_period = impl->rate / impl->psamples;
+
+	if (pw_properties_get(props, PW_KEY_AUDIO_FORMAT) == NULL)
+		pw_properties_setf(props, PW_KEY_AUDIO_FORMAT, "%s", RAOP_FORMAT);
+	if (pw_properties_get(props, PW_KEY_AUDIO_RATE) == NULL)
+		pw_properties_setf(props, PW_KEY_AUDIO_RATE, "%ld", impl->rate);
+	if (pw_properties_get(props, PW_KEY_DEVICE_ICON_NAME) == NULL)
+		pw_properties_set(props, PW_KEY_DEVICE_ICON_NAME, "audio-speakers");
+	if (pw_properties_get(props, PW_KEY_NODE_NAME) == NULL)
+		pw_properties_setf(props, PW_KEY_NODE_NAME, "raop_sink.%s.%s.%s",
+				hostname, ip, port);
+	if (pw_properties_get(props, PW_KEY_MEDIA_NAME) == NULL)
+		pw_properties_setf(props, PW_KEY_MEDIA_NAME, "RAOP to %s", name);
+	if (pw_properties_get(props, PW_KEY_NODE_DESCRIPTION) == NULL)
+		pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION, "%s", name);
+	if (pw_properties_get(props, PW_KEY_NODE_LATENCY) == NULL)
+		pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%d/%ld",
+				impl->psamples, impl->rate);
+	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
+		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
+	if (pw_properties_get(props, PW_KEY_MEDIA_CLASS) == NULL)
+		pw_properties_set(props, PW_KEY_MEDIA_CLASS, "Audio/Sink");
+	if (pw_properties_get(props, PW_KEY_MEDIA_FORMAT) == NULL)
+		pw_properties_setf(props, PW_KEY_MEDIA_FORMAT, "%d", SPA_AUDIO_FORMAT_S16_LE);
+	if (pw_properties_get(props, "net.mtu") == NULL)
+		pw_properties_setf(props, "net.mtu", "%d", impl->mtu);
+	if (pw_properties_get(props, "rtp.sender-ts-offset") == NULL)
+		pw_properties_setf(props, "rtp.sender-ts-offset", "%d", 0);
+	if (pw_properties_get(props, "sess.ts-direct") == NULL)
+		pw_properties_set(props, "sess.ts-direct", 0);
+	if (pw_properties_get(props, "sess.media") == NULL)
+		pw_properties_set(props, "sess.media", "raop");
+	if (pw_properties_get(props, "sess.latency.msec") == NULL)
+		pw_properties_setf(props, "sess.latency.msec", "%d", RAOP_LATENCY_MS);
+
+	if ((str = pw_properties_get(props, "stream.props")) != NULL)
+		pw_properties_update_string(impl->stream_props, str, strlen(str));
+
+	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
+	copy_props(impl, props, PW_KEY_AUDIO_RATE);
+	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
+	copy_props(impl, props, PW_KEY_DEVICE_ICON_NAME);
+	copy_props(impl, props, PW_KEY_NODE_NAME);
+	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
+	copy_props(impl, props, PW_KEY_NODE_GROUP);
+	copy_props(impl, props, PW_KEY_NODE_LATENCY);
+	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);
+	copy_props(impl, props, PW_KEY_MEDIA_CLASS);
+	copy_props(impl, props, PW_KEY_MEDIA_FORMAT);
+	copy_props(impl, props, PW_KEY_MEDIA_NAME);
+	copy_props(impl, props, "net.mtu");
+	copy_props(impl, props, "rtp.sender-ts-offset");
+	copy_props(impl, props, "sess.media");
+	copy_props(impl, props, "sess.name");
+	copy_props(impl, props, "sess.min-ptime");
+	copy_props(impl, props, "sess.max-ptime");
+	copy_props(impl, props, "sess.latency.msec");
+	copy_props(impl, props, "sess.ts-refclk");
+	copy_props(impl, props, "sess.ts-direct");
 
 	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
@@ -2040,8 +1931,23 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&impl->core_listener,
 			&core_events, impl);
 
-	if ((res = create_stream(impl)) < 0)
+	impl->stream = rtp_stream_new(impl->core,
+			PW_DIRECTION_INPUT, pw_properties_copy(impl->stream_props),
+			&stream_events, impl);
+	if (impl->stream == NULL) {
+		res = -errno;
+		pw_log_error("can't create raop stream: %m");
 		goto error;
+	}
+
+	impl->headers = pw_properties_new(NULL, NULL);
+
+	impl->rtsp = pw_rtsp_client_new(impl->loop, NULL, 0);
+	if (impl->rtsp == NULL)
+		goto error;
+
+	pw_rtsp_client_add_listener(impl->rtsp, &impl->rtsp_listener,
+			&rtsp_events, impl);
 
 	pw_impl_module_add_listener(module, &impl->module_listener, &module_events, impl);
 

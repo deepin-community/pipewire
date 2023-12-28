@@ -28,7 +28,7 @@
 #define ifr_ifindex ifr_index
 #endif
 
-/** \page page_module_rtp_sap PipeWire Module: SAP Announce and create RTP streams
+/** \page page_module_rtp_sap SAP Announce and create RTP streams
  *
  * The `rtp-sap` module announces RTP streams that match the rules with the
  * announce-stream action.
@@ -39,6 +39,10 @@
  * If no stream.rules are given, it will announce all streams with
  * sess.sap.announce = true and it will create a receiver for all announced
  * streams.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-rtp-sap`
  *
  * ## Module Options
  *
@@ -75,7 +79,7 @@
  *             {   matches = [
  *                     # any of the items in matches needs to match, if one does,
  *                     # actions are emited.
- *                     {   # all keys must match the value. ~ in value starts regex.
+ *                     {   # all keys must match the value. ! negates. ~ starts regex.
  *                         #rtp.origin = "wim 3883629975 0 IN IP4 0.0.0.0"
  *                         #rtp.payload = "127"
  *                         #rtp.fmt = "L16/48000/2"
@@ -91,7 +95,7 @@
  *                 }
  *             }
  *             {   matches = [
- *                     {   # all keys must match the value. ~ in value starts regex.
+ *                     {   # all keys must match the value. ! negates. ~ starts regex.
  *                         #rtp.origin = "wim 3883629975 0 IN IP4 0.0.0.0"
  *                         #rtp.payload = "127"
  *                         #rtp.fmt = "L16/48000/2"
@@ -756,6 +760,11 @@ static int session_load_source(struct session *session, struct pw_properties *pr
 		fprintf(f, "\"source.port\" = %s, ", str);
 	if ((str = pw_properties_get(props, "rtp.session")) != NULL)
 		fprintf(f, "\"sess.name\" = \"%s\", ", str);
+
+	/* Use an interface if explicitly specified, else use the SAP interface if that was specified */
+	if ((str = pw_properties_get(props, "local.ifname")) != NULL || (str = impl->ifname) != NULL) {
+		fprintf(f, "\"local.ifname\" = \"%s\", ", str);
+	}
 
 	if ((media = pw_properties_get(props, "sess.media")) == NULL)
 		media = "audio";
@@ -1435,6 +1444,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	uint32_t port;
 	const char *str;
 	int res = 0;
+	char addr[64];
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -1484,7 +1494,15 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 				res = ioctl(fd, SIOCGIFADDR, &req);
 				if (res < 0)
 					pw_log_warn("SIOCGIFADDR %s failed: %m", impl->ifname);
-				str = inet_ntoa(((struct sockaddr_in *)&req.ifr_addr)->sin_addr);
+				str = inet_ntop(req.ifr_addr.sa_family,
+						&((struct sockaddr_in *)&req.ifr_addr)->sin_addr,
+						addr, sizeof(addr));
+				if (str == NULL) {
+					pw_log_warn("can't parse interface ip: %m");
+					str = DEFAULT_SOURCE_IP;
+				} else {
+					pw_log_info("interface %s IP: %s", impl->ifname, str);
+				}
 				close(fd);
 			}
 		}
@@ -1531,7 +1549,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	pw_impl_module_update_properties(module, &SPA_DICT_INIT_ARRAY(module_info));
 
-	pw_log_info("Successfully loaded module-rtp-sink");
+	pw_log_info("Successfully loaded module-rtp-sap");
 
 	return 0;
 out:

@@ -687,7 +687,10 @@ static int transport_start(struct impl *this)
 
 	/* Init mSBC if needed */
 	if (this->transport->codec == HFP_AUDIO_CODEC_MSBC) {
-		sbc_init_msbc(&this->msbc, 0);
+		res = sbc_init_msbc(&this->msbc, 0);
+		if (res < 0)
+			return res;
+
 		/* Libsbc expects audio samples by default in host endianness, mSBC requires little endian */
 		this->msbc.endian = SBC_LE;
 		this->msbc_seq_initialized = false;
@@ -708,6 +711,7 @@ static int transport_start(struct impl *this)
 	return 0;
 
 fail:
+	sbc_finish(&this->msbc);
 	return res;
 }
 
@@ -798,6 +802,8 @@ static void transport_stop(struct impl *this)
 	spa_loop_invoke(this->data_loop, do_remove_transport_source, 0, NULL, 0, true, this);
 
 	spa_bt_decode_buffer_clear(&port->buffer);
+
+	sbc_finish(&this->msbc);
 }
 
 static int do_stop(struct impl *this)
@@ -1135,8 +1141,6 @@ static int port_set_format(struct impl *this, struct port *port,
 
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
 	if (port->have_format) {
-		port->info.change_mask |= SPA_PORT_CHANGE_MASK_FLAGS;
-		port->info.flags = SPA_PORT_FLAG_LIVE;
 		port->info.change_mask |= SPA_PORT_CHANGE_MASK_RATE;
 		port->info.rate = SPA_FRACTION(1, port->current_format.info.raw.rate);
 		port->params[IDX_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_READWRITE);
@@ -1601,6 +1605,7 @@ impl_init(const struct spa_handle_factory *factory,
 	port->info = SPA_PORT_INFO_INIT();
 	port->info.change_mask = SPA_PORT_CHANGE_MASK_FLAGS;
 	port->info.flags = SPA_PORT_FLAG_LIVE |
+			   SPA_PORT_FLAG_PHYSICAL |
 			   SPA_PORT_FLAG_TERMINAL;
 	port->params[IDX_EnumFormat] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
 	port->params[IDX_Meta] = SPA_PARAM_INFO(SPA_PARAM_Meta, SPA_PARAM_INFO_READ);

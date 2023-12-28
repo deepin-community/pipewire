@@ -30,7 +30,7 @@
 
 #include "module-jack-tunnel/weakjack.h"
 
-/** \page page_module_jack_tunnel PipeWire Module: JACK Tunnel
+/** \page page_module_jack_tunnel JACK Tunnel
  *
  * The jack-tunnel module provides a source or sink that tunnels all audio to
  * a JACK server.
@@ -38,6 +38,10 @@
  * This module is usually used together with \ref page_module_jackdbus_detect that will
  * automatically load the tunnel with the right parameters based on dbus
  * information.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-jack-tunnel`
  *
  * ## Module Options
  *
@@ -410,7 +414,7 @@ static void param_latency_changed(struct stream *s, const struct spa_pod *param,
 	bool update = false;
 	enum spa_direction direction = port->direction;
 
-	if (spa_latency_parse(param, &latency) < 0)
+	if (param == NULL || spa_latency_parse(param, &latency) < 0)
 		return;
 
 	if (spa_latency_info_compare(&port->latency[direction], &latency)) {

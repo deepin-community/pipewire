@@ -18,6 +18,7 @@ extern "C" {
  * \{
  */
 
+#include <spa/utils/atomic.h>
 #include <spa/utils/defs.h>
 #include <spa/utils/list.h>
 #include <spa/utils/hook.h>
@@ -53,7 +54,7 @@ struct spa_graph_link {
 
 #define spa_graph_link_signal(l)	((l)->signal((l)->signal_data))
 
-#define spa_graph_state_dec(s,c) (__atomic_sub_fetch(&(s)->pending, c, __ATOMIC_SEQ_CST) == 0)
+#define spa_graph_state_dec(s) (SPA_ATOMIC_DEC(s->pending) == 0)
 
 static inline int spa_graph_link_trigger(struct spa_graph_link *link)
 {
@@ -62,7 +63,7 @@ static inline int spa_graph_link_trigger(struct spa_graph_link *link)
 	spa_debug("link %p: state %p: pending %d/%d", link, state,
                         state->pending, state->required);
 
-	if (spa_graph_state_dec(state, 1))
+	if (spa_graph_state_dec(state))
 		spa_graph_link_signal(link);
 
         return state->status;
@@ -214,7 +215,7 @@ spa_graph_node_init(struct spa_graph_node *node, struct spa_graph_state *state)
 }
 
 
-static inline int spa_graph_node_impl_sub_process(void *data, struct spa_graph_node *node)
+static inline int spa_graph_node_impl_sub_process(void *data SPA_UNUSED, struct spa_graph_node *node)
 {
 	struct spa_graph *graph = node->subgraph;
 	spa_debug("node %p: sub process %p", node, graph);
@@ -321,7 +322,7 @@ static inline int spa_graph_node_impl_process(void *data, struct spa_graph_node 
         return state->status;
 }
 
-static inline int spa_graph_node_impl_reuse_buffer(void *data, struct spa_graph_node *node,
+static inline int spa_graph_node_impl_reuse_buffer(void *data, struct spa_graph_node *node SPA_UNUSED,
 		uint32_t port_id, uint32_t buffer_id)
 {
 	struct spa_node *n = (struct spa_node *)data;

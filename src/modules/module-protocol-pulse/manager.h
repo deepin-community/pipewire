@@ -9,11 +9,14 @@
 extern "C" {
 #endif
 
+#include <stdio.h>
+
 #include <spa/utils/defs.h>
 #include <spa/pod/pod.h>
 
 #include <pipewire/pipewire.h>
 
+struct client;
 struct pw_manager_object;
 
 struct pw_manager_events {
@@ -68,14 +71,16 @@ struct pw_manager_object {
 	struct pw_properties *props;
 	struct pw_proxy *proxy;
 	char *message_object_path;
-	int (*message_handler)(struct pw_manager *m, struct pw_manager_object *o,
-	                       const char *message, const char *params, char **response);
+	int (*message_handler)(struct client *client, struct pw_manager_object *o,
+	                       const char *message, const char *params, FILE *response);
 
-	int changed;
 	void *info;
 	struct spa_param_info *params;
 	uint32_t n_params;
 
+#define PW_MANAGER_OBJECT_FLAG_SOURCE	(1<<0)
+#define PW_MANAGER_OBJECT_FLAG_SINK	(1<<1)
+	uint64_t change_mask;	/* object specific params change mask */
 	struct spa_list param_list;
 	unsigned int creating:1;
 	unsigned int removing:1;
@@ -112,6 +117,7 @@ bool pw_manager_object_is_sink(struct pw_manager_object *o);
 bool pw_manager_object_is_source(struct pw_manager_object *o);
 bool pw_manager_object_is_monitor(struct pw_manager_object *o);
 bool pw_manager_object_is_virtual(struct pw_manager_object *o);
+bool pw_manager_object_is_network(struct pw_manager_object *o);
 bool pw_manager_object_is_source_or_monitor(struct pw_manager_object *o);
 bool pw_manager_object_is_sink_input(struct pw_manager_object *o);
 bool pw_manager_object_is_source_output(struct pw_manager_object *o);

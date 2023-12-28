@@ -27,10 +27,14 @@
 #include <pipewire/pipewire.h>
 #include <pipewire/impl.h>
 
-/** \page page_module_x11_bell PipeWire Module: X11 Bell
+/** \page page_module_x11_bell X11 Bell
  *
  * The `x11-bell` module intercept the X11 bell events and uses libcanberra to
  * play a sound.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-x11-bell`
  *
  * ## Module Options
  *
@@ -62,6 +66,10 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
+/* libcanberra is not thread safe when doing ca_context_create()
+ * and so we need a global lock */
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
 struct impl {
 	struct pw_context *context;
 	struct pw_thread_loop *thread_loop;
@@ -83,6 +91,7 @@ static int play_sample(struct impl *impl)
 	ca_context *ca;
 	int res;
 
+	pthread_mutex_lock(&lock);
 	if (impl->properties)
 		sample = pw_properties_get(impl->properties, "sample.name");
 	if (sample == NULL)
@@ -113,6 +122,7 @@ static int play_sample(struct impl *impl)
 exit_destroy:
 	ca_context_destroy(ca);
 exit:
+	pthread_mutex_unlock(&lock);
 	return res;
 }
 

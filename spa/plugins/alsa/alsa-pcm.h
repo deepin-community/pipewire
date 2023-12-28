@@ -30,6 +30,7 @@ extern "C" {
 #include <spa/param/param.h>
 #include <spa/param/latency-utils.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/tag-utils.h>
 
 #include "alsa.h"
 
@@ -82,6 +83,21 @@ struct card {
 	uint32_t rate;
 };
 
+struct rt_state {
+	struct spa_list followers;
+	struct state *driver;
+	struct spa_list driver_link;
+
+	unsigned int sources_added:1;
+	unsigned int following:1;
+};
+
+struct bound_ctl {
+	char name[256];
+	snd_ctl_elem_info_t *info;
+	snd_ctl_elem_value_t *value;
+};
+
 struct state {
 	struct spa_handle handle;
 	struct spa_node node;
@@ -89,6 +105,7 @@ struct state {
 	struct spa_log *log;
 	struct spa_system *data_system;
 	struct spa_loop *data_loop;
+	struct spa_loop *main_loop;
 
 	FILE *log_file;
 	struct spa_ratelimit rate_limit;
@@ -97,6 +114,7 @@ struct state {
 	struct card *card;
 	snd_pcm_stream_t stream;
 	snd_output_t *output;
+	char name[64];
 
 	struct spa_hook_list hooks;
 	struct spa_callbacks callbacks;
@@ -111,7 +129,9 @@ struct state {
 	struct spa_param_info params[N_NODE_PARAMS];
 	struct props props;
 
-	bool opened;
+	unsigned int opened:1;
+	unsigned int prepared:1;
+	unsigned int started:1;
 	snd_pcm_t *hndl;
 
 	bool have_format;
@@ -127,9 +147,9 @@ struct state {
 	uint32_t allowed_rates[MAX_RATES];
 	uint32_t n_allowed_rates;
 	struct channel_map default_pos;
-	unsigned int disable_mmap;
-	unsigned int disable_batch;
-	unsigned int disable_tsched;
+	unsigned int disable_mmap:1;
+	unsigned int disable_batch:1;
+	unsigned int disable_tsched:1;
 	char clock_name[64];
 	uint32_t quantum_limit;
 
@@ -141,9 +161,9 @@ struct state {
 	size_t frame_size;
 	size_t frame_scale;
 	int blocks;
-	uint32_t rate_denom;
 	uint32_t delay;
 	uint32_t read_size;
+	uint32_t max_read;
 
 	uint64_t port_info_all;
 	struct spa_port_info port_info;
@@ -153,7 +173,8 @@ struct state {
 #define PORT_Format		3
 #define PORT_Buffers		4
 #define PORT_Latency		5
-#define N_PORT_PARAMS		6
+#define PORT_Tag		6
+#define N_PORT_PARAMS		7
 	struct spa_param_info port_params[N_PORT_PARAMS];
 	enum spa_direction port_direction;
 	struct spa_io_buffers *io;
@@ -169,7 +190,6 @@ struct state {
 
 	size_t ready_offset;
 
-	bool started;
 	/* Either a single source for tsched, or a set of pollfds from ALSA */
 	struct spa_source source[MAX_POLL];
 	int timerfd;
@@ -183,7 +203,9 @@ struct state {
 	uint32_t max_delay;
 	uint32_t htimestamp_error;
 
-	uint32_t duration;
+	struct spa_fraction driver_rate;
+	uint32_t driver_duration;
+
 	unsigned int alsa_started:1;
 	unsigned int alsa_sync:1;
 	unsigned int alsa_sync_warning:1;
@@ -199,6 +221,12 @@ struct state {
 	unsigned int is_hdmi:1;
 	unsigned int multi_rate:1;
 	unsigned int htimestamp:1;
+	unsigned int is_pro:1;
+	unsigned int sources_added:1;
+	unsigned int auto_link:1;
+	unsigned int linked:1;
+	unsigned int is_batch:1;
+	unsigned int force_position:1;
 
 	uint64_t iec958_codecs;
 
@@ -217,10 +245,28 @@ struct state {
 	struct spa_latency_info latency[2];
 	struct spa_process_latency_info process_latency;
 
-	/* Rate match via an ALSA ctl */
+	struct spa_pod *tag[2];
+
+	/* for rate match and bind ctls */
 	snd_ctl_t *ctl;
+
+	/* Rate match via an ALSA ctl */
 	snd_ctl_elem_value_t *pitch_elem;
 	double last_rate;
+
+	/* ALSA ctls exposed as params */
+	unsigned int num_bind_ctls;
+	struct bound_ctl bound_ctls[16];
+	struct spa_source ctl_sources[MAX_POLL];
+	int ctl_n_fds;
+
+	struct spa_list link;
+
+	struct spa_list followers;
+	struct state *driver;
+	struct spa_list driver_link;
+
+	struct rt_state rt;
 };
 
 struct spa_pod *spa_alsa_enum_propinfo(struct state *state,
@@ -239,6 +285,7 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info);
 int spa_alsa_clear(struct state *state);
 
 int spa_alsa_open(struct state *state, const char *params);
+int spa_alsa_prepare(struct state *state);
 int spa_alsa_start(struct state *state);
 int spa_alsa_reassign_follower(struct state *state);
 int spa_alsa_pause(struct state *state);
@@ -249,6 +296,9 @@ int spa_alsa_read(struct state *state);
 int spa_alsa_skip(struct state *state);
 
 void spa_alsa_recycle_buffer(struct state *state, uint32_t buffer_id);
+
+void spa_alsa_emit_node_info(struct state *state, bool full);
+void spa_alsa_emit_port_info(struct state *state, bool full);
 
 static inline uint32_t spa_alsa_format_from_name(const char *name, size_t len)
 {
