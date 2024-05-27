@@ -402,8 +402,8 @@ gst_pipewire_src_class_init (GstPipeWireSrcClass * klass)
   gstelement_class->send_event = gst_pipewire_src_send_event;
 
   gst_element_class_set_static_metadata (gstelement_class,
-      "PipeWire source", "Source/Video",
-      "Uses PipeWire to create video", "Wim Taymans <wim.taymans@gmail.com>");
+      "PipeWire source", "Source/Audio/Video",
+      "Uses PipeWire to create audio/video", "Wim Taymans <wim.taymans@gmail.com>");
 
   gst_element_class_add_pad_template (gstelement_class,
       gst_static_pad_template_get (&gst_pipewire_src_template));
@@ -586,6 +586,9 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
         GST_BUFFER_DTS (buf) = GST_BUFFER_PTS (buf) + h->dts_offset;
     }
     GST_BUFFER_OFFSET (buf) = h->seq;
+  } else {
+    GST_BUFFER_PTS (buf) = b->time;
+    GST_BUFFER_DTS (buf) = b->time;
   }
   crop = data->crop;
   if (crop) {
@@ -768,7 +771,7 @@ start_error:
 static enum pw_stream_state
 wait_started (GstPipeWireSrc *this)
 {
-  enum pw_stream_state state;
+  enum pw_stream_state state, prev_state = PW_STREAM_STATE_UNCONNECTED;
   const char *error = NULL;
   struct timespec abstime;
 
@@ -783,10 +786,9 @@ wait_started (GstPipeWireSrc *this)
     GST_DEBUG_OBJECT (this, "waiting for started signal, state now %s",
         pw_stream_state_as_string (state));
 
-    if (state == PW_STREAM_STATE_ERROR)
-      break;
-
-    if (this->flushing) {
+    if (state == PW_STREAM_STATE_ERROR ||
+        (state == PW_STREAM_STATE_UNCONNECTED && prev_state > PW_STREAM_STATE_UNCONNECTED) ||
+        this->flushing) {
       state = PW_STREAM_STATE_ERROR;
       break;
     }
@@ -794,10 +796,16 @@ wait_started (GstPipeWireSrc *this)
     if (this->started)
       break;
 
-    if (pw_thread_loop_timed_wait_full (this->core->loop, &abstime) < 0) {
-      state = PW_STREAM_STATE_ERROR;
-      break;
+    if (this->autoconnect) {
+      if (pw_thread_loop_timed_wait_full (this->core->loop, &abstime) < 0) {
+        state = PW_STREAM_STATE_ERROR;
+        break;
+      }
+    } else {
+      pw_thread_loop_wait (this->core->loop);
     }
+
+    prev_state = state;
   }
   GST_DEBUG_OBJECT (this, "got started signal: %s",
                   pw_stream_state_as_string (state));
@@ -810,11 +818,12 @@ static gboolean
 gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
 {
   GstPipeWireSrc *pwsrc = GST_PIPEWIRE_SRC (basesrc);
-  GstCaps *thiscaps;
-  GstCaps *caps = NULL;
-  GstCaps *peercaps = NULL;
+  g_autoptr (GstCaps) thiscaps = NULL;
+  g_autoptr (GstCaps) possible_caps = NULL;
+  g_autoptr (GstCaps) negotiated_caps = NULL;
+  g_autoptr (GstCaps) peercaps = NULL;
+  g_autoptr (GPtrArray) possible = NULL;
   gboolean result = FALSE;
-  GPtrArray *possible;
   const char *error = NULL;
   struct timespec abstime;
   uint32_t target_id;
@@ -834,20 +843,33 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
   GST_DEBUG_OBJECT (basesrc, "caps of peer: %" GST_PTR_FORMAT, peercaps);
   if (peercaps) {
     /* The result is already a subset of our caps */
-    caps = peercaps;
-    gst_caps_unref (thiscaps);
+    possible_caps = g_steal_pointer (&peercaps);
   } else {
     /* no peer, work with our own caps then */
-    caps = thiscaps;
+    possible_caps = g_steal_pointer (&thiscaps);
   }
-  if (caps == NULL || gst_caps_is_empty (caps))
+  if (gst_caps_is_empty (possible_caps))
     goto no_common_caps;
 
-  GST_DEBUG_OBJECT (basesrc, "have common caps: %" GST_PTR_FORMAT, caps);
+  GST_DEBUG_OBJECT (basesrc, "have common caps: %" GST_PTR_FORMAT, possible_caps);
+
+  if (pw_stream_get_state(pwsrc->stream, NULL) == PW_STREAM_STATE_STREAMING) {
+    g_autoptr (GstCaps) current_caps = NULL;
+    g_autoptr (GstCaps) preferred_new_caps = NULL;
+
+    current_caps = gst_pad_get_current_caps (GST_BASE_SRC_PAD (pwsrc));
+    preferred_new_caps = gst_caps_copy_nth (possible_caps, 0);
+
+    if (current_caps && gst_caps_is_equal (current_caps, preferred_new_caps)) {
+      GST_DEBUG_OBJECT (pwsrc,
+                        "Stream running and new caps equal current ones. "
+                        "Skipping renegotiation.");
+      goto no_nego_needed;
+    }
+  }
 
   /* open a connection with these caps */
-  possible = gst_caps_to_format_all (caps, SPA_PARAM_EnumFormat);
-  gst_caps_unref (caps);
+  possible = gst_caps_to_format_all (possible_caps, SPA_PARAM_EnumFormat);
 
   /* first disconnect */
   pw_thread_loop_lock (pwsrc->core->loop);
@@ -861,10 +883,8 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
       if (state == PW_STREAM_STATE_UNCONNECTED)
         break;
 
-      if (state == PW_STREAM_STATE_ERROR || pwsrc->flushing) {
-        g_ptr_array_unref (possible);
+      if (state == PW_STREAM_STATE_ERROR || pwsrc->flushing)
         goto connect_error;
-      }
 
       pw_thread_loop_wait (pwsrc->core->loop);
     }
@@ -907,7 +927,6 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
                      flags,
                      (const struct spa_pod **)possible->pdata,
                      possible->len);
-  g_ptr_array_free (possible, TRUE);
 
   pw_thread_loop_get_time (pwsrc->core->loop, &abstime,
                   GST_PIPEWIRE_DEFAULT_TIMEOUT * SPA_NSEC_PER_SEC);
@@ -922,21 +941,24 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
     if (pwsrc->negotiated)
       break;
 
-    if (pw_thread_loop_timed_wait_full (pwsrc->core->loop, &abstime) < 0)
+    if (pwsrc->autoconnect) {
+      if (pw_thread_loop_timed_wait_full (pwsrc->core->loop, &abstime) < 0)
         goto connect_error;
+    } else {
+      pw_thread_loop_wait (pwsrc->core->loop);
+    }
   }
-  caps = pwsrc->caps;
-  pwsrc->caps = NULL;
+
+  negotiated_caps = g_steal_pointer (&pwsrc->caps);
   pw_thread_loop_unlock (pwsrc->core->loop);
 
-  if (caps == NULL)
+  if (negotiated_caps == NULL)
     goto no_caps;
 
   gst_pipewire_clock_reset (GST_PIPEWIRE_CLOCK (pwsrc->clock), 0);
 
-  GST_DEBUG_OBJECT (pwsrc, "set format %" GST_PTR_FORMAT, caps);
-  result = gst_base_src_set_caps (GST_BASE_SRC (pwsrc), caps);
-  gst_caps_unref (caps);
+  GST_DEBUG_OBJECT (pwsrc, "set format %" GST_PTR_FORMAT, negotiated_caps);
+  result = gst_base_src_set_caps (GST_BASE_SRC (pwsrc), negotiated_caps);
 
   result = gst_pipewire_src_stream_start (pwsrc);
 
@@ -947,8 +969,6 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
 no_nego_needed:
   {
     GST_DEBUG_OBJECT (basesrc, "no negotiation needed");
-    if (thiscaps)
-      gst_caps_unref (thiscaps);
     return TRUE;
   }
 no_caps:
@@ -959,9 +979,6 @@ no_caps:
         ("%s", error_string),
         ("This element did not produce valid caps"));
     pw_stream_set_error (pwsrc->stream, -EINVAL, "%s", error_string);
-
-    if (thiscaps)
-      gst_caps_unref (thiscaps);
     return FALSE;
   }
 no_common_caps:
@@ -972,9 +989,6 @@ no_common_caps:
         ("%s", error_string),
         ("This element does not have formats in common with the peer"));
     pw_stream_set_error (pwsrc->stream, -EPIPE, "%s", error_string);
-
-    if (caps)
-      gst_caps_unref (caps);
     return FALSE;
   }
 connect_error:

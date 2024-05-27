@@ -162,6 +162,7 @@ no_config:
 static int get_config_dir(char *path, size_t size, const char *prefix, const char *name, int *level)
 {
 	int res;
+	bool no_config;
 
 	if (prefix == NULL) {
 		prefix = name;
@@ -173,7 +174,8 @@ static int get_config_dir(char *path, size_t size, const char *prefix, const cha
 		return -ENOENT;
 	}
 
-	if (pw_check_option("no-config", "true"))
+	no_config = pw_check_option("no-config", "true");
+	if (no_config)
 		goto no_config;
 
 	if ((res = get_envconf_path(path, size, prefix, name)) != 0) {
@@ -183,9 +185,12 @@ static int get_config_dir(char *path, size_t size, const char *prefix, const cha
 	}
 
 	if (*level == 0) {
+no_config:
 		(*level)++;
-		if ((res = get_homeconf_path(path, size, prefix, name)) != 0)
+		if ((res = get_confdata_path(path, size, prefix, name)) != 0)
 			return res;
+		if (no_config)
+			return 0;
 	}
 	if (*level == 1) {
 		(*level)++;
@@ -193,9 +198,8 @@ static int get_config_dir(char *path, size_t size, const char *prefix, const cha
 			return res;
 	}
 	if (*level == 2) {
-no_config:
 		(*level)++;
-		if ((res = get_confdata_path(path, size, prefix, name)) != 0)
+		if ((res = get_homeconf_path(path, size, prefix, name)) != 0)
 			return res;
 	}
 	return 0;
@@ -547,6 +551,7 @@ static int parse_spa_libs(void *user_data, const char *location,
 	struct pw_context *context = d->context;
 	struct spa_json it[2];
 	char key[512], value[512];
+	int res;
 
 	spa_json_init(&it[0], str, len);
 	if (spa_json_enter_object(&it[0], &it[1]) < 0) {
@@ -556,8 +561,14 @@ static int parse_spa_libs(void *user_data, const char *location,
 
 	while (spa_json_get_string(&it[1], key, sizeof(key)) > 0) {
 		if (spa_json_get_string(&it[1], value, sizeof(value)) > 0) {
-			pw_context_add_spa_lib(context, key, value);
+			if ((res = pw_context_add_spa_lib(context, key, value)) < 0) {
+				pw_log_error("error adding spa-libs for '%s' in '%.*s': %s",
+					key, (int)len, str, spa_strerror(res));
+				return res;
+			}
 			d->count++;
+		} else {
+			pw_log_warn("config file error: missing spa-libs library name for '%s'", key);
 		}
 	}
 	return 0;
@@ -712,18 +723,19 @@ static int parse_modules(void *user_data, const char *location,
 					break;
 				spa_json_enter(&it[2], &it[3]);
 				have_match = find_match(&it[3], &context->properties->dict);
+			} else {
+				pw_log_warn("unknown module key '%s'", key);
 			}
 		}
 		if (!have_match)
 			continue;
 
-		if (name != NULL)
+		if (name != NULL) {
 			res = load_module(context, name, args, flags);
-
-		if (res < 0)
-			break;
-
-		d->count++;
+			if (res < 0)
+				break;
+			d->count++;
+		}
 	}
 
 	return res;
@@ -812,17 +824,19 @@ static int parse_objects(void *user_data, const char *location,
 					break;
 				spa_json_enter(&it[2], &it[3]);
 				have_match = find_match(&it[3], &context->properties->dict);
+			} else {
+				pw_log_warn("unknown object key '%s'", key);
 			}
 		}
 		if (!have_match)
 			continue;
 
-		if (factory != NULL)
+		if (factory != NULL) {
 			res = create_object(context, factory, args, flags);
-
-		if (res < 0)
-			break;
-		d->count++;
+			if (res < 0)
+				break;
+			d->count++;
+		}
 	}
 
 	return res;
@@ -920,18 +934,19 @@ static int parse_exec(void *user_data, const char *location,
 					break;
 				spa_json_enter(&it[2], &it[3]);
 				have_match = find_match(&it[3], &context->properties->dict);
+			} else {
+				pw_log_warn("unknown exec key '%s'", key);
 			}
 		}
 		if (!have_match)
 			continue;
 
-		if (path != NULL)
+		if (path != NULL) {
 			res = do_exec(context, path, args);
-
-		if (res < 0)
-			break;
-
-		d->count++;
+			if (res < 0)
+				break;
+			d->count++;
+		}
 	}
 
 	return res;
@@ -1130,11 +1145,18 @@ int pw_conf_match_rules(const char *str, size_t len, const char *location,
 				if (spa_json_enter_object(&it[2], &actions) > 0)
 					have_actions = true;
 			}
-			else if (spa_json_next(&it[2], &val) <= 0)
-                                break;
+			else {
+				pw_log_warn("unknown match key '%s'", key);
+				if (spa_json_next(&it[2], &val) <= 0)
+					break;
+			}
 		}
-		if (!have_match || !have_actions)
+		if (!have_match)
 			continue;
+		if (!have_actions) {
+			pw_log_warn("no actions for match rule '%.*s'", (int)len, str);
+			continue;
+		}
 
 		while (spa_json_get_string(&actions, key, sizeof(key)) > 0) {
 			int res, len;
@@ -1221,16 +1243,16 @@ int pw_context_parse_conf_section(struct pw_context *context,
 	int res;
 
 	if (spa_streq(section, "context.spa-libs"))
-		res = pw_context_conf_section_for_each(context, section,
+		res = pw_conf_section_for_each(&conf->dict, section,
 				parse_spa_libs, &data);
 	else if (spa_streq(section, "context.modules"))
-		res = pw_context_conf_section_for_each(context, section,
+		res = pw_conf_section_for_each(&conf->dict, section,
 				parse_modules, &data);
 	else if (spa_streq(section, "context.objects"))
-		res = pw_context_conf_section_for_each(context, section,
+		res = pw_conf_section_for_each(&conf->dict, section,
 				parse_objects, &data);
 	else if (spa_streq(section, "context.exec"))
-		res = pw_context_conf_section_for_each(context, section,
+		res = pw_conf_section_for_each(&conf->dict, section,
 				parse_exec, &data);
 	else
 		res = -EINVAL;

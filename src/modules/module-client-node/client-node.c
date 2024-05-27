@@ -53,6 +53,7 @@ struct mix {
 	struct port *port;
 	uint32_t peer_id;
 	uint32_t n_buffers;
+	uint32_t impl_mix_id;
 	struct buffer buffers[MAX_BUFFERS];
 };
 
@@ -228,24 +229,13 @@ static struct mix *create_mix(struct port *p, uint32_t mix_id)
 	mix->mix_id = mix_id;
 	mix->port = p;
 	mix->n_buffers = 0;
+	mix->impl_mix_id = SPA_ID_INVALID;
 	return mix;
 
 fail:
 	free(mix);
 	errno = -res;
 	return NULL;
-}
-
-static void free_mix(struct port *p, struct mix *mix)
-{
-	if (mix == NULL)
-		return;
-
-	/* never realloc so it's safe to call from pw_map_foreach */
-	if (mix->mix_id < pw_map_get_size(&p->mix))
-		pw_map_insert_at(&p->mix, mix->mix_id, NULL);
-
-	free(mix);
 }
 
 static void clear_data(struct impl *impl, struct spa_data *d)
@@ -293,6 +283,27 @@ static int clear_buffers(struct impl *impl, struct mix *mix)
 	}
 	mix->n_buffers = 0;
 	return 0;
+}
+
+static void free_mix(struct port *p, struct mix *mix)
+{
+	struct impl *impl = p->impl;
+
+	if (mix == NULL)
+		return;
+
+	if (mix->n_buffers) {
+		/* this shouldn't happen */
+		spa_log_warn(impl->log, "%p: mix port-id:%u freeing leaked buffers", impl, mix->mix_id - 1u);
+	}
+
+	clear_buffers(impl, mix);
+
+	/* never realloc so it's safe to call from pw_map_foreach */
+	if (mix->mix_id < pw_map_get_size(&p->mix))
+		pw_map_insert_at(&p->mix, mix->mix_id, NULL);
+
+	free(mix);
 }
 
 static void mix_clear(struct impl *impl, struct mix *mix)
@@ -681,14 +692,18 @@ static int do_port_set_io(struct impl *impl,
 			direction == SPA_DIRECTION_INPUT ? "input" : "output",
 			port_id, mix_id, data, size);
 
-	port = GET_PORT(impl, direction, port_id);
-	if (port == NULL)
-		return data == NULL ? 0 : -EINVAL;
-
-	if ((mix = find_mix(port, mix_id)) == NULL)
-		return -EINVAL;
-
 	old = pw_mempool_find_tag(impl->client_pool, tag, sizeof(tag));
+
+	port = GET_PORT(impl, direction, port_id);
+	if (port == NULL) {
+		pw_memmap_free(old);
+		return data == NULL ? 0 : -EINVAL;
+	}
+
+	if ((mix = find_mix(port, mix_id)) == NULL) {
+		pw_memmap_free(old);
+		return -EINVAL;
+	}
 
 	if (data) {
 		mm = pw_mempool_import_map(impl->client_pool,
@@ -1437,6 +1452,7 @@ static int port_init_mix(void *data, struct pw_impl_port_mix *mix)
 	*mix->io = SPA_IO_BUFFERS_INIT;
 
 	m->peer_id = mix->peer_id;
+	m->impl_mix_id = mix->id;
 
 	if (impl->resource && impl->resource->version >= 4)
 		pw_client_node_resource_port_set_mix_info(impl->resource,
@@ -1462,7 +1478,7 @@ static int port_release_mix(void *data, struct pw_impl_port_mix *mix)
 	pw_log_debug("%p: remove mix id:%d io:%p",
 			impl, mix->id, mix->io);
 
-	if ((m = find_mix(port, mix->port.port_id)) == NULL)
+	if (!pw_map_has_item(&impl->io_map, mix->id))
 		return -EINVAL;
 
 	if (impl->resource && impl->resource->version >= 4)
@@ -1471,7 +1487,13 @@ static int port_release_mix(void *data, struct pw_impl_port_mix *mix)
 					 mix->port.port_id, SPA_ID_INVALID, NULL);
 
 	pw_map_remove(&impl->io_map, mix->id);
-	free_mix(port, m);
+
+	m = find_mix(port, mix->port.port_id);
+	if (m && m->impl_mix_id == mix->id)
+		free_mix(port, m);
+	else
+		pw_log_debug("%p: already cleared mix id:%d port-id:%d",
+				impl, mix->id, mix->port.port_id);
 
 	return 0;
 }
@@ -1493,7 +1515,7 @@ impl_mix_port_enum_params(void *object, int seq,
 	if (port->direction != direction)
 		return -ENOTSUP;
 
-	return impl_node_port_enum_params(&port->impl->node, seq, direction, port->id,
+	return impl_node_port_enum_params(port->impl, seq, direction, port->id,
 			id, start, num, filter);
 }
 
@@ -1565,7 +1587,7 @@ static int
 impl_mix_port_reuse_buffer(void *object, uint32_t port_id, uint32_t buffer_id)
 {
 	struct port *p = object;
-	return impl_node_port_reuse_buffer(&p->impl->node, p->id, buffer_id);
+	return impl_node_port_reuse_buffer(p->impl, p->id, buffer_id);
 }
 
 static int impl_mix_process(void *object)

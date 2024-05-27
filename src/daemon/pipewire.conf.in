@@ -32,6 +32,7 @@ context.properties = {
     #default.clock.min-quantum   = 32
     #default.clock.max-quantum   = 2048
     #default.clock.quantum-limit = 8192
+    #default.clock.quantum-floor = 4
     #default.video.width         = 640
     #default.video.height        = 480
     #default.video.rate.num      = 25
@@ -95,7 +96,7 @@ context.modules = [
     { name = libpipewire-module-rt
         args = {
             nice.level    = -11
-            #rt.prio      = 88
+            rt.prio       = @rtprio_server@
             #rt.time.soft = -1
             #rt.time.hard = -1
             #uclamp.min = 0
@@ -172,7 +173,7 @@ context.modules = [
     # Use libcanberra to play X11 Bell
     { name = libpipewire-module-x11-bell
         args = {
-            #sink.name = "@DEFAULT_SINK@"
+            #sink.name = "\@DEFAULT_SINK\@"
             #sample.name = "bell-window-system"
             #x11.display = null
             #x11.xauthority = null
@@ -224,7 +225,7 @@ context.objects = [
     #{ factory = adapter            args = { factory.name = audiotestsrc node.name = my-test node.description = audiotestsrc } }
     #{ factory = spa-node-factory   args = { factory.name = api.vulkan.compute.source node.name = my-compute-source } }
 
-    # A default dummy driver. This handles nodes marked with the "node.always-driver"
+    # A default dummy driver. This handles nodes marked with the "node.always-process"
     # property when no other driver is currently active. JACK clients need this.
     { factory = spa-node-factory
         args = {
@@ -255,6 +256,7 @@ context.objects = [
     #        node.description = "Microphone"
     #        media.class      = "Audio/Source/Virtual"
     #        audio.position   = "FL,FR"
+    #        monitor.passthrough = true
     #    }
     #}
 

@@ -34,11 +34,12 @@ context.objects = [
             node.name       = PTP0-Driver
             node.group      = pipewire.ptp0
             # This driver should only be used for network nodes marked with group
-            priority.driver = 0
+            priority.driver = 100000
             clock.name      = "clock.system.ptp0"
             #clock.id        = tai
             clock.device    = "/dev/ptp0"
             #clock.interface = "eth0"
+            resync.ms       = 1.5
             object.export   = true
         }
     }
@@ -48,7 +49,7 @@ context.modules = [
     { name = libpipewire-module-rt
         args = {
             nice.level   = -11
-            #rt.prio      = 88
+            #rt.prio      = @rtprio_client@
             #rt.time.soft = -1
             #rt.time.hard = -1
         }
