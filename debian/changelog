@@ -1,3 +1,163 @@
+pipewire (1.1.82-1) experimental; urgency=medium
+
+  * New upstream release (1.2 release candidate 2)
+  * Install new module snapcast-discover in libpipewire-0.3-modules
+
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 27 May 2024 13:13:56 +0200
+
+pipewire (1.1.81-1) experimental; urgency=medium
+
+  * New upstream release (1.2 release candidate 1)
+  * Install new pw-container in pipewire-bin
+  * Install new module parametric-equalizer in libpipewire-0.3-modules
+  * Install org.freedesktop.pulseaudio.gschema.xml in pipewire-pulse,
+      this file is required to use module-gsettings.
+  * Mark pipewire-pulse in conflict with pulseaudio-module-gsettings,
+      both provide org.freedesktop.pulseaudio.gschema.xml.
+  * Update symbols file
+  * Drop patches included in upstream release: debian/patches/snap/*
+
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 21 May 2024 17:41:31 +0200
+
+pipewire (1.0.6-1) unstable; urgency=medium
+
+  * New upstream release
+  * Standards-Version: 4.7.0 (no changes required)
+  * Disable snap support in Debian, keep it enabled only for Ubuntu
+    (Closes: #1070348).
+    Snap support requires a kernel feature (fine grained unix mediation)
+    that is not yet enabled in Debian. So let's disable it for now,
+    to avoid building an unusable feature and annoying users with
+    warnings messages.
+  * Fix debian/watch
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 10 May 2024 10:15:23 +0200
+
+pipewire (1.0.5-1) unstable; urgency=medium
+
+  [ Dylan Aïssi ]
+  * New upstream release (Closes: #1069033, LP: #2061381)
+  * Refresh patches
+  * Drop patch included in upstream release:
+      - 64-bit-time-t-compat.patch
+
+  [ Jeremy Bícha ]
+  * Revert "Temporarily disable Snap integration on 32-bit non-x86"
+  * Revert "Temporarily disable libffado integration on 32-bit non-x86"
+
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 15 Apr 2024 21:08:58 +0200
+
+pipewire (1.0.4-3) unstable; urgency=medium
+
+  * Team upload
+
+  [ Michael Hudson-Doyle ]
+  * s/libpipewire-0.3-0/libpipewire-0.3-0t64/ in the shlibs.local files
+
+  [ Simon McVittie ]
+  * Only build Snap integration on supported architectures.
+    According to Snap documentation, only these architectures are
+    supported, so enabling the others is unlikely to be particularly
+    useful. Reducing the architecture list reduces the impact of any
+    non-portability in snapd-glib.
+  * Temporarily disable Snap integration on 32-bit non-x86.
+    snapd-glib has not yet been rebuilt for the 64-bit time_t transition.
+    This change should be reverted after snapd-glib is rebuilt.
+  * Temporarily disable libffado integration on 32-bit non-x86.
+    Same reasoning as for snapd-glib, above.
+    (Closes: #1067558)
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 24 Mar 2024 17:06:55 +0000
+
+pipewire (1.0.4-2) unstable; urgency=medium
+
+  [ Jeremy Bícha ]
+  * Use dh_installman to install manpages
+
+  [ Steve Langasek ]
+  * Add patch for 64-bit time_t compatibility (Closes: #1066839)
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 14 Mar 2024 10:12:07 +0100
+
+pipewire (1.0.4-1) unstable; urgency=medium
+
+  * New upstream release
+  * Improve description of pw's ALSA and JACK packages (Closes: #1062262)
+  * Install a README next to 9999-custom.conf explaining how to divert
+      it (Closes: #1063898)
+  * Cherry-pick more upstream patches improving snap support:
+      - fed14321: snap-policy: ensure audio works with .deb snapd
+      - 4d3658b2: snap-policy: fix memory leak
+  * Install new manpages in their respective packages
+  * Update symbols file
+  * Update metadata of snap support patches
+
+ -- Dylan Aïssi <daissi@debian.org>  Wed, 13 Mar 2024 14:31:58 +0100
+
+pipewire (1.0.3-1.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Rename libraries for 64-bit time_t transition.  Closes: #1063184
+
+ -- Benjamin Drung <bdrung@debian.org>  Fri, 01 Mar 2024 12:42:26 +0000
+
+pipewire (1.0.3-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 02 Feb 2024 16:06:47 +0100
+
+pipewire (1.0.2-1) unstable; urgency=medium
+
+  [ Dylan Aïssi ]
+  * New upstream release
+  * Drop patches included in upstream release:
+      - libcamera0.2 compatibility
+
+  [ Jeremy Bícha ]
+  * Cherry-pick patches from Sergio Costas for snap permissions support.
+    CVE-2022-4964 (LP: #1995707)
+  * Add apparmor and snapd-glib to Build-Depends for snap feature
+  * Cherry-pick a patch to fix LP: #2051504
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 01 Feb 2024 13:01:35 +0100
+
+pipewire (1.0.1-2) unstable; urgency=medium
+
+  * Switch Build-Deps from systemd to systemd-dev (Closes: #1060598)
+  * Use pkgconf instead of the transitional pkg-config
+  * Bump minimum meson to 0.61.1
+  * Drop 'dh_missing --fail-missing', default since debhelper compat 13
+  * Bump minimum libcamera to 0.2.0
+  * Cherry-pick upstream patches for libcamera0.2 compatibility
+
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 22 Jan 2024 17:24:44 +0100
+
+pipewire (1.0.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * Add lintian overrides for groff-message in manpages
+  * Update upstream branch in debian/gbp.conf
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 11 Jan 2024 14:59:54 +0100
+
+pipewire (1.0.0-3) unstable; urgency=medium
+
+  * libpipewire-0.3-modules-x11: depend on libcanberra-pulse (Closes: #1059544)
+      module-x11-bell requires the libcanberra PulseAudio backend.
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 05 Jan 2024 11:59:35 +0100
+
+pipewire (1.0.0-2) experimental; urgency=medium
+
+  * Install udev rules in /usr/lib/udev/rules.d (Closes: #1057233)
+    Thanks to Chris Hofstaedtler.
+  * Extend hurd-i386 restrictions to hurd-any
+  * Build-Depend on the fixed version of libroc-dev: remove the now
+    useless build-deps on libuv1-dev and libspeexdsp-dev.
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 21 Dec 2023 16:55:55 +0100
+
 pipewire (1.0.0-1) unstable; urgency=medium
 
   * New upstream release
