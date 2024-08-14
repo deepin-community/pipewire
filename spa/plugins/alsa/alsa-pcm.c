@@ -133,6 +133,8 @@ static int alsa_set_param(struct state *state, const char *k, const char *s)
 		state->multi_rate = spa_atob(s);
 	} else if (spa_streq(k, "api.alsa.htimestamp")) {
 		state->htimestamp = spa_atob(s);
+	} else if (spa_streq(k, "api.alsa.htimestamp.max-errors")) {
+		state->htimestamp_max_errors = atoi(s);
 	} else if (spa_streq(k, "api.alsa.auto-link")) {
 		state->auto_link = spa_atob(s);
 	} else if (spa_streq(k, "latency.internal.rate")) {
@@ -411,9 +413,17 @@ struct spa_pod *spa_alsa_enum_propinfo(struct state *state,
 			SPA_PROP_INFO_type, SPA_POD_String(state->clock_name),
 			SPA_PROP_INFO_params, SPA_POD_Bool(true));
 		break;
+	case 18:
+		param = spa_pod_builder_add_object(b,
+			SPA_TYPE_OBJECT_PropInfo, SPA_PARAM_PropInfo,
+			SPA_PROP_INFO_name, SPA_POD_String("api.alsa.htimestamp.max-errors"),
+			SPA_PROP_INFO_description, SPA_POD_String("Max errors before disabling htimestamp"),
+			SPA_PROP_INFO_type, SPA_POD_CHOICE_RANGE_Int(state->htimestamp_max_errors, 0, INT32_MAX),
+			SPA_PROP_INFO_params, SPA_POD_Bool(true));
+		break;
 	// While adding params here, update the math in default too
 	default:
-		idx -= 17;
+		idx -= 18;
 		if (idx <= state->num_bind_ctls)
 			param = enum_bind_ctl_propinfo(state, idx - 1, b);
 		else
@@ -530,6 +540,9 @@ int spa_alsa_add_prop_params(struct state *state, struct spa_pod_builder *b)
 	spa_pod_builder_string(b, "api.alsa.htimestamp");
 	spa_pod_builder_bool(b, state->htimestamp);
 
+	spa_pod_builder_string(b, "api.alsa.htimestamp.max-errors");
+	spa_pod_builder_int(b, state->htimestamp_max_errors);
+
 	spa_pod_builder_string(b, "latency.internal.rate");
 	spa_pod_builder_int(b, state->process_latency.rate);
 
@@ -629,45 +642,85 @@ static void fill_device_name(struct state *state, const char *params, char devic
 
 static void bind_ctl_event(struct spa_source *source)
 {
-	// We don't know if a bound element changed or not, so let's find out
 	struct state *state = source->data;
+	snd_ctl_event_t *ev;
+	snd_ctl_elem_id_t *id, *bound_id;
 	snd_ctl_elem_value_t *old_value;
-	bool changed = false;
+	unsigned short revents;
+	int err;
 
+	// Do the same demangling of revents we do for PCM pollfds
+	for (int i = 0; i < state->ctl_n_fds; i++) {
+		state->ctl_pfds[i].revents = state->ctl_sources[i].rmask;
+		state->ctl_sources[i].rmask = 0;
+	}
+
+	err = snd_ctl_poll_descriptors_revents(state->ctl, state->ctl_pfds, state->ctl_n_fds, &revents);
+	if (SPA_UNLIKELY(err < 0)) {
+		spa_log_warn(state->log, "Could not read ctl revents: %s", snd_strerror(err));
+		return;
+	}
+
+	if (!revents) {
+		spa_log_trace(state->log, "Got a bind ctl wakeup but no actual event");
+		return;
+	}
+
+	snd_ctl_event_alloca(&ev);
+	snd_ctl_elem_id_alloca(&id);
+	snd_ctl_elem_id_alloca(&bound_id);
 	snd_ctl_elem_value_alloca(&old_value);
 
-	for (unsigned int i = 0; i < state->num_bind_ctls; i++) {
-		int err;
+	while ((err = snd_ctl_read(state->ctl, ev) > 0)) {
+		bool changed = false;
 
-		snd_ctl_elem_value_copy(old_value, state->bound_ctls[i].value);
-
-		err = snd_ctl_elem_read(state->ctl, state->bound_ctls[i].value);
-		if (err < 0) {
-			spa_log_warn(state->log, "Could not read ctl '%s': %s",
-					state->bound_ctls[i].name, snd_strerror(err));
+		if (snd_ctl_event_get_type(ev) != SND_CTL_EVENT_ELEM)
 			continue;
+
+		snd_ctl_event_elem_get_id(ev, id);
+
+		for (unsigned int i = 0; i < state->num_bind_ctls; i++) {
+			int err;
+
+			// Check if we have the right element
+			snd_ctl_elem_value_get_id(state->bound_ctls[i].value, bound_id);
+			if (snd_ctl_elem_id_compare_set(id, bound_id) ||
+					snd_ctl_elem_id_compare_numid(id, bound_id)) {
+				continue;
+			}
+
+			snd_ctl_elem_value_copy(old_value, state->bound_ctls[i].value);
+
+			err = snd_ctl_elem_read(state->ctl, state->bound_ctls[i].value);
+			if (err < 0) {
+				spa_log_warn(state->log, "Could not read ctl '%s': %s",
+						state->bound_ctls[i].name, snd_strerror(err));
+				continue;
+			}
+
+			if (snd_ctl_elem_value_compare(old_value, state->bound_ctls[i].value) != 0) {
+				// We don't need to check all the ctls, if one changed,
+				// we'll emit a notification and they'll be read when
+				// the props are read
+				spa_log_debug(state->log, "bound ctl '%s' has changed", state->bound_ctls[i].name);
+				changed = true;
+				break;
+			}
 		}
 
-		if (snd_ctl_elem_value_compare(old_value, state->bound_ctls[i].value) != 0) {
-			// We don't need to check all the ctls, if one changed,
-			// we'll emit a notification and they'll be read when
-			// the props are read
-			spa_log_debug(state->log, "bound ctl '%s' has changed", state->bound_ctls[i].name);
-			changed = true;
-			break;
+		if (changed) {
+			state->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
+			state->params[NODE_Props].user++;
+			spa_alsa_emit_node_info(state, false);
 		}
 	}
 
-	if (changed) {
-		state->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
-		state->params[NODE_Props].user++;
-		spa_alsa_emit_node_info(state, false);
-	}
+	if (err < 0 && err != -EAGAIN)
+		spa_log_warn(state->log, "Could not read ctl: %s", snd_strerror(err));
 }
 
 static void bind_ctls_for_params(struct state *state)
 {
-	struct pollfd pfds[16];
 	int err;
 
 	if (state->num_bind_ctls == 0)
@@ -693,7 +746,7 @@ static void bind_ctls_for_params(struct state *state)
 		state->ctl_n_fds = SPA_N_ELEMENTS(state->ctl_sources);
 	}
 
-	if ((err = snd_ctl_poll_descriptors(state->ctl, pfds, state->ctl_n_fds)) < 0) {
+	if ((err = snd_ctl_poll_descriptors(state->ctl, state->ctl_pfds, state->ctl_n_fds)) < 0) {
 		spa_log_warn(state->log, "Could not get poll descriptors: %s", snd_strerror(err));
 		return;
 	}
@@ -703,7 +756,7 @@ static void bind_ctls_for_params(struct state *state)
 	for (int i = 0; i < state->ctl_n_fds; i++) {
 		state->ctl_sources[i].func = bind_ctl_event;
 		state->ctl_sources[i].data = state;
-		state->ctl_sources[i].fd = pfds[i].fd;
+		state->ctl_sources[i].fd = state->ctl_pfds[i].fd;
 		state->ctl_sources[i].mask = SPA_IO_IN;
 		state->ctl_sources[i].rmask = 0;
 		spa_loop_add_source(state->main_loop, &state->ctl_sources[i]);
@@ -753,6 +806,7 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
 
 	state->multi_rate = true;
 	state->htimestamp = false;
+	state->htimestamp_max_errors = MAX_HTIMESTAMP_ERROR;
 	for (i = 0; info && i < info->n_items; i++) {
 		const char *k = info->items[i].key;
 		const char *s = info->items[i].value;
@@ -776,7 +830,8 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
 
 			while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
 					i < SPA_N_ELEMENTS(state->bound_ctls)) {
-				strncpy(state->bound_ctls[i].name, v, sizeof(state->bound_ctls[i].name));
+				snprintf(state->bound_ctls[i].name,
+						sizeof(state->bound_ctls[i].name), "%s", v);
 				i++;
 			}
 			state->num_bind_ctls = i;
@@ -902,8 +957,9 @@ static int probe_pitch_ctl(struct state *state, const char* device_name)
 		if (opened) {
 			snd_ctl_close(state->ctl);
 			state->ctl = NULL;
-			goto error;
 		}
+
+		goto error;
 	}
 
 	snd_ctl_elem_value_set_integer(state->pitch_elem, 0, 1000000);
@@ -1815,7 +1871,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 			state->have_format, state->started);
 
 	state->use_mmap = !state->disable_mmap;
-	state->force_position = false;
+	state->force_rate = false;
 
 	switch (fmt->media_subtype) {
 	case SPA_MEDIA_SUBTYPE_raw:
@@ -1878,7 +1934,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 				IEC958_AES0_CON_EMPHASIS_NONE | IEC958_AES0_NONAUDIO,
 				IEC958_AES1_CON_ORIGINAL | IEC958_AES1_CON_PCM_CODER,
 				0, aes3);
-		state->force_position = true;
+		state->force_rate = true;
 		break;
 	}
 	case SPA_MEDIA_SUBTYPE_dsd:
@@ -2082,7 +2138,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	} else {
 		CHECK(snd_pcm_hw_params_get_buffer_size_max(params, &state->buffer_frames), "get_buffer_size_max");
 
-		state->buffer_frames = SPA_MIN(state->buffer_frames, state->quantum_limit * 4)* state->frame_scale;
+		state->buffer_frames = SPA_MIN(state->buffer_frames, state->quantum_limit * 4 * state->frame_scale);
 
 		CHECK(snd_pcm_hw_params_set_buffer_size_min(hndl, params, &state->buffer_frames), "set_buffer_size_min");
 		CHECK(snd_pcm_hw_params_set_buffer_size_near(hndl, params, &state->buffer_frames), "set_buffer_size_near");
@@ -2179,8 +2235,6 @@ static int set_swparams(struct state *state)
 
 	/* start the transfer */
 	CHECK(snd_pcm_sw_params_set_start_threshold(hndl, params, LONG_MAX), "set_start_threshold");
-
-	CHECK(snd_pcm_sw_params_set_period_event(hndl, params, state->disable_tsched), "set_period_event");
 
 	if (state->disable_tsched) {
 		snd_pcm_uframes_t avail_min;
@@ -2483,8 +2537,8 @@ static int get_avail(struct state *state, uint64_t current_time, snd_pcm_uframes
 			if (SPA_ABS(diff) < state->threshold * 3) {
 				*delay += SPA_CLAMP(diff, -((int64_t)state->threshold), (int64_t)state->threshold);
 				state->htimestamp_error = 0;
-			} else {
-				if (++state->htimestamp_error > MAX_HTIMESTAMP_ERROR) {
+			} else if (state->htimestamp_max_errors) {
+				if (++state->htimestamp_error > state->htimestamp_max_errors) {
 					spa_log_error(state->log, "%s: wrong htimestamps from driver, disabling",
 						state->name);
 					state->htimestamp_error = 0;
@@ -2531,15 +2585,6 @@ static int get_status(struct state *state, uint64_t current_time, snd_pcm_uframe
 	return 0;
 }
 
-
-static uint64_t get_time_ns(struct state *state)
-{
-	struct timespec now;
-	if (spa_system_clock_gettime(state->data_system, CLOCK_MONOTONIC, &now) < 0)
-		return 0;
-	return SPA_TIMESPEC_TO_NSEC(&now);
-}
-
 static int update_time(struct state *state, uint64_t current_time, snd_pcm_sframes_t delay,
 		snd_pcm_sframes_t target, bool follower)
 {
@@ -2547,15 +2592,8 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
 	int32_t diff;
 
 	if (state->disable_tsched && !follower) {
-		uint64_t now = get_time_ns(state);
-
-		if (SPA_UNLIKELY(state->dll.bw == 0.0)) {
-			current_time = now;
-			err = 0.0;
-		} else {
-			err = (int64_t)(now - current_time);
-			err = err / 1e9 * state->rate;
-		}
+		err = (int64_t)(current_time - state->next_time);
+		err = err / 1e9 * state->rate;
 	} else {
 		if (state->stream == SND_PCM_STREAM_PLAYBACK)
 			err = delay - target;
@@ -2680,15 +2718,19 @@ static inline int check_position_config(struct state *state)
 	if (SPA_UNLIKELY((pos = state->position) == NULL))
 		return 0;
 
-	if (state->force_position ||
-	    (state->disable_tsched && state->started && !state->following)) {
+	if (state->disable_tsched && state->started && !state->following) {
 		target_duration = state->period_frames;
 		target_rate = SPA_FRACTION(1, state->rate);
 		pos->clock.target_duration = target_duration;
 		pos->clock.target_rate = target_rate;
 	} else {
 		target_duration = pos->clock.target_duration;
-		target_rate = pos->clock.target_rate;
+		if (state->force_rate && !state->following) {
+			target_rate = SPA_FRACTION(1, state->rate);
+			pos->clock.target_rate = target_rate;
+		} else {
+			target_rate = pos->clock.target_rate;
+		}
 	}
 	if (target_duration == 0 || target_rate.denom == 0)
 		return -EIO;
@@ -3182,54 +3224,18 @@ static int capture_ready(struct state *state)
 	return 0;
 }
 
-static void alsa_wakeup_event(struct spa_source *source)
+static uint64_t get_time_ns(struct state *state)
 {
-	struct state *state = source->data, *follower;
-	uint64_t expire, current_time;
-	int res, suppressed;
+	struct timespec now;
+	if (spa_system_clock_gettime(state->data_system, CLOCK_MONOTONIC, &now) < 0)
+		return 0;
+	return SPA_TIMESPEC_TO_NSEC(&now);
+}
 
-	if (SPA_UNLIKELY(state->disable_tsched)) {
-		/* ALSA poll fds need to be "demangled" to know whether it's a real wakeup */
-		int err;
-		unsigned short revents;
-
-		for (int i = 0; i < state->n_fds; i++) {
-			state->pfds[i].revents = state->source[i].rmask;
-			/* Reset so that we only handle all our sources' events once */
-			state->source[i].rmask = 0;
-		}
-
-		if (SPA_UNLIKELY(err = snd_pcm_poll_descriptors_revents(state->hndl,
-						state->pfds, state->n_fds, &revents))) {
-			spa_log_error(state->log, "Could not look up revents: %s",
-					snd_strerror(err));
-			return;
-		}
-
-		if (!revents) {
-			spa_log_trace_fp(state->log, "Woken up with no work to do");
-			return;
-		}
-		if (revents & POLLERR) {
-			spa_log_trace_fp(state->log, "poll error");
-			if ((res = alsa_recover(state)) < 0)
-				return;
-		}
-	} else {
-		if (SPA_LIKELY(state->started)) {
-			if (SPA_UNLIKELY((res = spa_system_timerfd_read(state->data_system,
-						state->timerfd, &expire)) < 0)) {
-			/* we can get here when the timer is changed since the last
-				 * timerfd wakeup, for example by do_reassign_follower() executed
-				 * in the same epoll wakeup cycle */
-				if (res != -EAGAIN)
-					spa_log_warn(state->log, "%p: error reading timerfd: %s",
-							state, spa_strerror(res));
-				return;
-			}
-		}
-	}
-	current_time = state->next_time;
+static inline int alsa_do_wakeup_work(struct state *state, uint64_t current_time)
+{
+	struct state *follower;
+	int res;
 
 	/* first do all the sync */
 	if (state->stream == SND_PCM_STREAM_CAPTURE)
@@ -3238,7 +3244,7 @@ static void alsa_wakeup_event(struct spa_source *source)
 		res = alsa_write_sync(state, current_time);
 	/* we can get -EAGAIN when we need to wait some more */
 	if (SPA_UNLIKELY(res == -EAGAIN))
-		goto done;
+		return res;
 
 	spa_list_for_each(follower, &state->rt.followers, rt.driver_link) {
 		if (follower == state)
@@ -3261,21 +3267,78 @@ static void alsa_wakeup_event(struct spa_source *source)
 	else
 		capture_ready(state);
 
-done:
-	if (!state->disable_tsched) {
-		if (state->next_time > current_time + SPA_NSEC_PER_SEC ||
-		    current_time > state->next_time + SPA_NSEC_PER_SEC) {
-			if ((suppressed = spa_ratelimit_test(&state->rate_limit, current_time)) >= 0) {
-				spa_log_error(state->log, "%s: impossible timeout %"
-					PRIu64" %"PRIu64" %"PRIi64" %d %"PRIi64" (%d suppressed)",
-					state->name, current_time, state->next_time,
-					state->next_time - current_time, state->threshold,
-					state->sample_count, suppressed);
-			}
-			state->next_time = current_time + state->threshold * 1e9 / state->rate;
-		}
-		set_timeout(state, state->next_time);
+	return 0;
+}
+
+static void alsa_irq_wakeup_event(struct spa_source *source)
+{
+	struct state *state = source->data;
+	uint64_t current_time;
+	int res, err;
+	unsigned short revents;
+
+	current_time = get_time_ns(state);
+
+	for (int i = 0; i < state->n_fds; i++) {
+		state->pfds[i].revents = state->source[i].rmask;
+		/* Reset so that we only handle all our sources' events once */
+		state->source[i].rmask = 0;
 	}
+
+	/* ALSA poll fds need to be "demangled" to know whether it's a real wakeup */
+	if (SPA_UNLIKELY(err = snd_pcm_poll_descriptors_revents(state->hndl,
+					state->pfds, state->n_fds, &revents))) {
+		spa_log_error(state->log, "Could not look up revents: %s",
+				snd_strerror(err));
+		return;
+	}
+
+	if (!revents) {
+		spa_log_trace_fp(state->log, "Woken up with no work to do");
+		return;
+	}
+	if (revents & POLLERR) {
+		spa_log_trace_fp(state->log, "poll error");
+		if ((res = alsa_recover(state)) < 0)
+			return;
+	}
+	alsa_do_wakeup_work(state, current_time);
+}
+
+static void alsa_timer_wakeup_event(struct spa_source *source)
+{
+	struct state *state = source->data;
+	uint64_t expire, current_time;
+	int res, suppressed;
+
+	if (SPA_LIKELY(state->started)) {
+		if (SPA_UNLIKELY((res = spa_system_timerfd_read(state->data_system,
+					state->timerfd, &expire)) < 0)) {
+		/* we can get here when the timer is changed since the last
+			 * timerfd wakeup, for example by do_reassign_follower() executed
+			 * in the same epoll wakeup cycle */
+			if (res != -EAGAIN)
+				spa_log_warn(state->log, "%p: error reading timerfd: %s",
+						state, spa_strerror(res));
+			return;
+		}
+	}
+	current_time = state->next_time;
+
+	alsa_do_wakeup_work(state, current_time);
+
+	if (state->next_time > current_time + SPA_NSEC_PER_SEC ||
+	    current_time > state->next_time + SPA_NSEC_PER_SEC) {
+		if ((suppressed = spa_ratelimit_test(&state->rate_limit, current_time)) >= 0) {
+			spa_log_error(state->log, "%s: impossible timeout %"
+				PRIu64" %"PRIu64" %"PRIi64" %d %"PRIi64" (%d suppressed)",
+				state->name, current_time, state->next_time,
+				state->next_time - current_time, state->threshold,
+				state->sample_count, suppressed);
+		}
+		state->next_time = current_time + state->threshold * 1e9 / state->rate;
+	}
+	set_timeout(state, state->next_time);
 }
 
 static void remove_sources(struct state *state)
@@ -3385,7 +3448,7 @@ int spa_alsa_start(struct state *state)
 
 	if (!state->disable_tsched) {
 		/* Timer-based scheduling */
-		state->source[0].func = alsa_wakeup_event;
+		state->source[0].func = alsa_timer_wakeup_event;
 		state->source[0].data = state;
 		state->source[0].fd = state->timerfd;
 		state->source[0].mask = SPA_IO_IN;
@@ -3414,7 +3477,7 @@ int spa_alsa_start(struct state *state)
 		/* We only add the source to the data loop if we're driving.
 		 * This is done in setup_sources() */
 		for (int i = 0; i < state->n_fds; i++) {
-			state->source[i].func = alsa_wakeup_event;
+			state->source[i].func = alsa_irq_wakeup_event;
 			state->source[i].data = state;
 			state->source[i].fd = state->pfds[i].fd;
 			state->source[i].mask = state->pfds[i].events;
@@ -3482,8 +3545,8 @@ int spa_alsa_reassign_follower(struct state *state)
 	if (following != state->following) {
 		spa_log_debug(state->log, "%p: reassign follower %d->%d", state, state->following, following);
 		state->following = following;
-		setup_matching(state);
 	}
+	setup_matching(state);
 	if (state->started)
 		spa_loop_invoke(state->data_loop, do_state_sync, 0, NULL, 0, true, state);
 
@@ -3540,7 +3603,8 @@ void spa_alsa_emit_node_info(struct state *state, bool full)
 				state->stream == SND_PCM_STREAM_PLAYBACK ? "Audio/Sink" : "Audio/Source");
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_DRIVER, "true");
 		if (state->have_format) {
-			snprintf(latency, sizeof(latency), "%lu/%d", state->buffer_frames / 2, state->rate);
+			snprintf(latency, sizeof(latency), "%lu/%d",
+					state->buffer_frames / (2 * state->frame_scale), state->rate);
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_MAX_LATENCY, latency);
 			snprintf(period, sizeof(period), "%lu", state->period_frames);
 			items[n_items++] = SPA_DICT_ITEM_INIT("api.alsa.period-size", period);

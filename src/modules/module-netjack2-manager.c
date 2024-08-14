@@ -37,6 +37,10 @@
 
 #include "module-netjack2/peer.c"
 
+#ifdef __FreeBSD__
+#define ifr_ifindex ifr_index
+#endif
+
 #ifndef IPTOS_DSCP
 #define IPTOS_DSCP_MASK 0xfc
 #define IPTOS_DSCP(x) ((x) & IPTOS_DSCP_MASK)
@@ -434,7 +438,7 @@ on_setup_io(void *data, int fd, uint32_t mask)
 		if (len < (int)sizeof(params))
 			goto short_packet;
 
-		if (strcmp(params.type, "params") != 0)
+		if (strncmp(params.type, "params", sizeof(params.type)) != 0)
 			goto wrong_type;
 
 		switch(ntohl(params.packet_id)) {
@@ -1072,7 +1076,7 @@ on_socket_io(void *data, int fd, uint32_t mask)
 		if (len < (int)sizeof(params))
 			goto short_packet;
 
-		if (strcmp(params.type, "params") != 0)
+		if (strncmp(params.type, "params", sizeof(params.type)) != 0)
 			goto wrong_type;
 
 		switch(ntohl(params.packet_id)) {

@@ -1,3 +1,10 @@
+pipewire (1.0.7-0deepin1) unstable; urgency=medium
+
+  * New upstream version.
+  * Commit at 0f08f54ef3b1d3813bc61965742c241bb816f35f.
+
+ -- xiangzelong <xiangzelong@deepin.org>  Wed, 14 Aug 2024 09:59:33 +0800
+
 pipewire (1.0.0-1) unstable; urgency=medium
 
   * New upstream release

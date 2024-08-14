@@ -1231,6 +1231,7 @@ static int metadata_property(void *data,
 		e->changed++;
 	}
 	o->changed++;
+	core_sync(o->data);
 	return 0;
 }
 
@@ -1329,6 +1330,7 @@ static void registry_event_global(void *data, uint32_t id,
 	spa_list_init(&o->param_list);
 	spa_list_init(&o->pending_list);
 	spa_list_init(&o->data_list);
+	spa_list_append(&d->object_list, &o->link);
 
 	o->class = find_class(type, version);
 	if (o->class != NULL) {
@@ -1350,15 +1352,13 @@ static void registry_event_global(void *data, uint32_t id,
 	} else {
 		o->changed++;
 	}
-	spa_list_append(&d->object_list, &o->link);
 
 	core_sync(d);
 	return;
 
 bind_failed:
 	pw_log_error("can't bind object for %u %s/%d: %m", id, type, version);
-	pw_properties_free(o->props);
-	free(o);
+	object_destroy(o);
 	return;
 }
 
@@ -1396,20 +1396,20 @@ static void registry_event_global_remove(void *data, uint32_t id)
 	if ((o = find_object(d, id)) == NULL)
 		return;
 
-	d->state = STATE_FIRST;
-	if (d->pattern != NULL && !object_matches(o, d->pattern))
-		return;
-	if (d->state == STATE_FIRST)
-		put_begin(d, NULL, "[", 0);
-	put_begin(d, NULL, "{", 0);
-	put_int(d, "id", o->id);
-	if (o->class && o->class->dump)
-		put_value(d, "info", NULL);
-	else if (o->props)
-		put_value(d, "props", NULL);
-	put_end(d, "}", 0);
-	if (d->state != STATE_FIRST)
-		put_end(d, "]\n", 0);
+	if (!d->pattern || object_matches(o, d->pattern)) {
+		d->state = STATE_FIRST;
+		if (d->state == STATE_FIRST)
+			put_begin(d, NULL, "[", 0);
+		put_begin(d, NULL, "{", 0);
+		put_int(d, "id", o->id);
+		if (o->class && o->class->dump)
+			put_value(d, "info", NULL);
+		else if (o->props)
+			put_value(d, "props", NULL);
+		put_end(d, "}", 0);
+		if (d->state != STATE_FIRST)
+			put_end(d, "]\n", 0);
+	}
 
 	object_destroy(o);
 }
@@ -1541,7 +1541,7 @@ int main(int argc, char *argv[])
 	pw_init(&argc, &argv);
 
 	data.out = stdout;
-	if (isatty(fileno(data.out)) && getenv("NO_COLOR") == NULL)
+	if (getenv("NO_COLOR") == NULL && isatty(fileno(data.out)))
 		colors = true;
 	setlinebuf(data.out);
 

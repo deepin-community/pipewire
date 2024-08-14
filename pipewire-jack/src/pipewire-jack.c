@@ -45,7 +45,7 @@
  * with mlockall() on many systems */
 #define THREAD_STACK 524288
 
-#define DEFAULT_RT_MAX	88
+#define DEFAULT_RT_MAX	RTPRIO_CLIENT
 
 #define JACK_CLIENT_NAME_SIZE		256
 #define JACK_PORT_NAME_SIZE		256
@@ -414,6 +414,9 @@ struct client {
 		struct spa_io_position *position;
 		struct pw_node_activation *driver_activation;
 		struct spa_list target_links;
+		unsigned int prepared:1;
+		unsigned int first:1;
+		unsigned int thread_entered:1;
 	} rt;
 
 	pthread_mutex_t rt_lock;
@@ -423,8 +426,6 @@ struct client {
 	unsigned int started:1;
 	unsigned int active:1;
 	unsigned int destroyed:1;
-	unsigned int first:1;
-	unsigned int thread_entered:1;
 	unsigned int has_transport:1;
 	unsigned int allow_mlock:1;
 	unsigned int warn_mlock:1;
@@ -566,7 +567,15 @@ do_mix_set_io(struct spa_loop *loop, bool async, uint32_t seq,
 		const void *data, size_t size, void *user_data)
 {
 	const struct io_info *info = data;
+	struct port *port = info->mix->port;
 	info->mix->io = info->data;
+	if (info->mix->io) {
+		if (port->n_mix++ == 0 && port->global_mix != NULL)
+			port->global_mix->io = &port->io;
+	} else {
+		if (--port->n_mix == 0 && port->global_mix != NULL)
+			port->global_mix->io = NULL;
+	}
 	return 0;
 }
 
@@ -587,10 +596,11 @@ static void init_mix(struct mix *mix, uint32_t mix_id, struct port *port, uint32
 	mix->io = NULL;
 	mix->n_buffers = 0;
 	spa_list_init(&mix->queue);
-	if (mix_id == SPA_ID_INVALID)
+	if (mix_id == SPA_ID_INVALID) {
 		port->global_mix = mix;
-	else if (port->n_mix++ == 0 && port->global_mix != NULL)
-		mix_set_io(port->global_mix, &port->io);
+		if (port->n_mix > 0)
+			mix_set_io(port->global_mix, &port->io);
+	}
 }
 static struct mix *find_mix_peer(struct client *c, uint32_t peer_id)
 {
@@ -677,8 +687,6 @@ static void free_mix(struct client *c, struct mix *mix)
 	spa_list_remove(&mix->port_link);
 	if (mix->id == SPA_ID_INVALID)
 		port->global_mix = NULL;
-	else if (--port->n_mix == 0 && port->global_mix != NULL)
-		mix_set_io(port->global_mix, NULL);
 	spa_list_remove(&mix->link);
 	spa_list_append(&c->free_mix, &mix->link);
 }
@@ -1210,6 +1218,11 @@ static void on_error(void *data, uint32_t id, int seq, int res, const char *mess
 			id, seq, res, spa_strerror(res), message);
 
 	if (id == PW_ID_CORE) {
+		/* This happens when we did something on a proxy that
+		 * was destroyed on the server already */
+		if (res == -ENOENT)
+			return;
+
 		client->last_res = res;
 		if (res == -EPIPE && !client->destroyed) {
 			queue_notify(client, NOTIFY_TYPE_SHUTDOWN,
@@ -1503,7 +1516,7 @@ static inline void *get_buffer_output(struct port *p, uint32_t frames, uint32_t 
 		}
 		d = &b->datas[0];
 		d->chunk->offset = 0;
-		d->chunk->size = frames * sizeof(float);
+		d->chunk->size = c->buffer_frames * sizeof(float);
 		d->chunk->stride = stride;
 
 		io->buffer_id = b->id;
@@ -1787,10 +1800,10 @@ static inline uint32_t cycle_run(struct client *c)
 	activation->status = PW_NODE_ACTIVATION_AWAKE;
 	activation->awake_time = get_time_ns();
 
-	if (SPA_UNLIKELY(c->first)) {
+	if (SPA_UNLIKELY(c->rt.first)) {
 		if (c->thread_init_callback)
 			c->thread_init_callback(c->thread_init_arg);
-		c->first = false;
+		c->rt.first = false;
 	}
 
 	if (SPA_UNLIKELY(pos == NULL)) {
@@ -1913,8 +1926,8 @@ on_rtsocket_condition(void *data, int fd, uint32_t mask)
 		return;
 	}
 	if (SPA_UNLIKELY(c->thread_callback)) {
-		if (!c->thread_entered) {
-			c->thread_entered = true;
+		if (!c->rt.thread_entered) {
+			c->rt.thread_entered = true;
 			c->thread_callback(c->thread_arg);
 		}
 	} else if (SPA_LIKELY(mask & SPA_IO_IN)) {
@@ -2052,7 +2065,7 @@ do_update_driver_activation(struct spa_loop *loop,
 	c->rt.position = c->position;
 	c->rt.driver_activation = c->driver_activation;
 	if (c->position) {
-		pw_log_info("%p: driver:%d clock:%s", c,
+		pw_log_debug("%p: driver:%d clock:%s", c,
 				c->driver_id, c->position->clock.name);
 		check_sample_rate(c, c->position);
 		check_buffer_frames(c, c->position);
@@ -2094,6 +2107,37 @@ static int update_driver_activation(struct client *c)
 	return 0;
 }
 
+static int
+do_memmap_free(struct spa_loop *loop,
+                bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct client *c = user_data;
+	struct pw_memmap *mm = *((struct pw_memmap **)data);
+	pw_log_trace("memmap %p free", mm);
+	pw_memmap_free(mm);
+	pw_core_set_paused(c->core, false);
+	return 0;
+}
+
+static int
+do_queue_memmap_free(struct spa_loop *loop,
+                bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct client *c = user_data;
+	pw_loop_invoke(c->context.l, do_memmap_free, 0, data, size, false, c);
+	return 0;
+}
+
+static void queue_memmap_free(struct client *c, struct pw_memmap *mem)
+{
+	if (mem != NULL) {
+		mem->tag[0] = SPA_ID_INVALID;
+		pw_core_set_paused(c->core, true);
+		pw_data_loop_invoke(c->loop,
+			do_queue_memmap_free, SPA_ID_INVALID, &mem, sizeof(&mem), false, c);
+	}
+}
+
 static int client_node_set_io(void *data,
 			uint32_t id,
 			uint32_t mem_id,
@@ -2126,6 +2170,8 @@ static int client_node_set_io(void *data,
 		c->position = ptr;
 		c->driver_id = ptr ? c->position->clock.id : SPA_ID_INVALID;
 		update_driver_activation(c);
+		queue_memmap_free(c, old);
+		old = NULL;
 		break;
 	default:
 		break;
@@ -2140,6 +2186,39 @@ static int client_node_event(void *data, const struct spa_event *event)
 	return -ENOTSUP;
 }
 
+static int do_prepare_client(struct spa_loop *loop, bool async, uint32_t seq,
+		const void *data, size_t size, void *user_data)
+{
+	struct client *c = user_data;
+
+	if (c->rt.prepared)
+		return 0;
+
+	pw_loop_update_io(c->l,
+			  c->socket_source,
+			  SPA_IO_IN | SPA_IO_ERR | SPA_IO_HUP);
+
+	c->rt.first = true;
+	c->rt.thread_entered = false;
+	c->rt.prepared = true;
+	return 0;
+}
+
+static int do_unprepare_client(struct spa_loop *loop, bool async, uint32_t seq,
+		const void *data, size_t size, void *user_data)
+{
+	struct client *c = user_data;
+
+	if (!c->rt.prepared)
+		return 0;
+
+	pw_loop_update_io(c->l,
+			  c->socket_source, SPA_IO_ERR | SPA_IO_HUP);
+
+	c->rt.prepared = false;
+	return 0;
+}
+
 static int client_node_command(void *data, const struct spa_command *command)
 {
 	struct client *c = (struct client *) data;
@@ -2150,8 +2229,8 @@ static int client_node_command(void *data, const struct spa_command *command)
 	case SPA_NODE_COMMAND_Suspend:
 	case SPA_NODE_COMMAND_Pause:
 		if (c->started) {
-			pw_loop_update_io(c->l,
-					  c->socket_source, SPA_IO_ERR | SPA_IO_HUP);
+			pw_data_loop_invoke(c->loop,
+				do_unprepare_client, SPA_ID_INVALID, NULL, 0, false, c);
 
 			c->started = false;
 		}
@@ -2159,12 +2238,9 @@ static int client_node_command(void *data, const struct spa_command *command)
 
 	case SPA_NODE_COMMAND_Start:
 		if (!c->started) {
-			pw_loop_update_io(c->l,
-					  c->socket_source,
-					  SPA_IO_IN | SPA_IO_ERR | SPA_IO_HUP);
+			pw_data_loop_invoke(c->loop,
+				do_prepare_client, SPA_ID_INVALID, NULL, 0, false, c);
 			c->started = true;
-			c->first = true;
-			c->thread_entered = false;
 		}
 		break;
 	default:
@@ -2741,26 +2817,6 @@ static int client_node_port_use_buffers(void *data,
 	return res;
 }
 
-static int
-do_memmap_free(struct spa_loop *loop,
-                bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct pw_memmap *mm = user_data;
-	pw_log_trace("memmap %p free", mm);
-	pw_memmap_free(mm);
-	return 0;
-}
-
-static int
-do_queue_memmap_free(struct spa_loop *loop,
-                bool async, uint32_t seq, const void *data, size_t size, void *user_data)
-{
-	struct client *c = user_data;
-	struct pw_memmap *mm = *((struct pw_memmap **)data);
-	pw_loop_invoke(c->context.l, do_memmap_free, 0, NULL, 0, false, mm);
-	return 0;
-}
-
 static int client_node_port_set_io(void *data,
                              enum spa_direction direction,
                              uint32_t port_id,
@@ -2810,16 +2866,13 @@ static int client_node_port_set_io(void *data,
 	switch (id) {
 	case SPA_IO_Buffers:
 		mix_set_io(mix, ptr);
-		if (old != NULL) {
-			old->tag[0] = SPA_ID_INVALID;
-			pw_data_loop_invoke(c->loop,
-				do_queue_memmap_free, SPA_ID_INVALID, &old, sizeof(&old), false, c);
-			old = NULL;
-		}
+		queue_memmap_free(c, old);
+		old = NULL;
 		break;
 	default:
 		break;
 	}
+
 exit_free:
 	pw_memmap_free(old);
 exit:
@@ -2829,7 +2882,7 @@ exit:
 }
 
 static int
-do_activate_link(struct spa_loop *loop,
+do_add_link(struct spa_loop *loop,
                 bool async, uint32_t seq, const void *data, size_t size, void *user_data)
 {
 	struct link *link = user_data;
@@ -2840,14 +2893,40 @@ do_activate_link(struct spa_loop *loop,
 }
 
 static int
-do_deactivate_link(struct spa_loop *loop,
+do_remove_link(struct spa_loop *loop,
                 bool async, uint32_t seq, const void *data, size_t size, void *user_data)
 {
 	struct link *link = user_data;
 	pw_log_trace("link %p activate", link);
 	spa_list_remove(&link->target_link);
-	free_link(link);
 	return 0;
+}
+
+static int
+do_free_link(struct spa_loop *loop,
+                bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct client *c = user_data;
+	struct link *l = *((struct link **)data);
+	free_link(l);
+	pw_core_set_paused(c->core, false);
+	return 0;
+}
+
+static int
+do_queue_free_link(struct spa_loop *loop,
+                bool async, uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct client *c = user_data;
+	pw_loop_invoke(c->context.l, do_free_link, 0, data, size, false, c);
+	return 0;
+}
+
+static void queue_free_link(struct client *c, struct link *l)
+{
+	pw_core_set_paused(c->core, true);
+	pw_data_loop_invoke(c->loop,
+		do_queue_free_link, SPA_ID_INVALID, &l, sizeof(&l), false, c);
 }
 
 static int client_node_set_activation(void *data,
@@ -2900,7 +2979,7 @@ static int client_node_set_activation(void *data,
 		spa_list_append(&c->links, &link->link);
 
 		pw_data_loop_invoke(c->loop,
-                       do_activate_link, SPA_ID_INVALID, NULL, 0, false, link);
+                       do_add_link, SPA_ID_INVALID, NULL, 0, false, link);
 	}
 	else {
 		link = find_activation(&c->links, node_id);
@@ -2911,7 +2990,8 @@ static int client_node_set_activation(void *data,
 		spa_list_remove(&link->link);
 
 		pw_data_loop_invoke(c->loop,
-                       do_deactivate_link, SPA_ID_INVALID, NULL, 0, false, link);
+                       do_remove_link, SPA_ID_INVALID, NULL, 0, false, link);
+		queue_free_link(c, link);
 	}
 
 	if (c->driver_id == node_id)
@@ -2994,31 +3074,27 @@ static struct spa_thread *impl_create(void *object,
 			void *(*start)(void*), void *arg)
 {
 	struct client *c = (struct client *) object;
-	struct spa_thread *thr;
-	int res = 0;
+	struct spa_dict_item *items;
+	struct spa_dict copy;
+	char creator_ptr[64];
 
 	pw_log_info("create thread");
 	if (globals.creator != NULL) {
-		pthread_t pt;
-		pthread_attr_t *attr = NULL, attributes;
+		uint32_t i, n_items = props ? props->n_items : 0;
 
-		attr = pw_thread_fill_attr(props, &attributes);
+		items = alloca((n_items) + 1 * sizeof(*items));
 
-		res = -globals.creator(&pt, attr, start, arg);
-		if (attr)
-			pthread_attr_destroy(attr);
-		if (res != 0)
-			goto error;
-		thr = (struct spa_thread*)pt;
-	} else {
-		thr = spa_thread_utils_create(c->context.old_thread_utils, props, start, arg);
+		for (i = 0; i < n_items; i++)
+			items[i] = props->items[i];
+
+		snprintf(creator_ptr, sizeof(creator_ptr), "pointer:%p", globals.creator);
+		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_THREAD_CREATOR,
+				creator_ptr);
+
+		copy = SPA_DICT_INIT(items, n_items);
+		props = &copy;
 	}
-	return thr;
-error:
-	pw_log_warn("create RT thread failed: %s", strerror(res));
-	errno = -res;
-	return NULL;
-
+	return spa_thread_utils_create(c->context.old_thread_utils, props, start, arg);
 }
 
 static int impl_join(void *object,
@@ -3236,18 +3312,28 @@ static const struct pw_proxy_events proxy_events = {
 	.destroy = proxy_destroy,
 };
 
+static bool node_is_active(struct client *c, struct object *n)
+{
+	return !n->node.is_jack ||
+		(c->node_id == n->id ? c->active : n->node.is_running);
+}
+
 static void node_info(void *data, const struct pw_node_info *info)
 {
 	struct object *n = data;
 	struct client *c = n->client;
-	const char *str;
+	bool active;
 
 	if (info->change_mask & PW_NODE_CHANGE_MASK_PROPS) {
-		str = spa_dict_lookup(info->props, PW_KEY_NODE_ALWAYS_PROCESS);
+		/* JACK clients always need ALWAYS_PROCESS=true or else they don't
+		 * conform to the JACK API. We would try to hide the ports of
+		 * PAUSED JACK clients, for example, even if they are active. */
+		const char *str = spa_dict_lookup(info->props, PW_KEY_NODE_ALWAYS_PROCESS);
 		n->node.is_jack = str ? spa_atob(str) : false;
 	}
 
-	n->node.is_running = !n->node.is_jack || (info->state == PW_NODE_STATE_RUNNING);
+	n->node.is_running = info->state == PW_NODE_STATE_RUNNING;
+	active = node_is_active(c, n);
 
 	pw_log_debug("DSP node %d %08"PRIx64" jack:%u state change %s running:%d", info->id,
 			info->change_mask, n->node.is_jack,
@@ -3259,7 +3345,7 @@ static void node_info(void *data, const struct pw_node_info *info)
 			if (p->type != INTERFACE_Port || p->removed ||
 			    p->port.node_id != info->id)
 				continue;
-			if (n->node.is_running)
+			if (active)
 				queue_notify(c, NOTIFY_TYPE_PORTREGISTRATION, p, 1, NULL);
 			else {
 				spa_list_for_each(l, &c->context.objects, link) {
@@ -3487,7 +3573,7 @@ static void registry_event_global(void *data, uint32_t id,
 			o->port.latency[SPA_DIRECTION_INPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
 			o->port.latency[SPA_DIRECTION_OUTPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_OUTPUT);
 
-			do_emit = !ot->node.is_jack || ot->node.is_running;
+			do_emit = node_is_active(c, ot);
 
 			o->proxy = pw_registry_bind(c->registry,
 				id, type, PW_VERSION_PORT, 0);
@@ -3780,7 +3866,7 @@ jack_client_t * jack_client_open (const char *client_name,
 
         if (getenv("PIPEWIRE_NOJACK") != NULL ||
             getenv("PIPEWIRE_INTERNAL") != NULL ||
-	    strstr(pw_get_library_version(), "0.2") != NULL)
+	    spa_strstartswith(pw_get_library_version(), "0.2"))
 		goto disabled;
 
 	return_val_if_fail(client_name != NULL, NULL);
@@ -3925,7 +4011,7 @@ jack_client_t * jack_client_open (const char *client_name,
 		struct spa_fraction q;
 		if (sscanf(str, "%u/%u", &q.num, &q.denom) == 2 && q.denom != 0) {
 			pw_properties_setf(client->props, PW_KEY_NODE_FORCE_RATE,
-					"1/%u", q.denom);
+					"%u", q.denom);
 			pw_properties_setf(client->props, PW_KEY_NODE_FORCE_QUANTUM,
 					"%u", q.num);
 		} else {
@@ -4064,6 +4150,7 @@ server_failed:
 exit_unlock:
 	pw_thread_loop_unlock(client->context.loop);
 exit:
+	pw_log_info("%p: error %d", client, *status);
 	jack_client_close((jack_client_t *) client);
 	return NULL;
 disabled:
@@ -5207,7 +5294,8 @@ static void *get_buffer_input_float(struct port *p, jack_nframes_t frames)
 static void *get_buffer_input_midi(struct port *p, jack_nframes_t frames)
 {
 	struct mix *mix;
-	void *ptr = midi_scratch;
+	void *ptr = p->emptyptr;
+	struct midi_buffer *mb = (struct midi_buffer*)midi_scratch;
 	struct spa_pod_sequence *seq[MAX_MIX];
 	uint32_t n_seq = 0;
 
@@ -5236,8 +5324,17 @@ static void *get_buffer_input_midi(struct port *p, jack_nframes_t frames)
 		if (n_seq == MAX_MIX)
 			break;
 	}
-	midi_init_buffer(ptr, MIDI_SCRATCH_FRAMES);
-	convert_to_midi(seq, n_seq, ptr, p->client->fix_midi_events);
+	midi_init_buffer(mb, MIDI_SCRATCH_FRAMES);
+	/* first convert to a thread local scratch buffer, then memcpy into
+	 * the per port buffer. This makes it possible to call this function concurrently
+	 * but also have different pointers per port */
+	convert_to_midi(seq, n_seq, mb, p->client->fix_midi_events);
+	memcpy(ptr, mb, sizeof(struct midi_buffer) + (mb->event_count
+                              * sizeof(struct midi_event)));
+	if (mb->write_pos) {
+		size_t offs = mb->buffer_size - 1 - mb->write_pos;
+		memcpy(SPA_PTROFF(ptr, offs, void), SPA_PTROFF(mb, offs, void), mb->write_pos);
+	}
 	return ptr;
 }
 
@@ -6385,7 +6482,7 @@ static inline void get_frame_times(struct client *c, struct frame_times *times)
 		u1 = c->jack_position.unique_1;
 		*times = c->jack_times;
 		if (++count == 10) {
-			pw_log_warn("could not get snapshot %lu %lu", u1, c->jack_position.unique_2);
+			pw_log_warn("could not get snapshot %" PRIu64 " %" PRIu64, u1, c->jack_position.unique_2);
 			break;
 		}
 	} while (u1 != c->jack_position.unique_2);
@@ -6396,7 +6493,7 @@ jack_nframes_t jack_frames_since_cycle_start (const jack_client_t *client)
 {
 	struct client *c = (struct client *) client;
 	struct frame_times times;
-	uint64_t diff;
+	int64_t diff;
 
 	return_val_if_fail(c != NULL, 0);
 
@@ -6438,14 +6535,14 @@ int jack_get_cycle_times(const jack_client_t *client,
 
 	get_frame_times(c, &times);
 
-	*current_frames = times.frames;
-	*current_usecs = times.nsec / SPA_NSEC_PER_USEC;
-	*next_usecs = times.next_nsec / SPA_NSEC_PER_USEC;
 	if (times.sample_rate == 0 || times.rate_diff == 0.0)
-		*period_usecs = (times.next_nsec - times.nsec) / SPA_NSEC_PER_USEC;
-	else
-		*period_usecs = times.buffer_frames *
+		return -1;
+
+	*current_frames = times.frames;
+	*next_usecs = times.next_nsec / SPA_NSEC_PER_USEC;
+	*period_usecs = times.buffer_frames *
 			(float)SPA_USEC_PER_SEC / (times.sample_rate * times.rate_diff);
+	*current_usecs = *next_usecs - (jack_time_t)*period_usecs;
 
 	pw_log_trace("%p: %d %"PRIu64" %"PRIu64" %f", c, *current_frames,
 			*current_usecs, *next_usecs, *period_usecs);
@@ -6462,14 +6559,15 @@ jack_time_t jack_frames_to_time(const jack_client_t *client, jack_nframes_t fram
 
 	get_frame_times(c, &times);
 
-	if (times.buffer_frames == 0)
+	if (times.buffer_frames == 0 || times.sample_rate == 0 || times.rate_diff == 0.0)
 		return 0;
 
 	uint32_t nf = (uint32_t)times.frames;
-	uint64_t w = times.nsec/SPA_NSEC_PER_USEC;
 	uint64_t nw = times.next_nsec/SPA_NSEC_PER_USEC;
+	uint64_t dp = (uint64_t)(times.buffer_frames *
+			(float)SPA_USEC_PER_SEC / (times.sample_rate * times.rate_diff));
+	uint64_t w = nw - dp;
 	int32_t df = frames - nf;
-	int64_t dp = nw - w;
 	return w + (int64_t)rint((double) df * (double) dp / times.buffer_frames);
 }
 
@@ -6483,14 +6581,15 @@ jack_nframes_t jack_time_to_frames(const jack_client_t *client, jack_time_t usec
 
 	get_frame_times(c, &times);
 
-	if (times.buffer_frames == 0)
+	if (times.sample_rate == 0 || times.rate_diff == 0.0)
 		return 0;
 
 	uint32_t nf = (uint32_t)times.frames;
-	uint64_t w = times.nsec/SPA_NSEC_PER_USEC;
 	uint64_t nw = times.next_nsec/SPA_NSEC_PER_USEC;
+	uint64_t dp = (uint64_t)(times.buffer_frames *
+			(float)SPA_USEC_PER_SEC / (times.sample_rate * times.rate_diff));
+	uint64_t w = nw - dp;
 	int64_t du = usecs - w;
-	int64_t dp = nw - w;
 	return nf + (int32_t)rint((double)du / (double)dp * times.buffer_frames);
 }
 
@@ -6676,7 +6775,7 @@ jack_transport_state_t jack_transport_query (const jack_client_t *client,
 		if (pos != NULL)
 			*pos = c->jack_position;
 		if (++count == 10) {
-			pw_log_warn("could not get snapshot %lu %lu", u1, c->jack_position.unique_2);
+			pw_log_warn("could not get snapshot %" PRIu64 " %" PRIu64, u1, c->jack_position.unique_2);
 			break;
 		}
 	} while (u1 != c->jack_position.unique_2);

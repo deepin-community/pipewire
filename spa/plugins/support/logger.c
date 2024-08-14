@@ -94,8 +94,8 @@ impl_log_logtv(void *object,
 	if (impl->timestamp) {
 		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-		spa_scnprintf(timestamp, sizeof(timestamp), "[%05lu.%06lu]",
-			(now.tv_sec & 0x1FFFFFFF) % 100000, now.tv_nsec / 1000);
+		spa_scnprintf(timestamp, sizeof(timestamp), "[%05jd.%06jd]",
+			(intmax_t) (now.tv_sec & 0x1FFFFFFF) % 100000, (intmax_t) now.tv_nsec / 1000);
 	}
 
 	if (topic && topic->topic)
@@ -370,7 +370,7 @@ impl_init(const struct spa_handle_factory *factory,
 	if (linebuf)
 		setlinebuf(this->file);
 
-	if (!isatty(fileno(this->file)) && !force_colors) {
+	if (this->colors && !force_colors && !isatty(fileno(this->file)) ) {
 		this->colors = false;
 	}
 

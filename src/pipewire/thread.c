@@ -65,10 +65,16 @@ static struct spa_thread *impl_create(void *object,
 	pthread_attr_t *attr = NULL, attributes;
 	const char *str;
 	int err;
+	int (*create_func)(pthread_t *, const pthread_attr_t *attr, void *(*start)(void*), void *) = NULL;
 
 	attr = pw_thread_fill_attr(props, &attributes);
 
-	err = pthread_create(&pt, attr, start, arg);
+	if (props == NULL ||
+	   (str = spa_dict_lookup(props, SPA_KEY_THREAD_CREATOR)) == NULL ||
+	   sscanf(str, "pointer:%p", &create_func) != 1)
+		create_func = pthread_create;
+
+	err = create_func(&pt, attr, start, arg);
 
 	if (attr)
 		pthread_attr_destroy(attr);
@@ -102,13 +108,13 @@ static int impl_get_rt_range(void *object, const struct spa_dict *props,
 }
 static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority)
 {
-	pw_log_warn("acquire_rt thread:%p prio:%d not implemented", thread, priority);
+	pw_log_info("acquire_rt thread:%p prio:%d not implemented", thread, priority);
 	return -ENOTSUP;
 }
 
 static int impl_drop_rt(void *object, struct spa_thread *thread)
 {
-	pw_log_warn("drop_rt thread:%p not implemented", thread);
+	pw_log_info("drop_rt thread:%p not implemented", thread);
 	return -ENOTSUP;
 }
 

@@ -202,6 +202,7 @@ struct state {
 	uint32_t min_delay;
 	uint32_t max_delay;
 	uint32_t htimestamp_error;
+	uint32_t htimestamp_max_errors;
 
 	struct spa_fraction driver_rate;
 	uint32_t driver_duration;
@@ -226,7 +227,7 @@ struct state {
 	unsigned int auto_link:1;
 	unsigned int linked:1;
 	unsigned int is_batch:1;
-	unsigned int force_position:1;
+	unsigned int force_rate:1;
 
 	uint64_t iec958_codecs;
 
@@ -257,6 +258,7 @@ struct state {
 	/* ALSA ctls exposed as params */
 	unsigned int num_bind_ctls;
 	struct bound_ctl bound_ctls[16];
+	struct pollfd ctl_pfds[MAX_POLL];
 	struct spa_source ctl_sources[MAX_POLL];
 	int ctl_n_fds;
 

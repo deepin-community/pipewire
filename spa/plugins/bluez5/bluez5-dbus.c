@@ -5328,6 +5328,11 @@ static void get_managed_objects_reply(DBusPendingCall *pending, void *user_data)
 		return;
 	}
 
+	if (dbus_message_is_error(r, DBUS_ERROR_NAME_HAS_NO_OWNER)) {
+		spa_log_warn(monitor->log, "BlueZ system service is not available");
+		return;
+	}
+
 	if (dbus_message_get_type(r) == DBUS_MESSAGE_TYPE_ERROR) {
 		spa_log_error(monitor->log, "GetManagedObjects() failed: %s",
 				dbus_message_get_error_name(r));
@@ -5545,7 +5550,12 @@ static DBusHandlerResult filter_cb(DBusConnection *bus, DBusMessage *m, void *us
 			transport = spa_bt_transport_find(monitor, path);
 			if (transport == NULL) {
 				spa_log_warn(monitor->log,
-						"Properties changed in unknown transport %s", path);
+						"Properties changed in unknown transport '%s'. "
+						"Multiple sound server instances (PipeWire/Pulseaudio/bluez-alsa) are "
+						"probably trying to use Bluetooth audio at the same time, which can "
+						"cause problems. The system configuration likely should be fixed "
+						"to have only one sound server that manages Bluetooth audio.",
+						path);
 				goto finish;
 			}
 
