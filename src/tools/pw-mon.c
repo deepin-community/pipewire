@@ -203,10 +203,10 @@ static void print_properties(const struct spa_dict *props, bool use_prefix)
 
 static void on_core_info(void *_data, const struct pw_core_info *info)
 {
-	struct proxy_data *data = _data;
+	struct data *data = _data;
 	bool hide_props, print_mark = true;
 
-	hide_props = data->data->hide_props;
+	hide_props = data->hide_props;
 
 	printf("\ttype: %s\n", PW_TYPE_INTERFACE_Core);
 	printf("\tcookie: %u\n", info->cookie);
@@ -786,7 +786,7 @@ int main(int argc, char *argv[])
 
 	setlinebuf(stdout);
 
-	if (isatty(STDOUT_FILENO) && getenv("NO_COLOR") == NULL)
+	if (getenv("NO_COLOR") == NULL && isatty(STDOUT_FILENO))
 		colors = true;
 
 	while ((c = getopt_long(argc, argv, "hVr:NCoa", long_options, NULL)) != -1) {

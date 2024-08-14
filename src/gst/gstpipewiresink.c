@@ -209,8 +209,8 @@ gst_pipewire_sink_class_init (GstPipeWireSinkClass * klass)
   gstelement_class->change_state = gst_pipewire_sink_change_state;
 
   gst_element_class_set_static_metadata (gstelement_class,
-      "PipeWire sink", "Sink/Video",
-      "Send video to PipeWire", "Wim Taymans <wim.taymans@gmail.com>");
+      "PipeWire sink", "Sink/Audio/Video",
+      "Send audio/video to PipeWire", "Wim Taymans <wim.taymans@gmail.com>");
 
   gst_element_class_add_pad_template (gstelement_class,
       gst_static_pad_template_get (&gst_pipewire_sink_template));
@@ -466,7 +466,10 @@ do_send_buffer (GstPipeWireSink *pwsink, GstBuffer *buffer)
   if (data->header) {
     data->header->seq = GST_BUFFER_OFFSET (buffer);
     data->header->pts = GST_BUFFER_PTS (buffer);
-    data->header->dts_offset = GST_BUFFER_DTS (buffer);
+    if (GST_BUFFER_DTS(buffer) != GST_CLOCK_TIME_NONE)
+      data->header->dts_offset = GST_BUFFER_DTS (buffer) - GST_BUFFER_PTS (buffer);
+    else
+      data->header->dts_offset = 0;
   }
   if (data->crop) {
     GstVideoCropMeta *meta = gst_buffer_get_video_crop_meta (buffer);
@@ -560,7 +563,7 @@ static gboolean
 gst_pipewire_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 {
   GstPipeWireSink *pwsink;
-  GPtrArray *possible;
+  g_autoptr(GPtrArray) possible = NULL;
   enum pw_stream_state state;
   const char *error = NULL;
   gboolean res = FALSE;
@@ -655,7 +658,6 @@ start_error:
   {
     GST_ERROR ("could not start stream: %s", error);
     pw_thread_loop_unlock (pwsink->core->loop);
-    g_ptr_array_unref (possible);
     return FALSE;
   }
 }

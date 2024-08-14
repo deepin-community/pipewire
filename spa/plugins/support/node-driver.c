@@ -8,7 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
-#if !defined(__FreeBSD__) && !defined(__MidnightBSD__)
+#ifdef __linux__
 #include <linux/ethtool.h>
 #include <linux/sockios.h>
 #endif
@@ -30,8 +30,10 @@
 #define NAME "driver"
 
 #define DEFAULT_FREEWHEEL	false
+#define DEFAULT_FREEWHEEL_WAIT	10
 #define DEFAULT_CLOCK_PREFIX	"clock.system"
 #define DEFAULT_CLOCK_ID	CLOCK_MONOTONIC
+#define DEFAULT_RESYNC_MS	10
 
 #define CLOCKFD 3
 #define FD_TO_CLOCKID(fd)	((~(clockid_t) (fd) << 3) | CLOCKFD)
@@ -44,6 +46,8 @@ struct props {
 	bool freewheel;
 	char clock_name[64];
 	clockid_t clock_id;
+	uint32_t freewheel_wait;
+	float resync_ms;
 };
 
 struct impl {
@@ -79,6 +83,7 @@ struct impl {
 	uint64_t base_time;
 	struct spa_dll dll;
 	double max_error;
+	double max_resync;
 };
 
 static void reset_props(struct props *props)
@@ -86,6 +91,8 @@ static void reset_props(struct props *props)
 	props->freewheel = DEFAULT_FREEWHEEL;
 	spa_zero(props->clock_name);
 	props->clock_id = CLOCK_MONOTONIC;
+	props->freewheel_wait = DEFAULT_FREEWHEEL_WAIT;
+	props->resync_ms = DEFAULT_RESYNC_MS;
 }
 
 static const struct clock_info {
@@ -262,7 +269,10 @@ static void on_timeout(struct spa_source *source)
 		duration = 1024;
 		rate = 48000;
 	}
-	nsec = this->next_time;
+	if (this->props.freewheel)
+		nsec = gettime_nsec(this, this->props.clock_id);
+	else
+		nsec = this->next_time;
 
 	if (this->tracking)
 		/* we are actually following another clock */
@@ -275,6 +285,7 @@ static void on_timeout(struct spa_source *source)
 	if (this->last_time == 0) {
 		spa_dll_set_bw(&this->dll, SPA_DLL_BW_MIN, duration, rate);
 		this->max_error = rate * MAX_ERROR_MS / 1000;
+		this->max_resync = rate * this->props.resync_ms / 1000;
 		position = current_position;
 	} else if (SPA_LIKELY(this->clock)) {
 		position = this->clock->position + this->clock->duration;
@@ -282,18 +293,27 @@ static void on_timeout(struct spa_source *source)
 		position = current_position;
 	}
 
-	/* check the elapsed time of the other clock against
-	 * the graph clock elapsed time, feed this error into the
-	 * dll and adjust the timeout of our MONOTONIC clock. */
-	err = (double)position - (double)current_position;
-	if (err > this->max_error)
-		err = this->max_error;
-	else if (err < -this->max_error)
-		err = -this->max_error;
-
 	this->last_time = current_time;
 
-	if (this->tracking) {
+	if (this->props.freewheel) {
+		corr = 1.0;
+		this->next_time = nsec + this->props.freewheel_wait * SPA_NSEC_PER_SEC;
+	} else if (this->tracking) {
+		/* check the elapsed time of the other clock against
+		 * the graph clock elapsed time, feed this error into the
+		 * dll and adjust the timeout of our MONOTONIC clock. */
+		err = (double)position - (double)current_position;
+		if (fabs(err) > this->max_error) {
+			if (fabs(err) > this->max_resync) {
+				spa_log_warn(this->log, "err %f > max_resync %f, resetting",
+						err, this->max_resync);
+				spa_dll_set_bw(&this->dll, SPA_DLL_BW_MIN, duration, rate);
+				position = current_position;
+				err = 0.0;
+			} else {
+				err = SPA_CLAMPD(err, -this->max_error, this->max_error);
+			}
+		}
 		corr = spa_dll_update(&this->dll, err);
 		this->next_time = nsec + duration / corr * 1e9 / rate;
 	} else {
@@ -499,21 +519,19 @@ int get_phc_index(struct spa_system *s, const char *name) {
 	info.cmd = ETHTOOL_GET_TS_INFO;
 	strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
 	ifr.ifr_data = (char *) &info;
-	fd = socket(AF_INET, SOCK_DGRAM, 0);
 
-	if (fd < 0) {
-		return -1;
-	}
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0)
+		return -errno;
 
 	err = spa_system_ioctl(s, fd, SIOCETHTOOL, &ifr);
 	close(fd);
-	if (err < 0) {
-		return err;
-	}
+	if (err < 0)
+		return -errno;
 
 	return info.phc_index;
 #else
-	return -1;
+	return -ENOTSUP;
 #endif
 }
 
@@ -591,25 +609,30 @@ impl_init(const struct spa_handle_factory *factory,
 			this->clock_fd = open(s, O_RDWR);
 
 			if (this->clock_fd == -1) {
-				spa_log_warn(this->log, "failed to open clock device '%s'", s);
+				spa_log_warn(this->log, "failed to open clock device '%s': %m", s);
 			} else {
 				this->props.clock_id = FD_TO_CLOCKID(this->clock_fd);
 			}
 		} else if (spa_streq(k, "clock.interface") && this->clock_fd < 0) {
 			int phc_index = get_phc_index(this->data_system, s);
 			if (phc_index < 0) {
-				spa_log_warn(this->log, "failed to get phc device index for interface '%s'", s);
+				spa_log_warn(this->log, "failed to get phc device index for interface '%s': %s",
+						s, spa_strerror(phc_index));
 			} else {
 				char dev[19];
 				spa_scnprintf(dev, sizeof(dev), "/dev/ptp%d", phc_index);
-				this->clock_fd = open(dev, O_RDWR);
+				this->clock_fd = open(dev, O_RDONLY);
+				if (this->clock_fd == -1) {
+					spa_log_warn(this->log, "failed to open clock device '%s' "
+							"for interface '%s': %m", dev, s);
+				} else {
+					this->props.clock_id = FD_TO_CLOCKID(this->clock_fd);
+				}
 			}
-
-			if (this->clock_fd == -1) {
-				spa_log_warn(this->log, "failed to open clock device '%s'", s);
-			} else {
-				this->props.clock_id = FD_TO_CLOCKID(this->clock_fd);
-			}
+		} else if (spa_streq(k, "freewheel.wait")) {
+			this->props.freewheel_wait = atoi(s);
+		} else if (spa_streq(k, "resync.ms")) {
+			this->props.resync_ms = atof(s);
 		}
 	}
 	if (this->props.clock_name[0] == '\0') {

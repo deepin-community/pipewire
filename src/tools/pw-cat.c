@@ -931,11 +931,11 @@ static void do_print_delay(void *userdata, uint64_t expirations)
 	pw_stream_get_time_n(data->stream, &time, sizeof(time));
 	printf("stream time: now:%"PRIi64" rate:%u/%u ticks:%"PRIu64
 			" delay:%"PRIi64" queued:%"PRIu64
-			" buffered:%"PRIi64" buffers:%u avail:%u\n",
+			" buffered:%"PRIi64" buffers:%u avail:%u size:%"PRIu64"\n",
 		time.now,
 		time.rate.num, time.rate.denom,
 		time.ticks, time.delay, time.queued, time.buffered,
-		time.queued_buffers, time.avail_buffers);
+		time.queued_buffers, time.avail_buffers, time.size);
 }
 
 enum {
@@ -1263,6 +1263,7 @@ static int fill_properties(struct data *data)
 		[SF_STR_COPYRIGHT] = PW_KEY_MEDIA_COPYRIGHT,
 		[SF_STR_SOFTWARE] = PW_KEY_MEDIA_SOFTWARE,
 		[SF_STR_ARTIST] = PW_KEY_MEDIA_ARTIST,
+		[SF_STR_ALBUM] = PW_KEY_MEDIA_ALBUM,
 		[SF_STR_COMMENT] = PW_KEY_MEDIA_COMMENT,
 		[SF_STR_DATE] = PW_KEY_MEDIA_DATE
 	};

@@ -61,12 +61,10 @@ struct impl {
 static const libcamera::Span<const int64_t> cameraDevice(
 			const Camera *camera)
 {
-#ifdef HAVE_LIBCAMERA_SYSTEM_DEVICES
 	const ControlList &props = camera->properties();
 
 	if (auto devices = props.get(properties::SystemDevices))
 		return devices.value();
-#endif
 
 	return {};
 }
@@ -106,7 +104,7 @@ static int emit_info(struct impl *impl, bool full)
 	uint32_t n_items = 0;
 	struct spa_device_info info;
 	struct spa_param_info params[2];
-	char path[256], name[256], devices_str[128];
+	char path[256], name[256], devices_str[256];
 	struct spa_strbuf buf;
 
 	info = SPA_DEVICE_INFO_INIT();
@@ -135,10 +133,12 @@ static int emit_info(struct impl *impl, bool full)
 	if (!device_numbers.empty()) {
 		spa_strbuf_init(&buf, devices_str, sizeof(devices_str));
 
-		/* created a space separated string of all the device numbers */
-		for (int64_t device_number : device_numbers)
+		/* encode device numbers into a json array */
+		spa_strbuf_append(&buf, "[ ");
+		for(int64_t device_number : device_numbers)
 			spa_strbuf_append(&buf, "%" PRId64 " ", device_number);
 
+		spa_strbuf_append(&buf, "]");
 		ADD_ITEM(SPA_KEY_DEVICE_DEVIDS, devices_str);
 	}
 

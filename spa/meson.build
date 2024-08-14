@@ -96,9 +96,8 @@ if get_option('spa-plugins').allowed()
   endif
   summary({'Vulkan': have_vulkan}, bool_yn: true, section: 'Misc dependencies')
 
-  libcamera_dep = dependency('libcamera', required: get_option('libcamera'))
+  libcamera_dep = dependency('libcamera', version: '>= 0.2.0', required: get_option('libcamera'))
   summary({'libcamera': libcamera_dep.found()}, bool_yn: true, section: 'Backend')
-  cdata.set('HAVE_LIBCAMERA_SYSTEM_DEVICES', libcamera_dep.version().version_compare('>= 0.1.0'))
 
   compress_offload_option = get_option('compress-offload')
   summary({'Compress-Offload': compress_offload_option.allowed()}, bool_yn: true, section: 'Backend')
@@ -113,6 +112,4 @@ endif
 
 subdir('tools')
 subdir('tests')
-if get_option('examples').allowed()
-  subdir('examples')
-endif
+subdir('examples')

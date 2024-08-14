@@ -45,5 +45,7 @@ usr/share/man/man1/pw-mididump.*
 usr/share/man/man1/pw-mon.*
 usr/share/man/man1/pw-profiler.*
 usr/share/man/man1/pw-top.*
+usr/share/man/man1/pw-reserve.*
+usr/share/man/man1/pw-v4l2.*
 usr/share/man/man5
 etc/security/limits.d/25-pw-rlimits.conf

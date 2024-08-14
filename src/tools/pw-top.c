@@ -420,9 +420,11 @@ static const char *print_perc(char *buf, bool active, size_t len, uint64_t val, 
 		snprintf(buf, len, " --- ");
 	} else if (val == (uint64_t)-2) {
 		snprintf(buf, len, " +++ ");
+	} else if (quantum == 0.0f) {
+		snprintf(buf, len, " ??? ");
 	} else {
 		float frac = val / 1000000000.f;
-		snprintf(buf, len, "%5.2f", quantum == 0.0f ? 0.0f : frac/quantum);
+		snprintf(buf, len, "%5.2f", frac/quantum);
 	}
 	return buf;
 }
@@ -467,7 +469,7 @@ static void print_node(struct data *d, struct driver *i, struct node *n, int y)
 	if (i->clock.rate.denom)
 		quantum = (float)i->clock.duration * i->clock.rate.num / (float)i->clock.rate.denom;
 	else
-		quantum = 0.0;
+		quantum = 0.0f;
 
 	if (n->measurement.awake >= n->measurement.signal)
 		waiting = n->measurement.awake - n->measurement.signal;
@@ -540,7 +542,7 @@ static void do_refresh(struct data *d, bool force_refresh)
 				continue;
 
 			print_node(d, &n->info, f, y++);
-			if(y > LINES)
+			if(!d->batch_mode && y > LINES)
 				break;
 
 		}
