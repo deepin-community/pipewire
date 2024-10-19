@@ -24,20 +24,25 @@
 #include <spa/monitor/device.h>
 #include <spa/monitor/utils.h>
 
-#define NAME "v4l2-udev"
+#include "config.h"
+#include "v4l2.h"
+
+#ifdef HAVE_LOGIND
+#include <systemd/sd-login.h>
+#endif
 
 #define MAX_DEVICES	64
 
-#define ACTION_ADD	0
-#define ACTION_REMOVE	1
-#define ACTION_DISABLE	2
+enum action {
+	ACTION_CHANGE,
+	ACTION_REMOVE,
+};
 
 struct device {
 	uint32_t id;
 	struct udev_device *dev;
 	int inotify_wd;
 	unsigned int accessible:1;
-	unsigned int ignored:1;
 	unsigned int emitted:1;
 };
 
@@ -61,6 +66,10 @@ struct impl {
 
 	struct spa_source source;
 	struct spa_source notify;
+#ifdef HAVE_LOGIND
+	struct spa_source logind;
+	sd_login_monitor *logind_monitor;
+#endif
 };
 
 static int impl_udev_open(struct impl *this)
@@ -358,48 +367,47 @@ static bool check_access(struct impl *this, struct device *device)
 	return device->accessible;
 }
 
-static void process_device(struct impl *this, uint32_t action, struct udev_device *dev)
+static void process_device(struct impl *this, enum action action, struct device *device)
 {
-	uint32_t id;
-	struct device *device;
-	bool emitted;
-
-	if ((id = get_device_id(this, dev)) == SPA_ID_INVALID)
-		return;
-
-	device = find_device(this, id);
-	if (device && device->ignored)
-		return;
-
 	switch (action) {
-	case ACTION_ADD:
-		if (device == NULL)
-			device = add_device(this, id, dev);
-		if (device == NULL)
-			return;
-		if (!check_access(this, device))
-			return;
-		emit_object_info(this, device);
+	case ACTION_CHANGE:
+		check_access(this, device);
+		if (device->accessible && !device->emitted) {
+			emit_object_info(this, device);
+		} else if (!device->accessible && device->emitted) {
+			device->emitted = false;
+			spa_device_emit_object_info(&this->hooks, device->id, NULL);
+		}
 		break;
+	case ACTION_REMOVE: {
+		bool emitted = device->emitted;
+		uint32_t id = device->id;
 
-	case ACTION_REMOVE:
-		if (device == NULL)
-			return;
-		emitted = device->emitted;
 		remove_device(this, device);
+
 		if (emitted)
 			spa_device_emit_object_info(&this->hooks, id, NULL);
 		break;
-
-	case ACTION_DISABLE:
-		if (device == NULL)
-			return;
-		if (device->emitted) {
-			device->emitted = false;
-			spa_device_emit_object_info(&this->hooks, id, NULL);
-		}
-		break;
 	}
+	}
+}
+
+static void process_udev_device(struct impl *this, enum action action, struct udev_device *udev_device)
+{
+	struct device *device;
+	uint32_t id;
+
+	if ((id = get_device_id(this, udev_device)) == SPA_ID_INVALID)
+		return;
+
+	device = find_device(this, id);
+	if (action == ACTION_CHANGE && !device)
+		device = add_device(this, id, udev_device);
+
+	if (!device)
+		return;
+
+	process_device(this, action, device);
 }
 
 static int stop_inotify(struct impl *this)
@@ -431,8 +439,6 @@ static void impl_on_notify_events(struct spa_source *source)
 		void *p, *e;
 
 		len = read(source->fd, &buf, sizeof(buf));
-		if (len < 0 && errno != EAGAIN)
-			break;
 		if (len <= 0)
 			break;
 
@@ -441,25 +447,23 @@ static void impl_on_notify_events(struct spa_source *source)
 		for (p = &buf; p < e;
 		    p = SPA_PTROFF(p, sizeof(struct inotify_event) + event->len, void)) {
 			event = (const struct inotify_event *) p;
+			struct device *device = NULL;
 
-			if ((event->mask & IN_ATTRIB)) {
-				struct device *device = NULL;
-
-				for (size_t i = 0; i < this->n_devices; i++) {
-					if (this->devices[i].inotify_wd == event->wd) {
-						device = &this->devices[i];
-						break;
-					}
+			for (size_t i = 0; i < this->n_devices; i++) {
+				if (this->devices[i].inotify_wd == event->wd) {
+					device = &this->devices[i];
+					break;
 				}
-
-				spa_assert(device);
-
-				bool access = check_access(this, device);
-				if (access && !device->emitted)
-					process_device(this, ACTION_ADD, device->dev);
-				else if (!access && device->emitted)
-					process_device(this, ACTION_DISABLE, device->dev);
 			}
+
+			if (!device)
+				continue;
+
+			if (event->mask & IN_ATTRIB)
+				process_device(this, ACTION_CHANGE, device);
+
+			if (event->mask & IN_IGNORED)
+				device->inotify_wd = -1;
 		}
 	}
 }
@@ -467,6 +471,12 @@ static void impl_on_notify_events(struct spa_source *source)
 static int start_inotify(struct impl *this)
 {
 	int notify_fd;
+
+#ifdef HAVE_LOGIND
+	/* Do not use inotify when using logind session monitoring */
+	if (this->logind_monitor)
+		return 0;
+#endif
 
 	if (this->notify.fd != -1)
 		return 0;
@@ -482,11 +492,67 @@ static int start_inotify(struct impl *this)
 
 	spa_loop_add_source(this->main_loop, &this->notify);
 
+	return 0;
+}
+
+#ifdef HAVE_LOGIND
+static void impl_on_logind_events(struct spa_source *source)
+{
+	struct impl *this = source->data;
+
+	/* Recheck access on all v4l2 devices on logind session changes */
 	for (size_t i = 0; i < this->n_devices; i++)
-		start_watching_device(this, &this->devices[i]);
+		process_device(this, ACTION_CHANGE, &this->devices[i]);
+
+	sd_login_monitor_flush(this->logind_monitor);
+}
+
+static int start_logind(struct impl *this)
+{
+	int res;
+
+	if (this->logind_monitor)
+		return 0;
+
+	/* If we are not actually running logind become a NOP */
+	if (access("/run/systemd/seats/", F_OK) < 0)
+		return 0;
+
+	res = sd_login_monitor_new("session", &this->logind_monitor);
+	if (res < 0)
+		return res;
+
+	spa_log_info(this->log, "start logind monitoring");
+
+	this->logind.func = impl_on_logind_events;
+	this->logind.data = this;
+	this->logind.fd = sd_login_monitor_get_fd(this->logind_monitor);
+	this->logind.mask = SPA_IO_IN | SPA_IO_ERR;
+
+	spa_loop_add_source(this->main_loop, &this->logind);
 
 	return 0;
 }
+
+static void stop_logind(struct impl *this)
+{
+	if (this->logind_monitor) {
+		spa_loop_remove_source(this->main_loop, &this->logind);
+		sd_login_monitor_unref(this->logind_monitor);
+		this->logind_monitor = NULL;
+	}
+}
+#else
+/* Stubs to avoid more ifdefs below */
+static int start_logind(struct impl *this)
+{
+	return 0;
+}
+
+static void stop_logind(struct impl *this)
+{
+}
+#endif
 
 static void impl_on_fd_events(struct spa_source *source)
 {
@@ -503,13 +569,11 @@ static void impl_on_fd_events(struct spa_source *source)
 
 	spa_log_debug(this->log, "action %s", action);
 
-	start_inotify(this);
-
 	if (spa_streq(action, "add") ||
 	    spa_streq(action, "change")) {
-		process_device(this, ACTION_ADD, dev);
+		process_udev_device(this, ACTION_CHANGE, dev);
 	} else if (spa_streq(action, "remove")) {
-		process_device(this, ACTION_REMOVE, dev);
+		process_udev_device(this, ACTION_REMOVE, dev);
 	}
 	udev_device_unref(dev);
 }
@@ -537,6 +601,9 @@ static int start_monitor(struct impl *this)
 	spa_log_debug(this->log, "monitor %p", this->umonitor);
 	spa_loop_add_source(this->main_loop, &this->source);
 
+	if ((res = start_logind(this)) < 0)
+		return res;
+
 	if ((res = start_inotify(this)) < 0)
 		return res;
 
@@ -555,6 +622,7 @@ static int stop_monitor(struct impl *this)
 	this->umonitor = NULL;
 
 	stop_inotify(this);
+	stop_logind(this);
 
 	return 0;
 }
@@ -579,7 +647,7 @@ static int enum_devices(struct impl *this)
 		if (dev == NULL)
 			continue;
 
-		process_device(this, ACTION_ADD, dev);
+		process_udev_device(this, ACTION_CHANGE, dev);
 
 		udev_device_unref(dev);
 	}
@@ -633,10 +701,10 @@ impl_device_add_listener(void *object, struct spa_hook *listener,
 
 	emit_device_info(this, true);
 
-	if ((res = enum_devices(this)) < 0)
+	if ((res = start_monitor(this)) < 0)
 		return res;
 
-	if ((res = start_monitor(this)) < 0)
+	if ((res = enum_devices(this)) < 0)
 		return res;
 
         spa_hook_list_join(&this->hooks, &save);
@@ -701,6 +769,9 @@ impl_init(const struct spa_handle_factory *factory,
 
 	this = (struct impl *) handle;
 	this->notify.fd = -1;
+#ifdef HAVE_LOGIND
+	this->logind_monitor = NULL;
+#endif
 
 	this->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
 	this->main_loop = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Loop);
