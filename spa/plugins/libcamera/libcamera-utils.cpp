@@ -149,6 +149,7 @@ static int spa_libcamera_clear_buffers(struct impl *impl, struct port *port)
 
 	freeBuffers(impl, port);
 	port->n_buffers = 0;
+	port->ring = SPA_RINGBUFFER_INIT();
 
 	return 0;
 }
@@ -763,7 +764,7 @@ mmap_init(struct impl *impl, struct port *port,
 		} else if (d[0].type & (1u << SPA_DATA_MemPtr)) {
 			port->memtype = SPA_DATA_MemPtr;
 		} else {
-			spa_log_error(impl->log, "v4l2: can't use buffers of type %d", d[0].type);
+			spa_log_error(impl->log, "can't use buffers of type %d", d[0].type);
 			return -EINVAL;
 		}
 	}
@@ -920,7 +921,7 @@ static int spa_libcamera_stream_on(struct impl *impl)
 	int res;
 
 	if (!port->current_format) {
-		spa_log_error(impl->log, "Exting %s with -EIO", __FUNCTION__);
+		spa_log_error(impl->log, "Exiting %s with -EIO", __FUNCTION__);
 		return -EIO;
 	}
 

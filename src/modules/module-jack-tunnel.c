@@ -306,9 +306,11 @@ static void stream_state_changed(void *d, enum pw_filter_state old,
 	struct stream *s = d;
 	struct impl *impl = s->impl;
 	switch (state) {
-	case PW_FILTER_STATE_ERROR:
 	case PW_FILTER_STATE_UNCONNECTED:
 		pw_impl_module_schedule_destroy(impl->module);
+		break;
+	case PW_FILTER_STATE_ERROR:
+		pw_log_warn("stream %p: error: %s", s, error);
 		break;
 	case PW_FILTER_STATE_PAUSED:
 		s->running = false;
@@ -664,6 +666,18 @@ static int create_filters(struct impl *impl)
 	return res;
 }
 
+static inline uint64_t get_time_nsec(struct impl *impl)
+{
+	uint64_t nsec;
+	if (impl->sink.filter)
+		nsec = pw_filter_get_nsec(impl->sink.filter);
+	else if (impl->source.filter)
+		nsec = pw_filter_get_nsec(impl->source.filter);
+	else
+		nsec = 0;
+	return nsec;
+}
+
 static void *jack_process_thread(void *arg)
 {
 	struct impl *impl = arg;
@@ -693,10 +707,21 @@ static void *jack_process_thread(void *arg)
 			jack_time_t next_usecs;
 			float period_usecs;
 			jack_position_t pos;
+			uint64_t t1, t2, t3;
+			int64_t d1;
 
 			jack.get_cycle_times(impl->client,
 					&current_frames, &current_usecs,
 					&next_usecs, &period_usecs);
+
+			/* convert from JACK (likely MONOTONIC_RAW) to MONOTONIC */
+			t1 = get_time_nsec(impl) / 1000;
+			t2 = jack.get_time();
+			t3 = get_time_nsec(impl) / 1000;
+			d1 = t1 + (t3 - t1) / 2 - t2;
+
+			current_usecs += d1;
+			next_usecs += d1;
 
 			c->nsec = current_usecs * SPA_NSEC_PER_USEC;
 			c->rate = SPA_FRACTION(1, impl->samplerate);
