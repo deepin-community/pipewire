@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin2) unstable; urgency=medium
+
+  * Resolving file conflicts.
+
+ -- lichenggang <lichenggang@deepin.org>  Mon, 21 Oct 2024 15:14:55 +0800
+
 pipewire (1.2.5-1deepin1) unstable; urgency=medium
 
  *revert 64-bit time_t transition patch.
