@@ -8,8 +8,10 @@ export DEB_LDFLAGS_MAINT_APPEND = -Wl,-z,defs
 
 ifneq ($(filter nodoc,$(DEB_BUILD_PROFILES)),)
 DOCS=disabled
+MAN=disabled
 else
 DOCS=enabled
+MAN=enabled
 endif
 
 built_binaries := $(shell dh_listpackages)
@@ -28,7 +30,7 @@ else
 BLUEZ5_CODEC_LDAC=enabled
 endif
 
-ifneq (,$(filter m68k hurd-i386,$(DEB_HOST_ARCH)))
+ifneq (,$(filter m68k hurd-amd64 hurd-i386,$(DEB_HOST_ARCH)))
 LIBCAMERA=disabled
 else
 LIBCAMERA=enabled
@@ -39,10 +41,24 @@ ifeq (yes,$(shell dpkg-vendor --derives-from Ubuntu && echo yes))
 LV2=disabled
 LIBMYSOFA=disabled
 LIBFFADO=disabled
+ifneq (,$(filter amd64 arm64 armhf i386 powerpc ppc64el riscv64 s390x,$(DEB_HOST_ARCH)))
+SNAP=enabled
+else
+SNAP=disabled
+endif
 else
 LV2=enabled
 LIBMYSOFA=enabled
 LIBFFADO=enabled
+SNAP=disabled
+endif
+
+ifneq (,$(filter hurd-amd64 hurd-i386,$(DEB_HOST_ARCH)))
+UDEVRULESDIR=
+else
+export UDEVRULESDIR=/usr/lib/udev/rules.d
+# For pre-Trixie releases udev rules should go in:
+# export UDEVRULESDIR=/lib/udev/rules.d
 endif
 
 override_dh_auto_configure:
@@ -64,11 +80,13 @@ override_dh_auto_configure:
 		-Dffmpeg=disabled \
 		-Dinstalled_tests=$(INSTTEST) \
 		-Dlv2=$(LV2) \
-		-Dman=enabled \
+		-Dman=$(MAN) \
 		-Droc=enabled \
 		-Dsdl2=$(SDL2) \
 		-Dsession-managers= \
+		-Dsnap=$(SNAP) \
 		-Dtest=enabled \
+		-Dudevrulesdir=$(UDEVRULESDIR) \
 		-Dvideotestsrc=enabled \
 		-Dvulkan=disabled \
 		$(NULL)
@@ -90,9 +108,6 @@ override_dh_auto_test:
 		-- \
 		--timeout-multiplier $(test_timeout_multiplier) \
 		$(NULL)
-
-override_dh_missing:
-	dh_missing --fail-missing
 
 override_dh_makeshlibs:
 	dh_makeshlibs \

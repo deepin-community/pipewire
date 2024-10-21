@@ -50,10 +50,14 @@
  * - `ffado.slave-mode`: slave mode
  * - `ffado.snoop-mode`: snoop mode
  * - `ffado.verbose`: ffado verbose level
+ * - `ffado.rtprio`: ffado realtime priority, this is by default the PipeWire server
+ *                   priority + 5
+ * - `ffado.realtime`: ffado realtime mode. this requires correctly configured rlimits
+ *                     to acquire FIFO scheduling at the ffado.rtprio priority
  * - `latency.internal.input`: extra input latency in frames
  * - `latency.internal.output`: extra output latency in frames
- * - `source.props`: Extra properties for the source filter.
- * - `sink.props`: Extra properties for the sink filter.
+ * - `source.props`: Extra properties for the source filter
+ * - `sink.props`: Extra properties for the sink filter
  *
  * ## General options
  *
@@ -82,6 +86,8 @@
  *         #ffado.slave-mode  = false
  *         #ffado.snoop-mode  = false
  *         #ffado.verbose     = 0
+ *         #ffado.rtprio      = 65
+ *         #ffado.realtime    = true
  *         #latency.internal.input  = 0
  *         #latency.internal.output = 0
  *         #audio.position    = [ FL FR ]
@@ -103,6 +109,7 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
 #define MAX_PORTS	128
+#define FFADO_RT_PRIORITY_PACKETIZER_RELATIVE   5
 
 #define DEFAULT_DEVICES		"[ \"hw:0\" ]"
 #define DEFAULT_PERIOD_SIZE	1024
@@ -111,23 +118,25 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define DEFAULT_SLAVE_MODE	false
 #define DEFAULT_SNOOP_MODE	false
 #define DEFAULT_VERBOSE		0
+#define DEFAULT_RTPRIO		(RTPRIO_SERVER + FFADO_RT_PRIORITY_PACKETIZER_RELATIVE)
+#define DEFAULT_REALTIME	true
 
 #define DEFAULT_POSITION	"[ FL FR ]"
 #define DEFAULT_MIDI_PORTS	1
 
-#define FFADO_RT_PRIORITY_PACKETIZER_RELATIVE   5
-
-#define MODULE_USAGE	"( remote.name=<remote> ) "				\
-			"( driver.mode=<sink|source|duplex> ) "			\
-			"( ffado.devices=<devices array size, default \"hw:0\"> ) "	\
-			"( ffado.period-size=<period size, default 1024> ) "	\
-			"( ffado.period-num=<period num, default 3> ) "		\
-			"( ffado.sample-rate=<sampe rate, default 48000> ) "	\
-			"( ffado.slave-mode=<slave mode, default false> ) "	\
-			"( ffado.snoop-mode=<snoop mode, default false> ) "	\
-			"( ffado.verbose=<verbose level, default 0> ) "		\
-			"( audio.position=<channel map> ) "			\
-			"( source.props=<properties> ) "			\
+#define MODULE_USAGE	"( remote.name=<remote> ) "					\
+			"( driver.mode=<sink|source|duplex, default duplex> ) "		\
+			"( ffado.devices=<devices array, default "DEFAULT_DEVICES"> ) "	\
+			"( ffado.period-size=<period size, default 1024> ) "		\
+			"( ffado.period-num=<period num, default 3> ) "			\
+			"( ffado.sample-rate=<sampe rate, default 48000> ) "		\
+			"( ffado.slave-mode=<slave mode, default false> ) "		\
+			"( ffado.snoop-mode=<snoop mode, default false> ) "		\
+			"( ffado.verbose=<verbose level, default 0> ) "			\
+			"( ffado.rtprio=<realtime priority, default "SPA_STRINGIFY(DEFAULT_RTPRIO)"> ) "	\
+			"( ffado.realtime=<realtime mode, default true> ) "		\
+			"( audio.position=<channel map> ) "				\
+			"( source.props=<properties> ) "				\
 			"( sink.props=<properties> ) "
 
 
@@ -231,6 +240,8 @@ struct impl {
 	bool slave_mode;
 	bool snoop_mode;
 	uint32_t verbose;
+	int32_t rtprio;
+	bool realtime;
 
 	uint32_t input_latency;
 	uint32_t output_latency;
@@ -403,7 +414,7 @@ static int process_byte(struct port *p, uint32_t time, uint8_t byte,
 	int res = 0;
 	if (byte >= 0xf8) {
 		if (byte == 0xfd) {
-			pw_log_warn("droping invalid MIDI status bytes %08x", byte);
+			pw_log_warn("dropping invalid MIDI status bytes %08x", byte);
 			return false;
 		}
 		p->event_byte = byte;
@@ -543,8 +554,9 @@ static void stream_state_changed(void *d, enum pw_filter_state old,
 	struct impl *impl = s->impl;
 	switch (state) {
 	case PW_FILTER_STATE_ERROR:
+		pw_log_warn("filter state %d error: %s", state, error);
+		break;
 	case PW_FILTER_STATE_UNCONNECTED:
-		pw_log_error("filter state %d error: %s", state, error);
 		pw_impl_module_schedule_destroy(impl->module);
 		break;
 	case PW_FILTER_STATE_PAUSED:
@@ -623,6 +635,9 @@ static void source_process(void *d, struct spa_io_position *position)
 	uint32_t i, n_samples = position->clock.duration;
 
 	pw_log_trace_fp("process %d", impl->rt.triggered);
+
+	if (SPA_FLAG_IS_SET(impl->position->clock.flags, SPA_IO_CLOCK_FLAG_XRUN_RECOVER))
+		return;
 
 	if (!impl->rt.triggered) {
 		pw_log_trace_fp("done %u", impl->frame_time);
@@ -1125,8 +1140,8 @@ static int open_ffado_device(struct impl *impl)
 	impl->device_options.sample_rate = target_rate;
 	impl->device_options.period_size = target_period;
 	impl->device_options.nb_buffers = impl->n_periods;
-	impl->device_options.realtime = 1;
-	impl->device_options.packetizer_priority = RTPRIO_SERVER + FFADO_RT_PRIORITY_PACKETIZER_RELATIVE;
+	impl->device_options.realtime = impl->realtime;
+	impl->device_options.packetizer_priority = impl->rtprio;
 	impl->device_options.verbose = impl->verbose;
 	impl->device_options.slave_mode = impl->slave_mode;
 	impl->device_options.snoop_mode = impl->snoop_mode;
@@ -1356,6 +1371,9 @@ static void impl_destroy(struct impl *impl)
 	if (impl->ffado_timer)
 		pw_loop_destroy_source(impl->data_loop, impl->ffado_timer);
 
+	if (impl->data_loop)
+		pw_context_release_loop(impl->context, impl->data_loop);
+
 	pw_properties_free(impl->sink.props);
 	pw_properties_free(impl->source.props);
 	pw_properties_free(impl->props);
@@ -1450,7 +1468,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 {
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_properties *props = NULL;
-	struct pw_data_loop *data_loop;
 	struct impl *impl;
 	const char *str;
 	int res;
@@ -1490,6 +1507,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			"ffado.snoop-mode", DEFAULT_SNOOP_MODE);
 	impl->verbose = pw_properties_get_uint32(props,
 			"ffado.verbose", DEFAULT_VERBOSE);
+	impl->rtprio = pw_properties_get_uint32(props,
+			"ffado.rtprio", DEFAULT_RTPRIO);
+	impl->realtime = pw_properties_get_bool(props,
+			"ffado.realtime", DEFAULT_REALTIME);
 	impl->input_latency = pw_properties_get_uint32(props,
 			"latency.internal.input", 0);
 	impl->output_latency = pw_properties_get_uint32(props,
@@ -1510,8 +1531,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->module = module;
 	impl->context = context;
 	impl->main_loop = pw_context_get_main_loop(context);
-	data_loop = pw_context_get_data_loop(context);
-	impl->data_loop = pw_data_loop_get_loop(data_loop);
+	impl->data_loop = pw_context_acquire_loop(context, &props->dict);
 	impl->system = impl->main_loop->system;
 	impl->reset_work_id = SPA_ID_INVALID;
 
@@ -1541,6 +1561,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		goto error;
 	}
 
+	pw_properties_set(props, PW_KEY_NODE_LOOP_NAME, impl->data_loop->name);
 	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
 		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
 	if (pw_properties_get(props, PW_KEY_NODE_GROUP) == NULL)
@@ -1567,6 +1588,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if ((str = pw_properties_get(props, "source.props")) != NULL)
 		pw_properties_update_string(impl->source.props, str, strlen(str));
 
+	copy_props(impl, props, PW_KEY_NODE_LOOP_NAME);
 	copy_props(impl, props, PW_KEY_NODE_LINK_GROUP);
 	copy_props(impl, props, PW_KEY_NODE_GROUP);
 	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);

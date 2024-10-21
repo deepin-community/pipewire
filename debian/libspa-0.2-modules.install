@@ -10,8 +10,3 @@ usr/lib/*/spa-0.2/test
 usr/lib/*/spa-0.2/v4l2
 usr/lib/*/spa-0.2/videoconvert
 usr/lib/*/spa-0.2/videotestsrc
-usr/share/man/man1/spa-acp-tool.*
-usr/share/man/man1/spa-inspect.*
-usr/share/man/man1/spa-json-dump.*
-usr/share/man/man1/spa-monitor.*
-usr/share/man/man1/spa-resample.*

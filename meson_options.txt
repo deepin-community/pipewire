@@ -34,6 +34,15 @@ option('systemd',
        description: 'Enable systemd integration',
        type: 'feature',
        value: 'auto')
+option('logind',
+       description: 'Enable logind integration',
+       type: 'feature',
+       value: 'auto')
+option('logind-provider',
+       description: 'Provider for logind integration',
+       type: 'combo',
+       choices: ['libelogind', 'libsystemd'],
+       value: 'libsystemd')
 option('systemd-system-service',
        description: 'Install systemd system service file',
        type: 'feature',
@@ -342,6 +351,14 @@ option('libffado',
        description: 'Enable code that depends on libffado',
        type: 'feature',
        value: 'auto')
+option('gsettings-pulse-schema',
+       description: 'Install gsettings schema for pulseaudio',
+       type: 'feature',
+       value: 'auto')
+option('snap',
+       description : 'Enable Snap permissions support.',
+       type : 'feature',
+       value : 'auto')
 option('doc-prefix-value',
        description : 'Installation prefix to show in documentation instead of the actual value.',
        type : 'string',

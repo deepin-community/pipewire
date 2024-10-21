@@ -1,5 +1,5 @@
 project('pipewire', ['c' ],
-  version : '1.0.7',
+  version : '1.2.5',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.61.1',
   default_options : [ 'warning_level=3',
@@ -94,6 +94,7 @@ common_flags = [
   '-Wdeprecated-declarations',
   '-Wunused-result',
   '-Werror=return-type',
+  '-Werror=float-conversion',
 ]
 
 cc_flags = common_flags + [
@@ -101,6 +102,7 @@ cc_flags = common_flags + [
   '-DFASTPATH',
 # '-DSPA_DEBUG_MEMCPY',
   '-Werror=implicit-function-declaration',
+  '-Werror=incompatible-pointer-types',
   '-Werror=int-conversion',
   '-Werror=old-style-declaration',
   '-Werror=old-style-definition',
@@ -249,6 +251,10 @@ summary({'systemd conf data': systemd.found()}, bool_yn: true)
 summary({'libsystemd': systemd_dep.found()}, bool_yn: true)
 cdata.set('HAVE_SYSTEMD', systemd.found() and systemd_dep.found())
 
+logind_dep = dependency(get_option('logind-provider'), required: get_option('logind'))
+summary({'logind': logind_dep.found()}, bool_yn: true)
+cdata.set('HAVE_LOGIND', logind_dep.found())
+
 selinux_dep = dependency('libselinux', required: get_option('selinux'))
 summary({'libselinux': selinux_dep.found()}, bool_yn: true)
 cdata.set('HAVE_SELINUX', selinux_dep.found())
@@ -347,8 +353,11 @@ summary({'GLib-2.0 (Flatpak support)': glib2_dep.found()}, bool_yn: true, sectio
 flatpak_support = glib2_dep.found()
 cdata.set('HAVE_GLIB2', flatpak_support)
 
-gio_dep = dependency('gio-2.0', version : '>= 2.26.0', required : get_option('gsettings'))
-summary({'GIO (GSettings)': gio_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+gsettings_gio_dep = dependency('gio-2.0', version : '>= 2.26.0', required : get_option('gsettings'))
+summary({'GIO (GSettings)': gsettings_gio_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+if not gsettings_gio_dep.found() and get_option('gsettings-pulse-schema').enabled()
+  error('`gsettings-pulse-schema` is enabled but `gio` was not found.')
+endif
 
 gst_option = get_option('gstreamer')
 gst_deps_def = {
@@ -358,13 +367,14 @@ gst_deps_def = {
   'gio-2.0': {},
   'gio-unix-2.0': {},
   'gstreamer-1.0': {'version': '>= 1.10.0'},
-  'gstreamer-plugins-base-1.0': {},
+  'gstreamer-base-1.0': {},
   'gstreamer-video-1.0': {},
   'gstreamer-audio-1.0': {},
   'gstreamer-allocators-1.0': {},
 }
 
 gst_dep = []
+gst_dma_drm_found = false
 foreach depname, kwargs: gst_deps_def
   dep = dependency(depname, required: gst_option, kwargs: kwargs)
   summary({depname: dep.found()}, bool_yn: true, section: 'GStreamer modules')
@@ -377,6 +387,10 @@ foreach depname, kwargs: gst_deps_def
     break
   endif
   gst_dep += [dep]
+
+  if depname == 'gstreamer-allocators-1.0' and dep.version().version_compare('>= 1.23.1')
+    gst_dma_drm_found = true
+  endif
 endforeach
 
 # This code relies on the array being empty if any dependency was not found
@@ -385,18 +399,26 @@ summary({'gstreamer-device-provider': gst_dp_found}, bool_yn: true, section: 'Ba
 
 cdata.set('HAVE_GSTREAMER_DEVICE_PROVIDER', get_option('gstreamer-device-provider').allowed())
 
-webrtc_dep = dependency('webrtc-audio-processing-1',
-  version : ['>= 1.2' ],
-  required : false)
-cdata.set('HAVE_WEBRTC1', webrtc_dep.found())
-if webrtc_dep.found()
+summary({'gstreamer DMA_DRM support': gst_dma_drm_found}, bool_yn: true, section: 'Backend')
+cdata.set('HAVE_GSTREAMER_DMA_DRM', gst_dma_drm_found)
+
+if get_option('echo-cancel-webrtc').disabled()
+  webrtc_dep = dependency('', required: false)
   summary({'WebRTC Echo Canceling >= 1.2': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 else
-  webrtc_dep = dependency('webrtc-audio-processing',
-    version : ['>= 0.2', '< 1.0'],
-    required : get_option('echo-cancel-webrtc'))
-  cdata.set('HAVE_WEBRTC', webrtc_dep.found())
-  summary({'WebRTC Echo Canceling < 1.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+  webrtc_dep = dependency('webrtc-audio-processing-1',
+    version : ['>= 1.2' ],
+    required : false)
+  cdata.set('HAVE_WEBRTC1', webrtc_dep.found())
+  if webrtc_dep.found()
+    summary({'WebRTC Echo Canceling >= 1.2': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+  else
+    webrtc_dep = dependency('webrtc-audio-processing',
+      version : ['>= 0.2', '< 1.0'],
+      required : get_option('echo-cancel-webrtc'))
+    cdata.set('HAVE_WEBRTC', webrtc_dep.found())
+    summary({'WebRTC Echo Canceling < 1.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+  endif
 endif
 
 # On FreeBSD and MidnightBSD, epoll-shim library is required for eventfd() and timerfd()
@@ -436,6 +458,22 @@ summary({'lilv (for lv2 plugins)': lilv_lib.found()}, bool_yn: true)
 
 libffado_dep = dependency('libffado', required: get_option('libffado'))
 summary({'ffado': libffado_dep.found()}, bool_yn: true)
+glib2_snap_dep = dependency('glib-2.0', required : get_option('snap'))
+gio2_snap_dep = dependency('gio-2.0', required : get_option('snap'))
+apparmor_snap_dep = dependency('libapparmor', required : get_option('snap'))
+if dependency('snapd-glib-2', required: false).found()
+  snap_dep = dependency('snapd-glib-2', required : get_option('snap'))
+else
+  snap_dep = dependency('snapd-glib', required : get_option('snap'))
+endif
+if snap_dep.found() and glib2_snap_dep.found() and gio2_snap_dep.found() and apparmor_snap_dep.found()
+  cdata.set('HAVE_SNAP', true)
+  snap_deps = [glib2_snap_dep, gio2_snap_dep, snap_dep, apparmor_snap_dep]
+endif
+summary({'GLib-2.0 (Snap support)': glib2_snap_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+summary({'Gio-2.0 (Snap support)': gio2_snap_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+summary({'Apparmor (Snap support)': apparmor_snap_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+summary({'Snapd-glib (Snap support)': snap_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 
 check_functions = [
   ['gettid', '#include <unistd.h>', ['-D_GNU_SOURCE'], []],
@@ -493,7 +531,7 @@ endif
 
 generate_docs = get_option('man').enabled() or get_option('docs').enabled()
 if get_option('man').allowed() or get_option('docs').allowed()
-  doxygen = find_program('doxygen', required : generate_docs)
+  doxygen = find_program('doxygen', required : generate_docs, version : '>=1.9')
   pymod = import('python')
   python = pymod.find_installation('python3', required: generate_docs)
   generate_docs = doxygen.found() and python.found()

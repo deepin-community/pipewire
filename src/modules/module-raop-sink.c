@@ -29,6 +29,7 @@
 
 #include "config.h"
 
+#include <spa/utils/cleanup.h>
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
@@ -39,9 +40,10 @@
 #include <spa/param/audio/raw.h>
 #include <spa/param/latency-utils.h>
 
-#include <pipewire/cleanup.h>
 #include <pipewire/impl.h>
 #include <pipewire/i18n.h>
+
+#include "network-utils.h"
 
 #include "module-raop/rtsp-client.h"
 #include "module-rtp/rtp.h"
@@ -123,7 +125,7 @@
 
 #define NAME "raop-sink"
 
-PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
+PW_LOG_TOPIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
 #define BUFFER_SIZE		(1u<<22)
@@ -252,7 +254,7 @@ struct impl {
 	struct spa_source *server_source;
 
 	uint32_t psamples;
-	uint64_t rate;
+	uint32_t rate;
 	uint32_t mtu;
 	uint32_t stride;
 	uint32_t latency;
@@ -586,38 +588,25 @@ error:
 static int connect_socket(struct impl *impl, int type, int fd, uint16_t port)
 {
 	const char *host;
-	struct sockaddr_in sa4;
-	struct sockaddr_in6 sa6;
-	struct sockaddr *sa;
-	size_t salen;
-	int res, af;
+	struct sockaddr_storage addr;
+	socklen_t len = 0;
+	int res;
 
 	host = pw_properties_get(impl->props, "raop.ip");
 	if (host == NULL)
 		return -EINVAL;
 
-	if (inet_pton(AF_INET, host, &sa4.sin_addr) > 0) {
-		sa4.sin_family = af = AF_INET;
-		sa4.sin_port = htons(port);
-		sa = (struct sockaddr *) &sa4;
-		salen = sizeof(sa4);
-	} else if (inet_pton(AF_INET6, host, &sa6.sin6_addr) > 0) {
-		sa6.sin6_family = af = AF_INET6;
-		sa6.sin6_port = htons(port);
-		sa = (struct sockaddr *) &sa6;
-		salen = sizeof(sa6);
-	} else {
-		pw_log_error("Invalid host '%s'", host);
+	if ((res = pw_net_parse_address(host, port, &addr, &len)) < 0) {
+		pw_log_error("Invalid host '%s' port:%d", host, port);
 		return -EINVAL;
 	}
-
 	if (fd < 0 &&
-	    (fd = socket(af, type | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0) {
+	    (fd = socket(addr.ss_family, type | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0) {
 		pw_log_error("socket failed: %m");
 		return -errno;
 	}
 
-	res = connect(fd, sa, salen);
+	res = connect(fd, (struct sockaddr*)&addr, len);
 	if (res < 0 && errno != EINPROGRESS) {
 		res = -errno;
 		pw_log_error("connect failed: %m");
@@ -864,7 +853,7 @@ static void rtsp_do_post_feedback(void *data, uint64_t expirations)
 
 static uint32_t msec_to_samples(struct impl *impl, uint32_t msec)
 {
-	return msec * impl->rate / 1000;
+	return (uint64_t) msec * impl->rate / 1000;
 }
 
 static int rtsp_record_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
@@ -880,6 +869,13 @@ static int rtsp_record_reply(void *data, int status, const struct spa_dict *head
 	struct timespec timeout, interval;
 
 	pw_log_info("record status: %d", status);
+	switch (status) {
+	case 200:
+		break;
+	default:
+		pw_impl_module_schedule_destroy(impl->module);
+		return 0;
+	}
 
 	timeout.tv_sec = 2;
 	timeout.tv_nsec = 0;
@@ -971,6 +967,7 @@ on_server_source_io(void *data, int fd, uint32_t mask)
 	return;
 error:
 	pw_loop_update_io(impl->loop, impl->server_source, 0);
+	pw_impl_module_schedule_destroy(impl->module);
 }
 
 static int rtsp_setup_reply(void *data, int status, const struct spa_dict *headers, const struct pw_array *content)
@@ -982,6 +979,13 @@ static int rtsp_setup_reply(void *data, int status, const struct spa_dict *heade
 	uint16_t control_port, timing_port;
 
 	pw_log_info("setup status: %d", status);
+	switch (status) {
+	case 200:
+		break;
+	default:
+		pw_impl_module_schedule_destroy(impl->module);
+		return 0;
+	}
 
 	if ((str = spa_dict_lookup(headers, "Session")) == NULL) {
 		pw_log_error("missing Session header");
@@ -1110,6 +1114,13 @@ static int rtsp_announce_reply(void *data, int status, const struct spa_dict *he
 	struct impl *impl = data;
 
 	pw_log_info("announce status: %d", status);
+	switch (status) {
+	case 200:
+		break;
+	default:
+		pw_impl_module_schedule_destroy(impl->module);
+		return 0;
+	}
 
 	pw_properties_set(impl->headers, "Apple-Challenge", NULL);
 
@@ -1232,7 +1243,7 @@ static int rtsp_do_announce(struct impl *impl)
 				"a=rtpmap:96 AppleLossless\r\n"
 				"a=fmtp:96 %d 0 16 40 10 14 2 255 0 0 %u\r\n",
 				impl->session_id, ip_version, local_ip,
-				ip_version, host, impl->psamples, (uint32_t)impl->rate);
+				ip_version, host, impl->psamples, impl->rate);
 		if (!sdp)
 			return -errno;
 		break;
@@ -1247,7 +1258,7 @@ static int rtsp_do_announce(struct impl *impl)
 				"a=fmtp:96 %d 0 16 40 10 14 2 255 0 0 %u\r\n"
 				"a=min-latency:%d",
 				impl->session_id, ip_version, local_ip,
-				ip_version, host, impl->psamples, (uint32_t)impl->rate,
+				ip_version, host, impl->psamples, impl->rate,
 				rtp_latency);
 		if (!sdp)
 			return -errno;
@@ -1284,7 +1295,7 @@ static int rtsp_do_announce(struct impl *impl)
 				"a=rsaaeskey:%s\r\n"
 				"a=aesiv:%s\r\n",
 				impl->session_id, ip_version, local_ip,
-				ip_version, host, impl->psamples, (uint32_t)impl->rate,
+				ip_version, host, impl->psamples, impl->rate,
 				key, iv);
 		if (!sdp)
 			return -errno;
@@ -1302,6 +1313,13 @@ static int rtsp_post_auth_setup_reply(void *data, int status, const struct spa_d
 	struct impl *impl = data;
 
 	pw_log_info("auth-setup status: %d", status);
+	switch (status) {
+	case 200:
+		break;
+	default:
+		pw_impl_module_schedule_destroy(impl->module);
+		return 0;
+	}
 
 	return rtsp_do_announce(impl);
 }
@@ -1332,6 +1350,9 @@ static int rtsp_options_auth_reply(void *data, int status, const struct spa_dict
 		else
 			res = rtsp_do_announce(impl);
 		break;
+	default:
+		pw_impl_module_schedule_destroy(impl->module);
+		return 0;
 	}
 	return res;
 }
@@ -1405,6 +1426,9 @@ static int rtsp_options_reply(void *data, int status, const struct spa_dict *hea
 		else
 			res = rtsp_do_announce(impl);
 		break;
+	default:
+		pw_impl_module_schedule_destroy(impl->module);
+		return 0;
 	}
 	return res;
 }
@@ -1614,14 +1638,14 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
 					soft_vols[i] = 1.0f;
 				}
 				volume /= n_vols;
-				volume = SPA_CLAMPF(cbrt(volume) * 30 - 30, VOLUME_MIN, VOLUME_MAX);
+				volume = SPA_CLAMPF(cbrtf(volume) * 30 - 30, VOLUME_MIN, VOLUME_MAX);
 				impl->volume = volume;
 
 				rtsp_send_volume(impl);
+				spa_pod_builder_prop(&b, SPA_PROP_softVolumes, 0);
+				spa_pod_builder_array(&b, sizeof(float), SPA_TYPE_Float,
+						n_vols, soft_vols);
 			}
-			spa_pod_builder_prop(&b, SPA_PROP_softVolumes, 0);
-			spa_pod_builder_array(&b, sizeof(float), SPA_TYPE_Float,
-					n_vols, soft_vols);
 			spa_pod_builder_raw_padded(&b, prop, SPA_POD_PROP_SIZE(prop));
 			break;
 		}
@@ -1856,7 +1880,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if (pw_properties_get(props, PW_KEY_AUDIO_FORMAT) == NULL)
 		pw_properties_setf(props, PW_KEY_AUDIO_FORMAT, "%s", RAOP_FORMAT);
 	if (pw_properties_get(props, PW_KEY_AUDIO_RATE) == NULL)
-		pw_properties_setf(props, PW_KEY_AUDIO_RATE, "%ld", impl->rate);
+		pw_properties_setf(props, PW_KEY_AUDIO_RATE, "%u", impl->rate);
 	if (pw_properties_get(props, PW_KEY_DEVICE_ICON_NAME) == NULL)
 		pw_properties_set(props, PW_KEY_DEVICE_ICON_NAME, "audio-speakers");
 	if (pw_properties_get(props, PW_KEY_NODE_NAME) == NULL)
@@ -1867,7 +1891,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if (pw_properties_get(props, PW_KEY_NODE_DESCRIPTION) == NULL)
 		pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION, "%s", name);
 	if (pw_properties_get(props, PW_KEY_NODE_LATENCY) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%d/%ld",
+		pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u",
 				impl->psamples, impl->rate);
 	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
 		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
@@ -1880,7 +1904,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if (pw_properties_get(props, "rtp.sender-ts-offset") == NULL)
 		pw_properties_setf(props, "rtp.sender-ts-offset", "%d", 0);
 	if (pw_properties_get(props, "sess.ts-direct") == NULL)
-		pw_properties_set(props, "sess.ts-direct", 0);
+		pw_properties_setf(props, "sess.ts-direct", "%d", 0);
 	if (pw_properties_get(props, "sess.media") == NULL)
 		pw_properties_set(props, "sess.media", "raop");
 	if (pw_properties_get(props, "sess.latency.msec") == NULL)
