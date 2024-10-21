@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin1) unstable; urgency=medium
+
+ *revert 64-bit time_t transition patch.
+
+ -- lichenggang <lichenggang@deepin.org>  Sat, 19 Oct 2024 19:08:23 +0800
+
 pipewire (1.2.5-1) unstable; urgency=medium
 
   * New upstream release
