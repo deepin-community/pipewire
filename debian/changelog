@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin4) unstable; urgency=medium
+
+  * Resolving file conflicts libpipewire-0.3-modules (<= 1.0.7-0deepin1).
+
+ -- lichenggang <lichenggang@deepin.org>  Wed, 23 Oct 2024 11:30:28 +0800
+
 pipewire (1.2.5-1deepin2) unstable; urgency=medium
 
   * Resolving file conflicts.

@@ -231,7 +231,7 @@ Depends: libpipewire-0.3-modules (= ${binary:Version}),
 Recommends: dbus-user-session,
             wireplumber,
             rtkit
-Breaks: pipewire (<< 0.3.5), libspa-0.2-modules (<= 1.0.7-0deepin1)
+Breaks: pipewire (<< 0.3.5), libspa-0.2-modules (<= 1.0.7-0deepin1), libpipewire-0.3-modules (<= 1.0.7-0deepin1)
 Replaces: pipewire (<< 0.3.5)
 Description: PipeWire multimedia server - programs
  PipeWire is a server and user space API to deal with multimedia
