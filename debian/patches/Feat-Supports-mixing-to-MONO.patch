@@ -1,0 +1,443 @@
+From 15fb036200ed9ef6f505c27205b6dec007d40b82 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Wed, 27 Nov 2024 16:02:07 +0800
+Subject: [PATCH] feat: Supports mixing to MONO
+
+---
+ spa/include/spa/param/props.h                 |   1 +
+ spa/plugins/audioconvert/audioconvert.c       |  25 ++++-
+ spa/plugins/audioconvert/channelmix-ops.c     |  94 +++++++++++++++-
+ spa/plugins/audioconvert/channelmix-ops.h     |   8 ++
+ .../module-protocol-pulse/pulse-server.c      | 105 +++++++++++++++++-
+ src/pipewire/keys.h                           |   2 +
+ 6 files changed, 224 insertions(+), 11 deletions(-)
+
+diff --git a/spa/include/spa/param/props.h b/spa/include/spa/param/props.h
+index a7a2e4c..bb6b887 100644
+--- a/spa/include/spa/param/props.h
++++ b/spa/include/spa/param/props.h
+@@ -114,6 +114,7 @@ enum spa_prop {
+ 
+ 
+ 	SPA_PROP_START_CUSTOM	= 0x1000000,
++	SPA_PROP_CUSTOM_mono,
+ };
+ 
+ /**
+diff --git a/spa/plugins/audioconvert/audioconvert.c b/spa/plugins/audioconvert/audioconvert.c
+index 1b5cbd0..6da09f7 100644
+--- a/spa/plugins/audioconvert/audioconvert.c
++++ b/spa/plugins/audioconvert/audioconvert.c
+@@ -22,6 +22,7 @@
+ #include <spa/node/utils.h>
+ #include <spa/node/keys.h>
+ #include <spa/param/audio/format-utils.h>
++#include <spa/param/audio/raw.h>
+ #include <spa/param/param.h>
+ #include <spa/param/latency-utils.h>
+ #include <spa/param/tag-utils.h>
+@@ -93,6 +94,7 @@ struct props {
+ 	double rate;
+ 	char wav_path[512];
+ 	unsigned int lock_volumes:1;
++	uint32_t mono_flag;
+ };
+ 
+ static void props_reset(struct props *props)
+@@ -1181,6 +1183,12 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
+ 				changed++;
+ 			}
+ 			break;
++		case SPA_PROP_CUSTOM_mono:
++			if (!p->lock_volumes &&
++				spa_pod_get_id(&prop->value, &p->mono_flag) == 0) {
++				changed++;
++			}
++			break;
+ 		case SPA_PROP_channelMap:
+ 			if ((n = spa_pod_copy_array(&prop->value, SPA_TYPE_Id,
+ 					p->channel_map, SPA_AUDIO_MAX_CHANNELS)) > 0) {
+@@ -1569,10 +1577,17 @@ static void set_volume(struct impl *this)
+ 	else
+ 		vol = &this->props.channel;
+ 
++	spa_log_debug(this->log, "%p have_soft_volume %d, get vol->n_volumes: %d", this, this->props.have_soft_volume, vol->n_volumes);
++
+ 	for (i = 0; i < vol->n_volumes; i++)
+ 		volumes[i] = SPA_CLAMPF(vol->volumes[dir->remap[i]],
+ 				this->props.min_volume, this->props.max_volume);
+ 
++	if (this->props.mono_flag == SPA_AUDIO_CHANNEL_MONO) {
++		channelmix_set_custom_flags(&this->mix, CHANNELMIX_CUSTOM_MIX_FLAG_MONO);
++	} else if (this->props.mono_flag == SPA_AUDIO_CHANNEL_NA)
++		channelmix_set_custom_flags(&this->mix, CHANNELMIX_CUSTOM_MIX_FLAG_NA);
++
+ 	channelmix_set_volume(&this->mix,
+ 			SPA_CLAMPF(this->props.volume, this->props.min_volume, this->props.max_volume),
+ 			vol->mute, vol->n_volumes, volumes);
+@@ -2827,7 +2842,10 @@ static int channelmix_process_apply_sequence(struct impl *this,
+ 			sd = d;
+ 		}
+ 
+-		channelmix_process(&this->mix, (void**)sd, (const void**)ss, chunk);
++		if (this->mix.custom_mix_flags == CHANNELMIX_CUSTOM_MIX_FLAG_MONO)
++			channelmix_process_custom(&this->mix, (void**)sd, (const void**)ss, chunk);
++		else
++			channelmix_process(&this->mix, (void**)sd, (const void**)ss, chunk);
+ 
+ 		if (chunk != avail_samples) {
+ 			for (i = 0; i < this->mix.src_chan; i++)
+@@ -3208,7 +3226,10 @@ static int impl_node_process(void *object)
+ 			}
+ 		}
+ 		else {
+-			channelmix_process(&this->mix, out_datas, in_datas, n_samples);
++			if (this->mix.custom_mix_flags == CHANNELMIX_CUSTOM_MIX_FLAG_MONO)
++				channelmix_process_custom(&this->mix, out_datas, in_datas, n_samples);
++			else
++				channelmix_process(&this->mix, out_datas, in_datas, n_samples);
+ 		}
+ 	}
+ 	if (!resample_passthrough) {
+diff --git a/spa/plugins/audioconvert/channelmix-ops.c b/spa/plugins/audioconvert/channelmix-ops.c
+index 86cd049..a1df657 100644
+--- a/spa/plugins/audioconvert/channelmix-ops.c
++++ b/spa/plugins/audioconvert/channelmix-ops.c
+@@ -744,10 +744,28 @@ static void impl_channelmix_set_volume(struct channelmix *mix, float volume, boo
+ 				SPA_FLAG_CLEAR(mix->flags, CHANNELMIX_FLAG_COPY);
+ 		}
+ 	}
+-	SPA_FLAG_UPDATE(mix->flags, CHANNELMIX_FLAG_IDENTITY,
+-			dst_chan == src_chan && SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_COPY));
+ 
+-	spa_log_debug(mix->log, "flags:%08x", mix->flags);
++	if (mix->custom_mix_flags == CHANNELMIX_CUSTOM_MIX_FLAG_MONO) {
++		if (SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_IDENTITY))
++			SPA_FLAG_CLEAR(mix->flags, CHANNELMIX_FLAG_IDENTITY);
++
++		SPA_FLAG_UPDATE(mix->flags, CHANNELMIX_FLAG_CUSTOM_COPY,
++		dst_chan == src_chan && SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_COPY));
++	} else {
++		if (SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_CUSTOM_COPY))
++			SPA_FLAG_CLEAR(mix->flags, CHANNELMIX_FLAG_CUSTOM_COPY);
++
++		SPA_FLAG_UPDATE(mix->flags, CHANNELMIX_FLAG_IDENTITY,
++		dst_chan == src_chan && SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_COPY));
++	}
++
++	spa_log_debug(mix->log, "flags:%08x, custom mix flags:%08x", mix->flags,
++			mix->custom_mix_flags);
++}
++
++static void impl_channelmix_set_custom_flags(struct channelmix *mix, uint32_t flags)
++{
++	mix->custom_mix_flags = flags;
+ }
+ 
+ static void impl_channelmix_free(struct channelmix *mix)
+@@ -770,6 +788,7 @@ int channelmix_init(struct channelmix *mix)
+ 
+ 	mix->free = impl_channelmix_free;
+ 	mix->process = info->process;
++	mix->set_custom_flags = impl_channelmix_set_custom_flags;
+ 	mix->set_volume = impl_channelmix_set_volume;
+ 	mix->cpu_flags = info->cpu_flags;
+ 	mix->delay = (uint32_t)(mix->rear_delay * mix->freq / 1000.0f);
+@@ -788,3 +807,72 @@ int channelmix_init(struct channelmix *mix)
+ 	}
+ 	return make_matrix(mix);
+ }
++
++#define MAX_PORTS (SPA_AUDIO_MAX_CHANNELS + 1)
++
++static inline void clear_c(float *d, uint32_t n_samples)
++{
++	memset(d, 0, n_samples * sizeof(float));
++}
++
++static inline void copy_c(float *d, const float *s, uint32_t n_samples)
++{
++	spa_memcpy(d, s, n_samples * sizeof(float));
++}
++
++/* Mix and average data from all input channels */
++static void mix_and_average_src_channels(struct channelmix *mix, void * SPA_RESTRICT mix_data[], const void * SPA_RESTRICT in[], uint32_t n_samples)
++{
++	float *mixed_buffer;
++	float inv_src_chan;
++
++	if (mix->src_chan == 0 || in == NULL) {
++		spa_log_error(mix->log, "Input error");
++		return;
++	}
++
++	/* Allocate temporary buffer on stack using alloca to store mixed data */
++	mixed_buffer = (float *)alloca(n_samples * sizeof(float));
++	clear_c(mixed_buffer, n_samples);
++
++	/* Calculate the cumulative value of all input channels */
++	for (uint32_t i = 0; i < mix->src_chan; i++) {
++		for (uint32_t j = 0; j < n_samples; j++) {
++			mixed_buffer[j] += ((const float *)in[i])[j];
++		}
++	}
++
++	/* Calculate average value */
++	inv_src_chan = 1.0f / mix->src_chan;
++	for (uint32_t j = 0; j < n_samples; j++) {
++		mixed_buffer[j] *= inv_src_chan;
++	}
++
++	/* Copy mixed data to all input channels */
++	for (uint32_t i = 0; i < mix->src_chan; i++) {
++		copy_c((float *)mix_data[i], mixed_buffer, n_samples);
++	}
++}
++
++/* Mix to MONO */
++void channelmix_process_custom(struct channelmix *mix, void * SPA_RESTRICT out[], const void * SPA_RESTRICT in[], uint32_t n_samples)
++{
++	void *mix_data[MAX_PORTS];
++
++	if (SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_CUSTOM_COPY)) {
++		mix_and_average_src_channels(mix, out, in, n_samples);
++		return;
++	}
++
++	/* Allocate writable memory for each channel and clear it */
++	for (uint32_t i = 0; i < mix->src_chan; i++) {
++		mix_data[i] = alloca(n_samples * sizeof(float));
++		clear_c((float *)mix_data[i], n_samples);
++	}
++
++	/* Mix and average data from all input channels */
++	mix_and_average_src_channels(mix, mix_data, in, n_samples);
++
++	/* Further processing */
++	channelmix_process(mix, out, (const void *SPA_RESTRICT *)mix_data, n_samples);
++}
+diff --git a/spa/plugins/audioconvert/channelmix-ops.h b/spa/plugins/audioconvert/channelmix-ops.h
+index 8fb2e00..de182cf 100644
+--- a/spa/plugins/audioconvert/channelmix-ops.h
++++ b/spa/plugins/audioconvert/channelmix-ops.h
+@@ -48,6 +48,7 @@ struct channelmix {
+ #define CHANNELMIX_FLAG_IDENTITY	(1<<1)		/**< identity matrix */
+ #define CHANNELMIX_FLAG_EQUAL		(1<<2)		/**< all values are equal */
+ #define CHANNELMIX_FLAG_COPY		(1<<3)		/**< 1 on diagonal, can be nxm */
++#define CHANNELMIX_FLAG_CUSTOM_COPY	(1<<4)		/**< 1 on diagonal, can be nxm, custom */
+ 	uint32_t flags;
+ 	float matrix_orig[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS];
+ 	float matrix[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS];
+@@ -66,8 +67,13 @@ struct channelmix {
+ 	float taps[MAX_TAPS];
+ 	uint32_t n_taps;
+ 
++#define CHANNELMIX_CUSTOM_MIX_FLAG_NA    (1 << 0)	/**< Not Applicable */
++#define CHANNELMIX_CUSTOM_MIX_FLAG_MONO  (1 << 1)	/**< MONO */
++	uint32_t custom_mix_flags;
++
+ 	void (*process) (struct channelmix *mix, void * SPA_RESTRICT dst[],
+ 			const void * SPA_RESTRICT src[], uint32_t n_samples);
++	void (*set_custom_flags)(struct channelmix *mix, uint32_t flags);
+ 	void (*set_volume) (struct channelmix *mix, float volume, bool mute,
+ 			uint32_t n_channel_volumes, float *channel_volumes);
+ 	void (*free) (struct channelmix *mix);
+@@ -76,6 +82,7 @@ struct channelmix {
+ };
+ 
+ int channelmix_init(struct channelmix *mix);
++void channelmix_process_custom(struct channelmix *mix, void * SPA_RESTRICT out[], const void * SPA_RESTRICT in[], uint32_t n_samples);
+ 
+ static const struct channelmix_upmix_info {
+ 	const char *label;
+@@ -97,6 +104,7 @@ static inline uint32_t channelmix_upmix_from_label(const char *label)
+ }
+ 
+ #define channelmix_process(mix,...)	(mix)->process(mix, __VA_ARGS__)
++#define channelmix_set_custom_flags(mix, ...) (mix)->set_custom_flags(mix, __VA_ARGS__)
+ #define channelmix_set_volume(mix,...)	(mix)->set_volume(mix, __VA_ARGS__)
+ #define channelmix_free(mix)		(mix)->free(mix)
+ 
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index a2b032f..8e45a65 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -10,6 +10,7 @@
+ #include <string.h>
+ #include <time.h>
+ #include <sys/time.h>
++#include <math.h>
+ 
+ #include <pipewire/log.h>
+ 
+@@ -56,6 +57,9 @@
+ #include "utils.h"
+ #include "volume.h"
+ 
++#define ENABLE_MONO_FLAG	1
++#define DISABLE_MONO_FLAG	32
++
+ #define DEFAULT_ALLOW_MODULE_LOADING 	"true"
+ #define DEFAULT_MIN_REQ		"128/48000"
+ #define DEFAULT_DEFAULT_REQ	"960/48000"
+@@ -2740,6 +2744,58 @@ static int set_node_volume_mute(struct pw_manager_object *o,
+ 	return 0;
+ }
+ 
++static int set_node_volume_mute_custom_mono(struct client *client, struct pw_manager_object *o,
++		struct volume *vol, bool *mute, bool is_monitor)
++{
++	char buf[1024];
++	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
++	struct spa_pod_frame f[1];
++	struct spa_pod *param;
++	uint32_t volprop, muteprop, monoprop;
++	uint32_t mono_flag;
++
++	if (!SPA_FLAG_IS_SET(o->permissions, PW_PERM_W | PW_PERM_X))
++		return -EACCES;
++	if (o->proxy == NULL)
++		return -ENOENT;
++
++	if (is_monitor) {
++		volprop = SPA_PROP_monitorVolumes;
++		muteprop = SPA_PROP_monitorMute;
++	} else {
++		volprop = SPA_PROP_channelVolumes;
++		muteprop = SPA_PROP_mute;
++	}
++
++	spa_pod_builder_push_object(&b, &f[0],
++			SPA_TYPE_OBJECT_Props,  SPA_PARAM_Props);
++	if (vol)
++		spa_pod_builder_add(&b,
++				volprop, SPA_POD_Array(sizeof(float),
++							SPA_TYPE_Float,
++							vol->channels,
++							vol->values), 0);
++	if (mute)
++		spa_pod_builder_add(&b,
++				muteprop, SPA_POD_Bool(*mute), 0);
++
++	if (vol) {
++		mono_flag = pw_properties_get_uint32(client->props, PW_KEY_APP_MONO_FLAG, 0);
++
++		if (mono_flag != 0) {
++			monoprop = SPA_PROP_CUSTOM_mono;
++			spa_pod_builder_add(&b,
++					monoprop, SPA_POD_Id(mono_flag), 0);
++		}
++	}
++
++	param = spa_pod_builder_pop(&b, &f[0]);
++
++	pw_node_set_param((struct pw_node*)o->proxy,
++		SPA_PARAM_Props, 0, param);
++	return 0;
++}
++
+ static int set_card_volume_mute_delay(struct pw_manager_object *o, uint32_t port_index,
+ 		uint32_t device_id, struct volume *vol, bool *mute, int64_t *latency_offset)
+ {
+@@ -2906,6 +2962,10 @@ done:
+ 	return operation_new(client, tag);
+ }
+ 
++static inline bool float_equal(float a, float b) {
++    return fabsf(a - b) < 1e-6f;
++}
++
+ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag, struct message *m)
+ {
+ 	struct pw_manager *manager = client->manager;
+@@ -2918,6 +2978,8 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 	struct device_info dev_info;
+ 	enum pw_direction direction;
+ 	bool is_monitor;
++	uint32_t mono_flag;
++	uint8_t i;
+ 
+ 	if ((res = message_get(m,
+ 			TAG_U32, &index,
+@@ -2926,8 +2988,8 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 			TAG_INVALID)) < 0)
+ 		return -EPROTO;
+ 
+-	pw_log_info("[%s] %s tag:%u index:%u name:%s",
+-			client->name, commands[command].name, tag, index, name);
++	pw_log_info("[%s] %s tag:%u index:%u name:%s volume.channels:%u",
++			client->name, commands[command].name, tag, index, name, volume.channels);
+ 
+ 	if ((index == SPA_ID_INVALID && name == NULL) ||
+ 	    (index != SPA_ID_INVALID && name != NULL))
+@@ -2949,19 +3011,50 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 
+ 	get_device_info(o, &dev_info, direction, is_monitor);
+ 
++	/* Continue do anything if the volume is the same for debug purposes */
++	/*
+ 	if (dev_info.have_volume &&
+ 	    volume_compare(&dev_info.volume_info.volume, &volume) == 0)
+ 		goto done;
++	*/
++
++	if (volume.channels == ENABLE_MONO_FLAG || volume.channels == DISABLE_MONO_FLAG) {
++		if (volume.channels == ENABLE_MONO_FLAG) {
++			mono_flag = SPA_AUDIO_CHANNEL_MONO;
++			pw_properties_setf(client->props, PW_KEY_APP_MONO_FLAG, "%u", mono_flag);
++		} else if (volume.channels == DISABLE_MONO_FLAG) {
++			mono_flag = SPA_AUDIO_CHANNEL_NA;
++			pw_properties_setf(client->props, PW_KEY_APP_MONO_FLAG, "%u", mono_flag);
++
++			volume.channels = 2;
++		}
++
++		if (dev_info.have_volume) {
++			for (i = 0; i < volume.channels; i++) {
++				if (float_equal(volume.values[i], dev_info.volume_info.volume.values[i])) {
++					pw_log_debug("%d: volume.value %f==%f", i, volume.values[i], dev_info.volume_info.volume.values[i]);
++					if (volume.values[i] > 0.01f && volume.values[i] < 0.9f)
++						volume.values[i] += 0.001f;
++				}
++			}
++		}
++	}
+ 
+ 	if (dev_info.card_id != SPA_ID_INVALID) {
+ 		struct selector sel = { .id = dev_info.card_id, .type = pw_manager_object_is_card, };
+ 		card = select_object(manager, &sel);
+ 	}
+-	if (card != NULL && !is_monitor && dev_info.active_port != SPA_ID_INVALID)
++
++	if (card != NULL && !is_monitor && dev_info.active_port != SPA_ID_INVALID) {
++		res = set_node_volume_mute_custom_mono(client, o, &volume, NULL, is_monitor);
++
++		if (res < 0)
++			return res;
++
+ 		res = set_card_volume_mute_delay(card, dev_info.active_port,
+-				dev_info.device, &volume, NULL, NULL);
+-	else
+-		res = set_node_volume_mute(o, &volume, NULL, is_monitor);
++			dev_info.device, &volume, NULL, NULL);
++	} else
++		res = set_node_volume_mute_custom_mono(client, o, &volume, NULL, is_monitor);
+ 
+ 	if (res < 0)
+ 		return res;
+diff --git a/src/pipewire/keys.h b/src/pipewire/keys.h
+index 2a2ed60..5526835 100644
+--- a/src/pipewire/keys.h
++++ b/src/pipewire/keys.h
+@@ -128,6 +128,8 @@ extern "C" {
+ #define PW_KEY_APP_PROCESS_SESSION_ID	"application.process.session-id" /**< login session of the
+ 									   *  application, on Unix the
+ 									   *  value of $XDG_SESSION_ID. */
++#define PW_KEY_APP_MONO_FLAG		"application.mono.flag"	/**< application mono flag */
++
+ /** window system */
+ #define PW_KEY_WINDOW_X11_DISPLAY	"window.x11.display"	/**< the X11 display string. Ex. ":0.0" */
+ 
+-- 
+2.20.1
+
