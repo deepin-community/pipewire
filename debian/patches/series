@@ -1,3 +1,4 @@
 Don-t-automatically-start-pipewire-for-root-logins.patch
 Fix_services.patch
 Feat-Supports-mixing-to-MONO.patch
+Fix-Do-not-start-pipewire-in-Display-Manager-user.patch

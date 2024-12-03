@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin6) unstable; urgency=medium
+
+  *  fix: Do not start pipewire in Display Manager user.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Tue, 03 Dec 2024 11:26:12 +0800
+
 pipewire (1.2.5-1deepin5) unstable; urgency=medium
 
   * Feat: Supports mixing to mono.
