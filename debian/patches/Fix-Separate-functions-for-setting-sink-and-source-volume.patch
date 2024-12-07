@@ -1,0 +1,129 @@
+From 9872a1858c9a75664198e018cea07bca577a5a67 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Fri, 6 Dec 2024 13:40:05 +0800
+Subject: [PATCH] fix: Separate functions for setting sink and source volume
+
+---
+ .../module-protocol-pulse/pulse-server.c      | 75 +++++++++++++++++--
+ 1 file changed, 69 insertions(+), 6 deletions(-)
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index 331dfd8..fa47c41 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -57,7 +57,7 @@
+ #include "utils.h"
+ #include "volume.h"
+ 
+-#define ENABLE_MONO_FLAG	1
++#define ENABLE_MONO_FLAG	31
+ #define DISABLE_MONO_FLAG	32
+ 
+ #define DEFAULT_ALLOW_MODULE_LOADING 	"true"
+@@ -2968,7 +2968,7 @@ static inline bool float_equal(float a, float b) {
+     return fabsf(a - b) < 1e-6f;
+ }
+ 
+-static int do_set_volume(struct client *client, uint32_t command, uint32_t tag, struct message *m)
++static int do_set_sink_volume(struct client *client, uint32_t command, uint32_t tag, struct message *m)
+ {
+ 	struct pw_manager *manager = client->manager;
+ 	struct pw_node_info *info;
+@@ -3029,10 +3029,10 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 		} else if (volume.channels == DISABLE_MONO_FLAG) {
+ 			mono_flag = SPA_AUDIO_CHANNEL_NA;
+ 			pw_properties_setf(client->props, PW_KEY_APP_MONO_FLAG, "%u", mono_flag);
+-
+-			volume.channels = 2;
+ 		}
+ 
++		volume.channels = 2;
++
+ 		pw_log_info("mono flag: client: %p, set mono_flag: %u", client, mono_flag);
+ 
+ 		if (dev_info.have_volume) {
+@@ -3065,6 +3065,69 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 	if (res < 0)
+ 		return res;
+ 
++	return operation_new(client, tag);
++}
++
++static int do_set_source_volume(struct client *client, uint32_t command, uint32_t tag, struct message *m)
++{
++	struct pw_manager *manager = client->manager;
++	struct pw_node_info *info;
++	uint32_t index;
++	const char *name;
++	struct volume volume;
++	struct pw_manager_object *o, *card = NULL;
++	int res;
++	struct device_info dev_info;
++	enum pw_direction direction;
++	bool is_monitor;
++
++	if ((res = message_get(m,
++			TAG_U32, &index,
++			TAG_STRING, &name,
++			TAG_CVOLUME, &volume,
++			TAG_INVALID)) < 0)
++		return -EPROTO;
++
++	pw_log_info("[%s] %s tag:%u index:%u name:%s",
++			client->name, commands[command].name, tag, index, name);
++
++	if ((index == SPA_ID_INVALID && name == NULL) ||
++	    (index != SPA_ID_INVALID && name != NULL))
++		return -EINVAL;
++
++	if (command == COMMAND_SET_SINK_VOLUME) {
++		if (client->quirks & QUIRK_BLOCK_SINK_VOLUME)
++			return -EPERM;
++		direction = PW_DIRECTION_OUTPUT;
++	} else {
++		if (client->quirks & QUIRK_BLOCK_SOURCE_VOLUME)
++			return -EPERM;
++		direction = PW_DIRECTION_INPUT;
++	}
++
++	o = find_device(client, index, name, direction == PW_DIRECTION_OUTPUT, &is_monitor);
++	if (o == NULL || (info = o->info) == NULL || info->props == NULL)
++		return -ENOENT;
++
++	get_device_info(o, &dev_info, direction, is_monitor);
++
++	if (dev_info.have_volume &&
++	    volume_compare(&dev_info.volume_info.volume, &volume) == 0)
++		goto done;
++
++	if (dev_info.card_id != SPA_ID_INVALID) {
++		struct selector sel = { .id = dev_info.card_id, .type = pw_manager_object_is_card, };
++		card = select_object(manager, &sel);
++	}
++	if (card != NULL && !is_monitor && dev_info.active_port != SPA_ID_INVALID)
++		res = set_card_volume_mute_delay(card, dev_info.active_port,
++				dev_info.device, &volume, NULL, NULL);
++	else
++		res = set_node_volume_mute(o, &volume, NULL, is_monitor);
++
++	if (res < 0)
++		return res;
++
+ done:
+ 	return operation_new(client, tag);
+ }
+@@ -5306,9 +5369,9 @@ const struct command commands[COMMAND_MAX] =
+ 	COMMAND(GET_SAMPLE_INFO_LIST, do_get_sample_info_list),
+ 	COMMAND(GET_CARD_INFO_LIST, do_get_info_list),
+ 
+-	COMMAND(SET_SINK_VOLUME, do_set_volume),
++	COMMAND(SET_SINK_VOLUME, do_set_sink_volume),
+ 	COMMAND(SET_SINK_INPUT_VOLUME, do_set_stream_volume),
+-	COMMAND(SET_SOURCE_VOLUME, do_set_volume),
++	COMMAND(SET_SOURCE_VOLUME, do_set_source_volume),
+ 
+ 	COMMAND(SET_SINK_MUTE, do_set_mute),
+ 	COMMAND(SET_SOURCE_MUTE, do_set_mute),
+-- 
+2.20.1
+
