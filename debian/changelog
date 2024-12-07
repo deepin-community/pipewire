@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin9) unstable; urgency=medium
+
+  * fix: Separate functions for setting sink and source volume.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 06 Dec 2024 13:52:17 +0800
+
 pipewire (1.2.5-1deepin8) unstable; urgency=medium
 
   * fix: Add log info of mono flag

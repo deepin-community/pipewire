@@ -4,3 +4,4 @@ Feat-Supports-mixing-to-MONO.patch
 Fix-Do-not-start-pipewire-in-Display-Manager-user.patch
 Fix-Add-debug-flags-of-pod-and-message.patch
 Fix-Add-log-info-of-mono-flag.patch
+Fix-Separate-functions-for-setting-sink-and-source-volume.patch
