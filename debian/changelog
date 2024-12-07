@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin8) unstable; urgency=medium
+
+  * fix: Add log info of mono flag
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 05 Dec 2024 17:40:57 +0800
+
 pipewire (1.2.5-1deepin7) unstable; urgency=medium
 
   * fix: Add debug flags of pod and message.
