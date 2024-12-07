@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin7) unstable; urgency=medium
+
+  * fix: Add debug flags of pod and message.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 05 Dec 2024 14:39:01 +0800
+
 pipewire (1.2.5-1deepin6) unstable; urgency=medium
 
   *  fix: Do not start pipewire in Display Manager user.
