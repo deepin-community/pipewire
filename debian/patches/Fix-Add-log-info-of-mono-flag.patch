@@ -1,0 +1,98 @@
+From 84a5a18cada55d538c05d679bd0079124bf0073b Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Thu, 5 Dec 2024 17:36:32 +0800
+Subject: [PATCH] fix: Add log info of mono flag
+
+---
+ spa/plugins/audioconvert/audioconvert.c          | 6 ++++++
+ spa/plugins/audioconvert/channelmix-ops.c        | 5 ++++-
+ src/modules/module-protocol-pulse/pulse-server.c | 6 ++++++
+ 3 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/spa/plugins/audioconvert/audioconvert.c b/spa/plugins/audioconvert/audioconvert.c
+index 6da09f7..db8701c 100644
+--- a/spa/plugins/audioconvert/audioconvert.c
++++ b/spa/plugins/audioconvert/audioconvert.c
+@@ -1186,6 +1186,8 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
+ 		case SPA_PROP_CUSTOM_mono:
+ 			if (!p->lock_volumes &&
+ 				spa_pod_get_id(&prop->value, &p->mono_flag) == 0) {
++				spa_log_info(this->log, "mono flag: p: %p, p->mono_flag: %u",
++						p, p->mono_flag);
+ 				changed++;
+ 			}
+ 			break;
+@@ -1244,6 +1246,8 @@ static int apply_props(struct impl *this, const struct spa_pod *param)
+ 		else if (have_channel_volume)
+ 			p->have_soft_volume = false;
+ 
++		spa_log_info(this->log, "mono flag: p: %p, p->mono_flag: %u, changed %d",
++				p, p->mono_flag, changed);
+ 		set_volume(this);
+ 	}
+ 
+@@ -1583,6 +1587,8 @@ static void set_volume(struct impl *this)
+ 		volumes[i] = SPA_CLAMPF(vol->volumes[dir->remap[i]],
+ 				this->props.min_volume, this->props.max_volume);
+ 
++	spa_log_info(this->log, "mono flag: this->props: %p, this->props.mono_flag: %u", &this->props, this->props.mono_flag);
++
+ 	if (this->props.mono_flag == SPA_AUDIO_CHANNEL_MONO) {
+ 		channelmix_set_custom_flags(&this->mix, CHANNELMIX_CUSTOM_MIX_FLAG_MONO);
+ 	} else if (this->props.mono_flag == SPA_AUDIO_CHANNEL_NA)
+diff --git a/spa/plugins/audioconvert/channelmix-ops.c b/spa/plugins/audioconvert/channelmix-ops.c
+index a1df657..261db0b 100644
+--- a/spa/plugins/audioconvert/channelmix-ops.c
++++ b/spa/plugins/audioconvert/channelmix-ops.c
+@@ -759,13 +759,16 @@ static void impl_channelmix_set_volume(struct channelmix *mix, float volume, boo
+ 		dst_chan == src_chan && SPA_FLAG_IS_SET(mix->flags, CHANNELMIX_FLAG_COPY));
+ 	}
+ 
+-	spa_log_debug(mix->log, "flags:%08x, custom mix flags:%08x", mix->flags,
++	spa_log_debug(mix->log, "mono flag: flags:%08x, custom mix flags:%08x", mix->flags,
+ 			mix->custom_mix_flags);
+ }
+ 
+ static void impl_channelmix_set_custom_flags(struct channelmix *mix, uint32_t flags)
+ {
+ 	mix->custom_mix_flags = flags;
++
++	spa_log_debug(mix->log, "mono flag: flags:%08x, set custom mix flags:%08x", mix->flags,
++			mix->custom_mix_flags);
+ }
+ 
+ static void impl_channelmix_free(struct channelmix *mix)
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index 8e45a65..331dfd8 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -2782,6 +2782,8 @@ static int set_node_volume_mute_custom_mono(struct client *client, struct pw_man
+ 	if (vol) {
+ 		mono_flag = pw_properties_get_uint32(client->props, PW_KEY_APP_MONO_FLAG, 0);
+ 
++		pw_log_info("mono flag: client: %p, get mono_flag: %u", client, mono_flag);
++
+ 		if (mono_flag != 0) {
+ 			monoprop = SPA_PROP_CUSTOM_mono;
+ 			spa_pod_builder_add(&b,
+@@ -3018,6 +3020,8 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 		goto done;
+ 	*/
+ 
++	pw_log_info("mono flag: client: %p, set volume.channels: %u", client, volume.channels);
++
+ 	if (volume.channels == ENABLE_MONO_FLAG || volume.channels == DISABLE_MONO_FLAG) {
+ 		if (volume.channels == ENABLE_MONO_FLAG) {
+ 			mono_flag = SPA_AUDIO_CHANNEL_MONO;
+@@ -3029,6 +3033,8 @@ static int do_set_volume(struct client *client, uint32_t command, uint32_t tag,
+ 			volume.channels = 2;
+ 		}
+ 
++		pw_log_info("mono flag: client: %p, set mono_flag: %u", client, mono_flag);
++
+ 		if (dev_info.have_volume) {
+ 			for (i = 0; i < volume.channels; i++) {
+ 				if (float_equal(volume.values[i], dev_info.volume_info.volume.values[i])) {
+-- 
+2.20.1
+
