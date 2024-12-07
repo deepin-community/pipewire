@@ -1,0 +1,75 @@
+From c407bbfb4fd5fb52b8127de72913e8ee92ca2c66 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Thu, 5 Dec 2024 10:11:57 +0800
+Subject: [PATCH] fix: Add debug flags of pod and message
+
+---
+ spa/include/spa/debug/pod.h                 | 8 ++++++++
+ src/modules/module-protocol-pulse/message.c | 7 +++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/spa/include/spa/debug/pod.h b/spa/include/spa/debug/pod.h
+index a31b78e..a0ef14a 100644
+--- a/spa/include/spa/debug/pod.h
++++ b/spa/include/spa/debug/pod.h
+@@ -20,10 +20,15 @@ extern "C" {
+ #include <spa/pod/pod.h>
+ #include <spa/pod/iter.h>
+ 
++/* #define SPA_DEBUG */
++
+ static inline int
+ spa_debugc_pod_value(struct spa_debug_context *ctx, int indent, const struct spa_type_info *info,
+ 		uint32_t type, void *body, uint32_t size)
+ {
++
++#ifdef SPA_DEBUG
++
+ 	switch (type) {
+ 	case SPA_TYPE_Bool:
+ 		spa_debugc(ctx, "%*s" "Bool %s", indent, "", (*(int32_t *) body) ? "true" : "false");
+@@ -171,6 +176,9 @@ spa_debugc_pod_value(struct spa_debug_context *ctx, int indent, const struct spa
+ 		spa_debugc(ctx, "%*s" "unhandled POD type %d", indent, "", type);
+ 		break;
+ 	}
++
++#endif
++
+ 	return 0;
+ }
+ 
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index dbebc43..cea1472 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -31,6 +31,8 @@
+ PW_LOG_TOPIC_EXTERN(pulse_conn);
+ #define PW_LOG_TOPIC_DEFAULT pulse_conn
+ 
++/* #define MESSAGE_DUMP */
++
+ static inline uint32_t volume_from_linear(float vol)
+ {
+ 	uint32_t v;
+@@ -653,6 +655,9 @@ int message_put(struct message *m, ...)
+ 
+ int message_dump(enum spa_log_level level, const char *prefix, struct message *m)
+ {
++
++#ifdef MESSAGE_DUMP
++
+ 	int res;
+ 	uint32_t i, offset = m->offset, o;
+ 
+@@ -819,6 +824,8 @@ int message_dump(enum spa_log_level level, const char *prefix, struct message *m
+ 	}
+ 	m->offset = offset;
+ 
++#endif
++
+ 	return 0;
+ }
+ 
+-- 
+2.20.1
+
