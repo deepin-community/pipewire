@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin10) unstable; urgency=medium
+
+  * rebuild.
+
+ -- lhdjply <lhdjply@126.com>  Thu, 13 Feb 2025 16:33:17 +0800
+
 pipewire (1.2.5-1deepin9) unstable; urgency=medium
 
   * fix: Separate functions for setting sink and source volume.
