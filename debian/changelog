@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin11) unstable; urgency=medium
+
+  * fix: Add config to match lenovo m90h g2t
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 10 Apr 2025 20:46:24 +0800
+
 pipewire (1.2.5-1deepin10) unstable; urgency=medium
 
   * rebuild.
