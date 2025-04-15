@@ -6,3 +6,4 @@ Fix-Add-debug-flags-of-pod-and-message.patch
 Fix-Add-log-info-of-mono-flag.patch
 Fix-Separate-functions-for-setting-sink-and-source-volume.patch
 Fix-Add-config-to-match-lenovo-m90h-g2t.patch
+Fix-Adapted-for-Unis-Unis-D3830-G3-sound-card.patch
