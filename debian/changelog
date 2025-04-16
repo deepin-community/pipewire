@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin12) unstable; urgency=medium
+
+  * fix: Add config for Unis D3830 G3 sound card(bug312139)
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Tue, 15 Apr 2025 17:33:43 +0800
+
 pipewire (1.2.5-1deepin11) unstable; urgency=medium
 
   * fix: Add config to match lenovo m90h g2t
