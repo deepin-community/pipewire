@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin13) unstable; urgency=medium
+
+  * fix: Optimize the volume algorithm.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Mon, 28 Apr 2025 16:52:43 +0800
+
 pipewire (1.2.5-1deepin12) unstable; urgency=medium
 
   * fix: Add config for Unis D3830 G3 sound card(bug312139)
