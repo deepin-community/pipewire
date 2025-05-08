@@ -1,0 +1,44 @@
+From 61d175c4670b43c692d4446f1f3a9c5bdf8d42ea Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Wed, 7 May 2025 18:01:29 +0800
+Subject: [PATCH] fix: Cancel to report battery level of HFP AG
+
+---
+ spa/plugins/bluez5/backend-native.c | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+index 33deda7..2923dc2 100644
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -1287,9 +1287,10 @@ static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* token)
+ 			token[strcspn(token, ",")] = 0;
+ 			spa_log_info(backend->log, "AG indicator state: %s = %i", rfcomm->hf_indicators[i], atoi(token));
+ 
+-			if (spa_streq(rfcomm->hf_indicators[i], "battchg")) {
+-				spa_bt_device_report_battery_level(rfcomm->device, atoi(token) * 100 / 5);
+-			}
++			/*
++			 * The token ranges from 0 to 5, it is too rough for a battery level indicator,
++			 * so we cancel to report "battchg".
++			 */
+ 
+ 			token += strcspn(token, "\0") + 1;
+ 			i++;
+@@ -1300,9 +1301,10 @@ static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* token)
+ 		} else {
+ 			spa_log_info(backend->log, "AG indicator update: %s = %u", rfcomm->hf_indicators[indicator], value);
+ 
+-			if (spa_streq(rfcomm->hf_indicators[indicator], "battchg")) {
+-				spa_bt_device_report_battery_level(rfcomm->device, value * 100 / 5);
+-			}
++			/*
++			 * The value ranges from 0 to 5, it is too rough for a battery level indicator,
++			 * so we cancel to report "battchg".
++			 */
+ 		}
+ 	} else if (spa_strstartswith(token, "OK")) {
+ 		switch(rfcomm->hf_state) {
+-- 
+2.20.1
+
