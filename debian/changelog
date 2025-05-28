@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin15) unstable; urgency=medium
+
+  * fix: Modify rtkit log from warn to debug(bug317451)
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Wed, 28 May 2025 10:31:40 +0800
+
 pipewire (1.2.5-1deepin14) unstable; urgency=medium
 
   * fix: Cancel to report battery level of HFP AG(bug296483)
