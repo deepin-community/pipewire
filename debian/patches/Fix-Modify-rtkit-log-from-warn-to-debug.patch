@@ -1,0 +1,46 @@
+From 34dbc73e90f7a8162cb882a1cc9cb06117407134 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Wed, 28 May 2025 10:25:23 +0800
+Subject: [PATCH] fix: Modify rtkit log from warn to debug
+
+---
+ src/modules/module-rt.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/modules/module-rt.c b/src/modules/module-rt.c
+index af22e62..ba9ec3f 100644
+--- a/src/modules/module-rt.c
++++ b/src/modules/module-rt.c
+@@ -314,7 +314,7 @@ static void pw_rtkit_bus_free(struct pw_rtkit_bus *system_bus)
+ 
+ static int translate_error(const char *name)
+ {
+-	pw_log_warn("RTKit error: %s", name);
++	pw_log_debug("RTKit error: %s", name);
+ 
+ 	if (spa_streq(name, DBUS_ERROR_NO_MEMORY))
+ 		return -ENOMEM;
+@@ -979,17 +979,17 @@ static int do_rtkit_setup(struct spa_loop *loop, bool async, uint32_t seq,
+ 	/* get some properties */
+ 	if (rtkit_get_int_property(impl, "MaxRealtimePriority", &retval) < 0) {
+ 		retval = 1;
+-		pw_log_warn("RTKit does not give us MaxRealtimePriority, using %lld", retval);
++		pw_log_debug("RTKit does not give us MaxRealtimePriority, using %lld", retval);
+ 	}
+ 	impl->max_rtprio = retval;
+ 	if (rtkit_get_int_property(impl, "MinNiceLevel", &retval) < 0) {
+ 		retval = 0;
+-		pw_log_warn("RTKit does not give us MinNiceLevel, using %lld", retval);
++		pw_log_debug("RTKit does not give us MinNiceLevel, using %lld", retval);
+ 	}
+ 	impl->min_nice_level = retval;
+ 	if (rtkit_get_int_property(impl, "RTTimeUSecMax", &retval) < 0) {
+ 		retval = impl->rl.rlim_cur;
+-		pw_log_warn("RTKit does not give us RTTimeUSecMax, using %lld", retval);
++		pw_log_debug("RTKit does not give us RTTimeUSecMax, using %lld", retval);
+ 	}
+ 	impl->rttime_max = retval;
+ 
+-- 
+2.20.1
+
