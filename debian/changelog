@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin16) unstable; urgency=medium
+
+  * fix: Manually add 1 dB to the minimum hardware volume
+
+ -- qaqland <anguoli@uniontech.com>  Tue, 26 Aug 2025 19:21:14 +0800
+
 pipewire (1.2.5-1deepin15) unstable; urgency=medium
 
   * fix: Modify rtkit log from warn to debug(bug317451)

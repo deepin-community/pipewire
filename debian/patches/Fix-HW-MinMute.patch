@@ -1,0 +1,18 @@
+diff --git a/spa/plugins/alsa/acp/alsa-mixer.c b/spa/plugins/alsa/acp/alsa-mixer.c
+index 1f494ee0b5d73a0b0ef05cfcc259c76a5bf417a0..a31b8344f431e10a6d9ab3c8dd7b55dcc4671b88 100644
+--- a/spa/plugins/alsa/acp/alsa-mixer.c
++++ b/spa/plugins/alsa/acp/alsa-mixer.c
+@@ -1149,6 +1149,13 @@ static int element_set_volume(pa_alsa_element *e, snd_mixer_t *m, const pa_chann
+             if (e->volume_limit >= 0 && value > (e->max_dB * 100))
+                 value = (long) (e->max_dB * 100);
+ 
++            /* Some devices, especially USB sound cards, will automatically mute
++             * when set to min_dB. Therefore, a 1 dB increase is manually added
++             * here to prevent entering the volume dead zone */
++            if (value < (e->min_dB * 100 + 100)) {
++                value = (long) (e->min_dB * 100 + 100);
++            }
++
+             if (e->direction == PA_ALSA_DIRECTION_OUTPUT) {
+                 /* If we call set_playback_volume() without checking first
+                  * if the channel is available, ALSA behaves very
