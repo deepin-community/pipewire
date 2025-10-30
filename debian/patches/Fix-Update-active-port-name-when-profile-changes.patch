@@ -1,0 +1,68 @@
+Description: Fix missing subscription events on device port changes
+ When a device profile changes (e.g., Bluetooth headset switching from
+ a2dp-sink to headset-head-unit), the active port information changes
+ but PulseAudio compatibility layer clients don't receive the expected
+ PA_SUBSCRIPTION_EVENT_SOURCE or PA_SUBSCRIPTION_EVENT_SINK change events.
+ .
+ Root cause: The collect_device_info() function updates the active_port
+ index from SPA_PARAM_Route parameters, but doesn't update the corresponding
+ active_port_name field. When update_device_info() uses memcmp() to detect
+ changes in the device_info structure, it compares the entire structure
+ including active_port_name. If the pointer value doesn't change (even
+ though the actual port changed), no change is detected, and the change_mask
+ flag is not set, preventing subscription events from being sent.
+ .
+ Solution: After setting active_port in collect_device_info(), look up the
+ corresponding port name from SPA_PARAM_EnumRoute parameters by matching
+ both the port index and direction. Initialize active_port_name to NULL at
+ the start to ensure it's always recalculated.
+ .
+ This fix applies to all device types (Bluetooth, USB, PCI sound cards)
+ and all profile switching scenarios.
+Author: fuleyi <fuleyi@uniontech.com>
+Bug-Debian: https://bugs.debian.org/XXXXXX
+Forwarded: no
+Last-Update: 2025-10-30
+
+--- a/src/modules/module-protocol-pulse/collect.c
++++ b/src/modules/module-protocol-pulse/collect.c
+@@ -234,6 +234,8 @@ static void collect_device_info(struct
+ {
+ 	struct pw_manager_param *p;
+ 
++	dev_info->active_port_name = NULL;
++
+ 	if (card) {
+ 		spa_list_for_each(p, &card->param_list, link) {
+ 			uint32_t index, dev;
+@@ -256,6 +258,30 @@ static void collect_device_info(struct
+ 				dev_info->have_volume = true;
+ 			}
+ 		}
++
++		/* Look up the port name for the active port */
++		if (dev_info->active_port != SPA_ID_INVALID) {
++			spa_list_for_each(p, &card->param_list, link) {
++				uint32_t index, direction;
++				const char *name = NULL;
++
++				if (p->id != SPA_PARAM_EnumRoute)
++					continue;
++
++				if (spa_pod_parse_object(p->param,
++						SPA_TYPE_OBJECT_ParamRoute, NULL,
++						SPA_PARAM_ROUTE_index, SPA_POD_Int(&index),
++						SPA_PARAM_ROUTE_direction, SPA_POD_Id(&direction),
++						SPA_PARAM_ROUTE_name, SPA_POD_String(&name)) < 0)
++					continue;
++
++				if (index == dev_info->active_port &&
++				    direction == dev_info->direction) {
++					dev_info->active_port_name = name;
++					break;
++				}
++			}
++		}
+ 	}
+ 
+ 	spa_list_for_each(p, &device->param_list, link) {

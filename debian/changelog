@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin16) unstable; urgency=medium
+
+  * pulse-server: 修复设备端口变化时缺失订阅事件的问题
+
+ -- fuleyi <fuleyi@uniontech.com>  Tue, 04 Nov 2025 11:06:43 +0800
+
 pipewire (1.2.5-1deepin15) unstable; urgency=medium
 
   * fix: Modify rtkit log from warn to debug(bug317451)
