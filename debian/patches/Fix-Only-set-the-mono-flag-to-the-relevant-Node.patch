@@ -1,0 +1,156 @@
+From cff1fc9b5be16da09b31b99ddf190465d0d1ec44 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Wed, 17 Dec 2025 13:16:47 +0800
+Subject: [PATCH] fix: Only set the mono flag to the relevant Node.
+
+---
+ .../module-protocol-pulse/pulse-server.c      | 95 ++++++++++++++-----
+ 1 file changed, 72 insertions(+), 23 deletions(-)
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index fa47c41..253f982 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -2964,8 +2964,64 @@ done:
+ 	return operation_new(client, tag);
+ }
+ 
+-static inline bool float_equal(float a, float b) {
+-    return fabsf(a - b) < 1e-6f;
++static int set_node_mono_flag(struct client *client,
++                              struct pw_manager_object *node,
++                              bool is_monitor)
++{
++    char buf[1024];
++    struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
++    struct spa_pod_frame f[1];
++    struct spa_pod *param;
++    uint32_t mono_flag;
++
++    /* 1. Check permissions and parameters */
++    if (!SPA_FLAG_IS_SET(node->permissions, PW_PERM_W | PW_PERM_X)) {
++        pw_log_warn("No permission to set mono_flag on node %u", node->id);
++        return -EACCES;
++    }
++
++    if (node->proxy == NULL) {
++        pw_log_warn("Node proxy is NULL");
++        return -ENOENT;
++    }
++
++    if (client == NULL) {
++        pw_log_warn("Client is NULL");
++        return -EINVAL;
++    }
++
++    /* 2. Get mono_flag from client->props */
++    mono_flag = pw_properties_get_uint32(client->props, PW_KEY_APP_MONO_FLAG, 0);
++
++    /* 3. Construct Props parameters */
++    spa_pod_builder_push_object(&b, &f[0],
++                               SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
++
++    /* Just add the mono_flag attribute */
++    spa_pod_builder_add(&b,
++                       SPA_PROP_CUSTOM_mono, SPA_POD_Id(mono_flag),
++                       0);
++
++    param = spa_pod_builder_pop(&b, &f[0]);
++
++    if (!param) {
++        pw_log_error("Failed to build mono_flag param");
++        return -ENOMEM;
++    }
++
++    /* 4. Send to node */
++    int res = pw_node_set_param((struct pw_node*)node->proxy,
++                                SPA_PARAM_Props, 0, param);
++
++    if (res < 0) {
++        pw_log_warn("Failed to set mono_flag on node %u: %s",
++                   node->id, spa_strerror(res));
++    } else {
++        pw_log_debug("Successfully set mono_flag=%u on node %u",
++                    mono_flag, node->id);
++    }
++
++    return res;
+ }
+ 
+ static int do_set_sink_volume(struct client *client, uint32_t command, uint32_t tag, struct message *m)
+@@ -2980,8 +3036,7 @@ static int do_set_sink_volume(struct client *client, uint32_t command, uint32_t
+ 	struct device_info dev_info;
+ 	enum pw_direction direction;
+ 	bool is_monitor;
+-	uint32_t mono_flag;
+-	uint8_t i;
++	uint32_t mono_flag = 0;
+ 
+ 	if ((res = message_get(m,
+ 			TAG_U32, &index,
+@@ -3013,13 +3068,6 @@ static int do_set_sink_volume(struct client *client, uint32_t command, uint32_t
+ 
+ 	get_device_info(o, &dev_info, direction, is_monitor);
+ 
+-	/* Continue do anything if the volume is the same for debug purposes */
+-	/*
+-	if (dev_info.have_volume &&
+-	    volume_compare(&dev_info.volume_info.volume, &volume) == 0)
+-		goto done;
+-	*/
+-
+ 	pw_log_info("mono flag: client: %p, set volume.channels: %u", client, volume.channels);
+ 
+ 	if (volume.channels == ENABLE_MONO_FLAG || volume.channels == DISABLE_MONO_FLAG) {
+@@ -3035,15 +3083,10 @@ static int do_set_sink_volume(struct client *client, uint32_t command, uint32_t
+ 
+ 		pw_log_info("mono flag: client: %p, set mono_flag: %u", client, mono_flag);
+ 
+-		if (dev_info.have_volume) {
+-			for (i = 0; i < volume.channels; i++) {
+-				if (float_equal(volume.values[i], dev_info.volume_info.volume.values[i])) {
+-					pw_log_debug("%d: volume.value %f==%f", i, volume.values[i], dev_info.volume_info.volume.values[i]);
+-					if (volume.values[i] > 0.01f && volume.values[i] < 0.9f)
+-						volume.values[i] += 0.001f;
+-				}
+-			}
+-		}
++	} else {
++		if (dev_info.have_volume &&
++			volume_compare(&dev_info.volume_info.volume, &volume) == 0)
++			goto done;
+ 	}
+ 
+ 	if (dev_info.card_id != SPA_ID_INVALID) {
+@@ -3052,19 +3095,25 @@ static int do_set_sink_volume(struct client *client, uint32_t command, uint32_t
+ 	}
+ 
+ 	if (card != NULL && !is_monitor && dev_info.active_port != SPA_ID_INVALID) {
+-		res = set_node_volume_mute_custom_mono(client, o, &volume, NULL, is_monitor);
++		res = set_card_volume_mute_delay(card, dev_info.active_port,
++			dev_info.device, &volume, NULL, NULL);
+ 
+ 		if (res < 0)
+ 			return res;
+ 
+-		res = set_card_volume_mute_delay(card, dev_info.active_port,
+-			dev_info.device, &volume, NULL, NULL);
++		/* Set the node mono_flag */
++		res = set_node_mono_flag(client, o, is_monitor);
++		if (res < 0) {
++			/* Can record logs but does not affect main functions */
++			pw_log_warn("Failed to set mono_flag: %u, but volume set succeeded", mono_flag);
++		}
+ 	} else
+ 		res = set_node_volume_mute_custom_mono(client, o, &volume, NULL, is_monitor);
+ 
+ 	if (res < 0)
+ 		return res;
+ 
++done:
+ 	return operation_new(client, tag);
+ }
+ 
+-- 
+2.20.1
+

@@ -11,3 +11,4 @@ Fix-Optimize-the-volume-algorithm.patch
 Fix-Cancel-to-report-battery-level-of-HFP-AG.patch
 Fix-Modify-rtkit-log-from-warn-to-debug.patch
 Fix-Update-active-port-name-when-profile-changes.patch
+Fix-Only-set-the-mono-flag-to-the-relevant-Node.patch
