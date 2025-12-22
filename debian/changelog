@@ -1,3 +1,9 @@
+pipewire (1.2.5-1deepin17) unstable; urgency=medium
+
+  * fix: Only set the mono flag to the relevant Node(bug340957).
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Mon, 22 Dec 2025 18:11:20 +0800
+
 pipewire (1.2.5-1deepin16) unstable; urgency=medium
 
   * pulse-server: 修复设备端口变化时缺失订阅事件的问题
