@@ -8,13 +8,11 @@
 #include <stddef.h>
 #include <errno.h>
 #include <arpa/inet.h>
-#if __BYTE_ORDER != __LITTLE_ENDIAN
-#include <byteswap.h>
-#endif
 
 #include <spa/debug/types.h>
 #include <spa/param/audio/type-info.h>
 #include <spa/param/audio/raw.h>
+#include <spa/utils/endian.h>
 #include <spa/utils/string.h>
 #include <spa/utils/dict.h>
 #include <spa/param/audio/format.h>
@@ -60,6 +58,8 @@ static struct spa_log *log;
 
 #define BITRATE_DUPLEX_BIDI		160000
 
+#define MAX_CHANNELS		SPA_AUDIO_MAX_CHANNELS
+
 #define OPUS_05_MAX_BYTES	(15 * 1024)
 
 struct props {
@@ -82,6 +82,8 @@ struct dec_data {
 	int fragment_size;
 	int fragment_count;
 	uint8_t fragment[OPUS_05_MAX_BYTES];
+
+	int32_t delay;
 };
 
 struct abr {
@@ -121,6 +123,8 @@ struct enc_data {
 
 	int frame_dms;
 	int application;
+
+	int32_t delay;
 };
 
 struct impl {
@@ -249,14 +253,8 @@ static const struct surround_encoder_mapping surround_encoders[] = {
 static uint32_t bt_channel_from_name(const char *name)
 {
 	size_t i;
-	enum spa_audio_channel position = SPA_AUDIO_CHANNEL_UNKNOWN;
+	enum spa_audio_channel position = spa_type_audio_channel_from_short_name(name);
 
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name))) {
-			position = spa_type_audio_channel[i].type;
-			break;
-		}
-	}
 	for (i = 0; i < SPA_N_ELEMENTS(audio_locations); i++) {
 		if (position == audio_locations[i].position)
 			return audio_locations[i].mask;
@@ -311,14 +309,14 @@ static void parse_settings(struct props *props, const struct spa_dict *settings)
 		return;
 
 	if (spa_atou32(spa_dict_lookup(settings, "bluez5.a2dp.opus.pro.channels"), &v, 0))
-		props->channels = SPA_CLAMP(v, 1u, SPA_AUDIO_MAX_CHANNELS);
+		props->channels = SPA_CLAMP(v, 1u, MAX_CHANNELS);
 	if (spa_atou32(spa_dict_lookup(settings, "bluez5.a2dp.opus.pro.max-bitrate"), &v, 0))
 		props->max_bitrate = SPA_MAX(v, (uint32_t)BITRATE_MIN);
 	if (spa_atou32(spa_dict_lookup(settings, "bluez5.a2dp.opus.pro.coupled-streams"), &v, 0))
 		props->coupled_streams = SPA_CLAMP(v, 0u, props->channels / 2);
 
 	if (spa_atou32(spa_dict_lookup(settings, "bluez5.a2dp.opus.pro.bidi.channels"), &v, 0))
-		props->bidi_channels = SPA_CLAMP(v, 0u, SPA_AUDIO_MAX_CHANNELS);
+		props->bidi_channels = SPA_CLAMP(v, 0u, MAX_CHANNELS);
 	if (spa_atou32(spa_dict_lookup(settings, "bluez5.a2dp.opus.pro.bidi.max-bitrate"), &v, 0))
 		props->bidi_max_bitrate = SPA_MAX(v, (uint32_t)BITRATE_MIN);
 	if (spa_atou32(spa_dict_lookup(settings, "bluez5.a2dp.opus.pro.bidi.coupled-streams"), &v, 0))
@@ -495,13 +493,13 @@ static int get_mapping(const struct media_codec *codec, const a2dp_opus_05_direc
 		bool use_surround_encoder, uint8_t *streams_ret, uint8_t *coupled_streams_ret,
 		const uint8_t **surround_mapping, uint32_t *positions)
 {
-	const uint8_t channels = conf->channels;
+	const uint32_t channels = conf->channels;
 	const uint32_t location = OPUS_05_GET_LOCATION(*conf);
 	const uint8_t coupled_streams = conf->coupled_streams;
 	const uint8_t *permutation = NULL;
 	size_t i, j;
 
-	if (channels > SPA_AUDIO_MAX_CHANNELS)
+	if (channels > MAX_CHANNELS)
 		return -EINVAL;
 	if (2 * coupled_streams > channels)
 		return -EINVAL;
@@ -540,10 +538,9 @@ static int get_mapping(const struct media_codec *codec, const a2dp_opus_05_direc
 			const struct audio_location loc = audio_locations[i];
 
 			if (location & loc.mask) {
-				if (permutation)
-					positions[permutation[j++]] = loc.position;
-				else
-					positions[j++] = loc.position;
+				uint32_t idx = permutation ? permutation[j] : j;
+				positions[idx] = loc.position;
+				j++;
 			}
 		}
 		for (i = SPA_AUDIO_CHANNEL_START_Aux; j < channels; ++i, ++j)
@@ -554,12 +551,12 @@ static int get_mapping(const struct media_codec *codec, const a2dp_opus_05_direc
 }
 
 static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
-		uint8_t caps[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t caps[A2DP_MAX_CAPS_SIZE])
 {
 	a2dp_opus_05_t a2dp_opus_05 = {
 		.info = codec->vendor,
 		.main = {
-			.channels = SPA_AUDIO_MAX_CHANNELS,
+			.channels = SPA_MIN(255u, MAX_CHANNELS),
 			.frame_duration = (OPUS_05_FRAME_DURATION_25 |
 					OPUS_05_FRAME_DURATION_50 |
 					OPUS_05_FRAME_DURATION_100 |
@@ -569,7 +566,7 @@ static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 			OPUS_05_INIT_BITRATE(0)
 		},
 		.bidi = {
-			.channels = SPA_AUDIO_MAX_CHANNELS,
+			.channels = SPA_MIN(255u, MAX_CHANNELS),
 			.frame_duration = (OPUS_05_FRAME_DURATION_25 |
 					OPUS_05_FRAME_DURATION_50 |
 					OPUS_05_FRAME_DURATION_100 |
@@ -593,7 +590,8 @@ static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
 		const struct media_codec_audio_info *info,
-		const struct spa_dict *global_settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *global_settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+		void **config_data)
 {
 	struct props props;
 	a2dp_opus_05_t conf;
@@ -702,8 +700,8 @@ static int codec_caps_preference_cmp(const struct media_codec *codec, uint32_t f
 	int a, b;
 
 	/* Order selected configurations by preference */
-	res1 = codec->select_config(codec, flags, caps1, caps1_size, info, global_settings, (uint8_t *)&conf1);
-	res2 = codec->select_config(codec, flags, caps2, caps2_size, info, global_settings, (uint8_t *)&conf2);
+	res1 = codec->select_config(codec, flags, caps1, caps1_size, info, global_settings, (uint8_t *)&conf1, NULL);
+	res2 = codec->select_config(codec, flags, caps2, caps2_size, info, global_settings, (uint8_t *)&conf2, NULL);
 
 #define PREFER_EXPR(expr)			\
 		do {				\
@@ -769,7 +767,7 @@ static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
 	a2dp_opus_05_t conf;
 	a2dp_opus_05_direction_t *dir;
 	struct spa_pod_frame f[1];
-	uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t position[MAX_CHANNELS];
 
 	if (caps_size < sizeof(conf))
 		return -EINVAL;
@@ -833,7 +831,8 @@ static int codec_validate_config(const struct media_codec *codec, uint32_t flags
 	}
 
 	info->info.raw.channels = dir1->channels;
-	if (get_mapping(codec, dir1, surround_encoder, NULL, NULL, NULL, info->info.raw.position) < 0)
+	if (get_mapping(codec, dir1, surround_encoder, NULL, NULL, NULL,
+				info->info.raw.position) < 0)
 		return -EINVAL;
 	if (get_mapping(codec, dir2, surround_encoder, NULL, NULL, NULL, NULL) < 0)
 		return -EINVAL;
@@ -1007,6 +1006,7 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
 	this->e.samples = this->e.frame_dms * this->samplerate / 10000;
 	this->e.codesize = this->e.samples * (int)this->channels * sizeof(float);
 
+	opus_multistream_encoder_ctl(this->enc, OPUS_GET_LOOKAHEAD(&this->e.delay));
 
 	/*
 	 * Setup decoder
@@ -1021,6 +1021,8 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
 		res = -EINVAL;
 		goto error;
 	}
+
+	opus_multistream_decoder_ctl(this->dec, OPUS_GET_LOOKAHEAD(&this->d.delay));
 
 	return this;
 
@@ -1183,7 +1185,8 @@ static SPA_UNUSED int codec_start_decode (void *data,
 	const struct rtp_payload *payload = SPA_PTROFF(src, sizeof(struct rtp_header), void);
 	size_t header_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 
-	spa_return_val_if_fail (src_size > header_size, -EINVAL);
+	if (src_size <= header_size)
+		return -EINVAL;
 
 	if (seqnum)
 		*seqnum = ntohs(header->sequence_number);
@@ -1327,6 +1330,16 @@ static int codec_increase_bitpool(void *data)
 	return 0;
 }
 
+static void codec_get_delay(void *data, uint32_t *encoder, uint32_t *decoder)
+{
+	struct impl *this = data;
+
+	if (encoder)
+		*encoder = this->e.delay;
+	if (decoder)
+		*decoder = this->d.delay;
+}
+
 static void codec_set_log(struct spa_log *global_log)
 {
 	log = global_log;
@@ -1334,6 +1347,7 @@ static void codec_set_log(struct spa_log *global_log)
 }
 
 #define OPUS_05_COMMON_DEFS					\
+	.kind = MEDIA_CODEC_A2DP,				\
 	.codec_id = A2DP_CODEC_VENDOR,				\
 	.vendor = { .vendor_id = OPUS_05_VENDOR_ID,		\
 			.codec_id = OPUS_05_CODEC_ID },		\
@@ -1349,7 +1363,8 @@ static void codec_set_log(struct spa_log *global_log)
 	.encode = codec_encode,					\
 	.reduce_bitpool = codec_reduce_bitpool,			\
 	.increase_bitpool = codec_increase_bitpool,		\
-	.set_log = codec_set_log
+	.set_log = codec_set_log,				\
+	.get_delay = codec_get_delay
 
 #define OPUS_05_COMMON_FULL_DEFS				\
 	OPUS_05_COMMON_DEFS,					\

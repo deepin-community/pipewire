@@ -5,6 +5,8 @@
 #ifndef SPA_PARAM_PROFILER_H
 #define SPA_PARAM_PROFILER_H
 
+#include <spa/param/param.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -13,8 +15,6 @@ extern "C" {
  * \addtogroup spa_param
  * \{
  */
-
-#include <spa/param/param.h>
 
 /** properties for SPA_TYPE_OBJECT_Profiler */
 enum spa_profiler {
@@ -40,7 +40,9 @@ enum spa_profiler {
 							  *      Long : clock delay,
 							  *      Double : clock rate_diff,
 							  *      Long : clock next_nsec,
-							  *      Int : transport_state)) */
+							  *      Int : transport_state,
+							  *      Int : clock cycle,
+							  *      Long : xrun duration)) */
 	SPA_PROFILER_driverBlock,			/**< generic driver info block
 							  *  (Struct(
 							  *      Int : driver_id,
@@ -64,8 +66,20 @@ enum spa_profiler {
 							  *      Long : finish,
 							  *      Int : status,
 							  *      Fraction : latency,
-							  *      Int : xrun_count))  */
-
+							  *      Int : xrun_count))
+							  *      Bool : async))  */
+	SPA_PROFILER_followerClock,			/**< follower clock information
+							  *  (Struct(
+							  *      Int : clock id,
+							  *      String: clock name,
+							  *      Long : clock nsec,
+							  *      Fraction : clock rate,
+							  *      Long : clock position,
+							  *      Long : clock duration,
+							  *      Long : clock delay,
+							  *      Double : clock rate_diff,
+							  *      Long : clock next_nsec,
+							  *      Long : xrun duration)) */
 	SPA_PROFILER_START_CUSTOM	= 0x1000000,
 };
 

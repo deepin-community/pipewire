@@ -1,10 +1,10 @@
 project('pipewire', ['c' ],
-  version : '1.2.5',
+  version : '1.5.85',
   license : [ 'MIT', 'LGPL-2.1-or-later', 'GPL-2.0-only' ],
   meson_version : '>= 0.61.1',
   default_options : [ 'warning_level=3',
                       'c_std=gnu11',
-                      'cpp_std=c++17',
+                      'cpp_std=c++20',
                       'b_pie=true',
                       #'b_sanitize=address,undefined',
                       'buildtype=debugoptimized' ])
@@ -33,6 +33,9 @@ jack_version_minor = libversion_minor
 # libjack[server] version has 0 for major (for compatibility with other implementations),
 # 3 for minor, and "1000*major + 100*minor + micro" as micro version (the minor libpipewire soversion number)
 libjackversion = '@0@.@1@.@2@'.format(soversion, jack_version_major, jack_version_minor)
+# jack[server] version has 3 for major
+# and pipewire's "1000*major + 100*minor + micro" as minor version
+jackversion = '@0@.@1@.@2@'.format(jack_version_major, jack_version_minor, 0)
 
 pipewire_name = 'pipewire-@0@'.format(apiversion)
 spa_name = 'spa-@0@'.format(spaversion)
@@ -50,6 +53,7 @@ pipewire_confdatadir = pipewire_datadir / 'pipewire'
 modules_install_dir = pipewire_libdir / pipewire_name
 
 cc = meson.get_compiler('c')
+cc_native = meson.get_compiler('c', native: true)
 
 if cc.has_header('features.h') and cc.get_define('__GLIBC__', prefix: '#include <features.h>') != ''
   # glibc ld.so interprets ${LIB} in a library loading path with an
@@ -77,11 +81,13 @@ pkgconfig = import('pkgconfig')
 common_flags = [
   '-fvisibility=hidden',
   '-fno-strict-aliasing',
+  '-fno-strict-overflow',
   '-Werror=suggest-attribute=format',
   '-Wsign-compare',
   '-Wpointer-arith',
   '-Wpointer-sign',
-  '-Wformat',
+  '-Werror=format',
+  '-Wno-error=format-overflow', # avoid some "‘%s’ directive argument is null"
   '-Wformat-security',
   '-Wimplicit-fallthrough',
   '-Wmissing-braces',
@@ -95,6 +101,7 @@ common_flags = [
   '-Wunused-result',
   '-Werror=return-type',
   '-Werror=float-conversion',
+  '-Werror=constant-conversion',
 ]
 
 cc_flags = common_flags + [
@@ -108,8 +115,11 @@ cc_flags = common_flags + [
   '-Werror=old-style-definition',
   '-Werror=missing-parameter-type',
   '-Werror=strict-prototypes',
+  '-DSPA_AUDIO_MAX_CHANNELS=128u',
 ]
 add_project_arguments(cc.get_supported_arguments(cc_flags), language: 'c')
+add_project_arguments(cc_native.get_supported_arguments(cc_flags),
+                      language: 'c', native: true)
 
 have_cpp = add_languages('cpp', native: false, required : false)
 
@@ -119,21 +129,30 @@ if have_cpp
   add_project_arguments(cxx.get_supported_arguments(cxx_flags), language: 'cpp')
 endif
 
-sse_args = '-msse'
-sse2_args = '-msse2'
-ssse3_args = '-mssse3'
-sse41_args = '-msse4.1'
-fma_args = '-mfma'
-avx_args = '-mavx'
-avx2_args = '-mavx2'
+have_sse = false
+have_sse2 = false
+have_ssse3 = false
+have_sse41 = false
+have_fma = false
+have_avx = false
+have_avx2 = false
+if host_machine.cpu_family() in ['x86', 'x86_64']
+  sse_args = '-msse'
+  sse2_args = '-msse2'
+  ssse3_args = '-mssse3'
+  sse41_args = '-msse4.1'
+  fma_args = '-mfma'
+  avx_args = '-mavx'
+  avx2_args = '-mavx2'
 
-have_sse = cc.has_argument(sse_args)
-have_sse2 = cc.has_argument(sse2_args)
-have_ssse3 = cc.has_argument(ssse3_args)
-have_sse41 = cc.has_argument(sse41_args)
-have_fma = cc.has_argument(fma_args)
-have_avx = cc.has_argument(avx_args)
-have_avx2 = cc.has_argument(avx2_args)
+  have_sse = cc.has_argument(sse_args)
+  have_sse2 = cc.has_argument(sse2_args)
+  have_ssse3 = cc.has_argument(ssse3_args)
+  have_sse41 = cc.has_argument(sse41_args)
+  have_fma = cc.has_argument(fma_args)
+  have_avx = cc.has_argument(avx_args)
+  have_avx2 = cc.has_argument(avx2_args)
+endif
 
 have_neon = false
 if host_machine.cpu_family() == 'aarch64'
@@ -167,6 +186,20 @@ elif cc.has_argument('-mfpu=neon')
     name : 'arm Neon Support')
       neon_args = ['-mfpu=neon']
       have_neon = true
+  endif
+endif
+
+have_rvv = false
+if host_machine.cpu_family() == 'riscv64'
+  if cc.compiles('''
+      int main() {
+          __asm__ __volatile__ (
+            ".option arch, +v\nvsetivli zero, 0, e8, m1, ta, ma"
+          );
+      }
+    ''',
+    name : 'riscv64 V Support')
+      have_rvv = true
   endif
 endif
 
@@ -230,6 +263,7 @@ if host_machine.endian() == 'big'
 endif
 
 check_headers = [
+  ['sys/auxv.h', 'HAVE_SYS_AUXV_H'],
   ['sys/mount.h', 'HAVE_SYS_MOUNT_H'],
   ['sys/param.h', 'HAVE_SYS_PARAM_H'],
   ['sys/random.h', 'HAVE_SYS_RANDOM_H'],
@@ -245,11 +279,9 @@ endforeach
 cdata.set('HAVE_PIDFD_OPEN',
           cc.get_define('SYS_pidfd_open', prefix: '#include <sys/syscall.h>') != '')
 
-systemd = dependency('systemd', required: get_option('systemd'))
-systemd_dep = dependency('libsystemd',required: get_option('systemd'))
-summary({'systemd conf data': systemd.found()}, bool_yn: true)
+systemd_dep = dependency('libsystemd', required: get_option('libsystemd'))
 summary({'libsystemd': systemd_dep.found()}, bool_yn: true)
-cdata.set('HAVE_SYSTEMD', systemd.found() and systemd_dep.found())
+cdata.set('HAVE_SYSTEMD', systemd_dep.found())
 
 logind_dep = dependency(get_option('logind-provider'), required: get_option('logind'))
 summary({'logind': logind_dep.found()}, bool_yn: true)
@@ -279,6 +311,7 @@ configure_file(input : 'Makefile.in',
 
 # Find dependencies
 mathlib = cc.find_library('m', required : false)
+mathlib_native = cc_native.find_library('m', required : false)
 rt_lib = cc.find_library('rt', required : false) # clock_gettime
 dl_lib = cc.find_library('dl', required : false)
 pthread_lib = dependency('threads')
@@ -288,6 +321,9 @@ cdata.set('HAVE_DBUS', dbus_dep.found())
 sdl_dep = dependency('sdl2', required : get_option('sdl2'))
 summary({'SDL2 (video examples)': sdl_dep.found()}, bool_yn: true, section: 'Misc dependencies')
 drm_dep = dependency('libdrm', required : false)
+fftw_dep = dependency('fftw3f', required : get_option('fftw'))
+summary({'fftw3f (filter-chain convolver)': fftw_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+cdata.set('HAVE_FFTW', fftw_dep.found())
 
 if get_option('readline').disabled()
   readline_dep = dependency('', required: false)
@@ -304,11 +340,23 @@ endif
 pw_cat_ffmpeg = get_option('pw-cat-ffmpeg')
 ffmpeg = get_option('ffmpeg')
 if pw_cat_ffmpeg.allowed() or ffmpeg.allowed()
+  # libswscale is only used by videoconvert. FFmpeg might however be used for
+  # compressed audio (both for decoding said compressed audio and for parsing
+  # it in pw-cat). If users only care about audio, then libswscale would still
+  # become a requirement if its required flag is defined only by FFmpeg options.
+  # Make the videoconvert option a factor in swscale_dep as well to avoid this.
+  videoconvert = get_option('videoconvert')
   avcodec_dep = dependency('libavcodec', required: pw_cat_ffmpeg.enabled() or ffmpeg.enabled())
   avformat_dep = dependency('libavformat', required: pw_cat_ffmpeg.enabled())
-  avutil_dep = dependency('libavutil', required: pw_cat_ffmpeg.enabled())
+  avfilter_dep = dependency('libavfilter', required: ffmpeg.enabled())
+  avutil_dep = dependency('libavutil', required: pw_cat_ffmpeg.enabled() or ffmpeg.enabled())
+  swscale_dep = dependency('libswscale', required: (pw_cat_ffmpeg.enabled() or ffmpeg.enabled()) and videoconvert.enabled())
 else
   avcodec_dep = dependency('', required: false)
+  avformat_dep = dependency('', required: false)
+  avfilter_dep = dependency('', required: false)
+  avutil_dep = dependency('', required: false)
+  swscale_dep = dependency('', required: false)
 endif
 cdata.set('HAVE_PW_CAT_FFMPEG_INTEGRATION', pw_cat_ffmpeg.allowed())
 
@@ -322,8 +370,6 @@ ncurses_dep = dependency('ncursesw', required : false)
 sndfile_dep = dependency('sndfile', version : '>= 1.0.20', required : get_option('sndfile'))
 summary({'sndfile': sndfile_dep.found()}, bool_yn: true, section: 'pw-cat/pw-play/pw-dump/filter-chain')
 cdata.set('HAVE_SNDFILE', sndfile_dep.found())
-libmysofa_dep = dependency('libmysofa', required : get_option('libmysofa'))
-summary({'libmysofa': libmysofa_dep.found()}, bool_yn: true, section: 'filter-chain')
 pulseaudio_dep = dependency('libpulse', required : get_option('libpulse'))
 summary({'libpulse': pulseaudio_dep.found()}, bool_yn: true, section: 'Streaming between daemons')
 avahi_dep = dependency('avahi-client', required : get_option('avahi'))
@@ -344,9 +390,6 @@ summary({'libcanberra (x11-bell)': canberra_dep.found()}, bool_yn: true,
 libusb_dep = dependency('libusb-1.0', required : get_option('libusb'))
 summary({'libusb (Bluetooth quirks)': libusb_dep.found()}, bool_yn: true, section: 'Backend')
 cdata.set('HAVE_LIBUSB', libusb_dep.found())
-
-cap_lib = dependency('libcap', required : false)
-cdata.set('HAVE_LIBCAP', cap_lib.found())
 
 glib2_dep = dependency('glib-2.0', required : get_option('flatpak'))
 summary({'GLib-2.0 (Flatpak support)': glib2_dep.found()}, bool_yn: true, section: 'Misc dependencies')
@@ -375,6 +418,7 @@ gst_deps_def = {
 
 gst_dep = []
 gst_dma_drm_found = false
+gst_shm_allocator_found = false
 foreach depname, kwargs: gst_deps_def
   dep = dependency(depname, required: gst_option, kwargs: kwargs)
   summary({depname: dep.found()}, bool_yn: true, section: 'GStreamer modules')
@@ -390,8 +434,12 @@ foreach depname, kwargs: gst_deps_def
 
   if depname == 'gstreamer-allocators-1.0' and dep.version().version_compare('>= 1.23.1')
     gst_dma_drm_found = true
+    gst_shm_allocator_found = true
   endif
 endforeach
+
+summary({'gstreamer SHM allocator': gst_shm_allocator_found}, bool_yn: true, section: 'Backend')
+cdata.set('HAVE_GSTREAMER_SHM_ALLOCATOR', gst_shm_allocator_found)
 
 # This code relies on the array being empty if any dependency was not found
 gst_dp_found = gst_dep.length() > 0
@@ -404,20 +452,37 @@ cdata.set('HAVE_GSTREAMER_DMA_DRM', gst_dma_drm_found)
 
 if get_option('echo-cancel-webrtc').disabled()
   webrtc_dep = dependency('', required: false)
-  summary({'WebRTC Echo Canceling >= 1.2': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+  summary({'WebRTC Echo Canceling': webrtc_dep.found()}, bool_yn: false, section: 'Misc dependencies')
 else
-  webrtc_dep = dependency('webrtc-audio-processing-1',
-    version : ['>= 1.2' ],
+  webrtc_dep = dependency('webrtc-audio-processing-2',
+    version : ['>= 2.0' ],
     required : false)
-  cdata.set('HAVE_WEBRTC1', webrtc_dep.found())
+  cdata.set('HAVE_WEBRTC2', webrtc_dep.found())
   if webrtc_dep.found()
-    summary({'WebRTC Echo Canceling >= 1.2': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+    summary({'WebRTC Echo Canceling >= 2.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
   else
-    webrtc_dep = dependency('webrtc-audio-processing',
-      version : ['>= 0.2', '< 1.0'],
-      required : get_option('echo-cancel-webrtc'))
-    cdata.set('HAVE_WEBRTC', webrtc_dep.found())
-    summary({'WebRTC Echo Canceling < 1.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+    webrtc_dep = dependency('webrtc-audio-processing-1',
+      version : ['>= 1.2' ],
+      required : false)
+    cdata.set('HAVE_WEBRTC1', webrtc_dep.found())
+    if webrtc_dep.found()
+      summary({'WebRTC Echo Canceling >= 1.2': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+    else
+      webrtc_dep = dependency('webrtc-audio-processing',
+        version : ['>= 0.2', '< 1.0'],
+        required : false)
+      cdata.set('HAVE_WEBRTC', webrtc_dep.found())
+      if webrtc_dep.found()
+        summary({'WebRTC Echo Canceling < 1.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+      else
+        # If deps are not found on the system but it's enabled, try to fallback to the subproject
+        webrtc_dep = dependency('webrtc-audio-processing-2',
+          version : ['>= 2.0' ],
+          required : get_option('echo-cancel-webrtc'))
+        cdata.set('HAVE_WEBRTC2', webrtc_dep.found())
+        summary({'WebRTC Echo Canceling > 2.0': webrtc_dep.found()}, bool_yn: true, section: 'Misc dependencies')
+      endif
+    endif
   endif
 endif
 
@@ -438,7 +503,7 @@ endif
 summary({'intl support': libintl_dep.found()}, bool_yn: true)
 
 need_alsa = get_option('pipewire-alsa').enabled() or 'media-session' in get_option('session-managers')
-alsa_dep = dependency('alsa', version : '>=1.1.7', required: need_alsa)
+alsa_dep = dependency('alsa', version : '>=1.2.6', required: need_alsa)
 summary({'pipewire-alsa': alsa_dep.found()}, bool_yn: true)
 
 if host_machine.system() == 'freebsd' or host_machine.system() == 'midnightbsd'
@@ -452,9 +517,6 @@ else
     openssl_lib = dependency('openssl', required: get_option('raop'))
 endif
 summary({'OpenSSL (for raop-sink)': openssl_lib.found()}, bool_yn: true)
-
-lilv_lib = dependency('lilv-0', required: get_option('lv2'))
-summary({'lilv (for lv2 plugins)': lilv_lib.found()}, bool_yn: true)
 
 libffado_dep = dependency('libffado', required: get_option('libffado'))
 summary({'ffado': libffado_dep.found()}, bool_yn: true)
@@ -565,14 +627,15 @@ devenv.set('PIPEWIRE_MODULE_DIR', pipewire_dep.get_variable('moduledir'))
 devenv.set('SPA_PLUGIN_DIR', spa_dep.get_variable('plugindir'))
 devenv.set('SPA_DATA_DIR', spa_dep.get_variable('datadir'))
 
-devenv.set('GST_PLUGIN_PATH', builddir / 'src'/ 'gst')
-
-devenv.set('ALSA_PLUGIN_DIR', builddir / 'pipewire-alsa' / 'alsa-plugins')
 devenv.set('ACP_PATHS_DIR', srcdir / 'spa' / 'plugins' / 'alsa' / 'mixer' / 'paths')
 devenv.set('ACP_PROFILES_DIR', srcdir / 'spa' / 'plugins' / 'alsa' / 'mixer' / 'profile-sets')
 
-devenv.set('LD_LIBRARY_PATH', builddir / 'pipewire-jack' / 'src')
+devenv.prepend('GST_PLUGIN_PATH', builddir / 'src'/ 'gst')
+devenv.prepend('ALSA_PLUGIN_DIR', builddir / 'pipewire-alsa' / 'alsa-plugins')
+devenv.prepend('LD_LIBRARY_PATH', builddir / 'pipewire-jack' / 'src')
 
+devenv.set('PIPEWIRE_LOG_SYSTEMD', 'false')
 devenv.set('PW_UNINSTALLED', '1')
+devenv.set('PW_BUILDDIR', meson.project_build_root())
 
 meson.add_devenv(devenv)

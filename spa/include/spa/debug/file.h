@@ -5,10 +5,6 @@
 #ifndef SPA_DEBUG_FILE_H
 #define SPA_DEBUG_FILE_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdio.h>
 #include <stdarg.h>
 #include <ctype.h>
@@ -21,10 +17,22 @@ extern "C" {
 #include <spa/debug/mem.h>
 #include <spa/debug/pod.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * \addtogroup spa_debug
  * \{
  */
+
+#ifndef SPA_API_DEBUG_FILE
+ #ifdef SPA_API_IMPL
+  #define SPA_API_DEBUG_FILE SPA_API_IMPL
+ #else
+  #define SPA_API_DEBUG_FILE static inline
+ #endif
+#endif
 
 struct spa_debug_file_ctx {
 	struct spa_debug_context ctx;
@@ -32,7 +40,7 @@ struct spa_debug_file_ctx {
 };
 
 SPA_PRINTF_FUNC(2,3)
-static inline void spa_debug_file_log(struct spa_debug_context *ctx, const char *fmt, ...)
+SPA_API_DEBUG_FILE void spa_debug_file_log(struct spa_debug_context *ctx, const char *fmt, ...)
 {
 	struct spa_debug_file_ctx *c = SPA_CONTAINER_OF(ctx, struct spa_debug_file_ctx, ctx);
 	va_list args;

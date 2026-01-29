@@ -23,6 +23,7 @@ run: all
 	PIPEWIRE_CONFIG_DIR=$(BUILD_ROOT)/src/daemon \
 	ACP_PATHS_DIR=$(SOURCE_ROOT)/spa/plugins/alsa/mixer/paths \
 	ACP_PROFILES_DIR=$(SOURCE_ROOT)/spa/plugins/alsa/mixer/profile-sets \
+	PIPEWIRE_LOG_SYSTEMD=false \
 	$(DBG) $(BUILD_ROOT)/src/daemon/pipewire-uninstalled
 
 run-pulse: all
@@ -32,13 +33,14 @@ run-pulse: all
 	PIPEWIRE_CONFIG_DIR=$(BUILD_ROOT)/src/daemon \
 	ACP_PATHS_DIR=$(SOURCE_ROOT)/spa/plugins/alsa/mixer/paths \
 	ACP_PROFILES_DIR=$(SOURCE_ROOT)/spa/plugins/alsa/mixer/profile-sets \
+	PIPEWIRE_LOG_SYSTEMD=false \
 	$(DBG) $(BUILD_ROOT)/src/daemon/pipewire-pulse
 
 gdb:
 	$(MAKE) run DBG=gdb
 
 valgrind:
-	$(MAKE) run DBG="DISABLE_RTKIT=1 PIPEWIRE_DLCLOSE=false valgrind --trace-children=yes"
+	$(MAKE) run DBG="DISABLE_RTKIT=1 PIPEWIRE_DLCLOSE=false valgrind --trace-children=yes --leak-check=full"
 
 test: all
 	ninja -C $(BUILD_ROOT) test

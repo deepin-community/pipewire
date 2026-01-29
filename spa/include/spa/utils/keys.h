@@ -45,6 +45,14 @@ extern "C" {
 #define SPA_KEY_API_ALSA_DISABLE_LONGNAME	\
 					"api.alsa.disable-longname"	/**< if card long name should not be passed to MIDI port */
 #define SPA_KEY_API_ALSA_BIND_CTLS	"api.alsa.bind-ctls"		/**< alsa controls to bind as params */
+#define SPA_KEY_API_ALSA_SPLIT_ENABLE	"api.alsa.split-enable"		/**< For UCM devices with split PCMs, don't split to
+									 * multiple PCMs using alsa-lib plugins, but instead
+									 * add api.alsa.split properties to emitted nodes
+									 * with PCM splitting information.
+									 */
+#define SPA_KEY_API_ALSA_SPLIT_PARENT	"api.alsa.split.parent"		/**< PCM is UCM SplitPCM parent PCM,
+									 * to be opened with SplitPCM set.
+									 */
 
 /** info from alsa card_info */
 #define SPA_KEY_API_ALSA_CARD_ID	"api.alsa.card.id"		/**< id from card_info */
@@ -67,6 +75,15 @@ extern "C" {
 #define SPA_KEY_API_ALSA_PCM_SUBCLASS	"api.alsa.pcm.subclass"		/**< subclass from pcm_info as string */
 #define SPA_KEY_API_ALSA_PCM_SYNC_ID	"api.alsa.pcm.sync-id"		/**< sync id */
 
+#define SPA_KEY_API_ALSA_SPLIT_POSITION "api.alsa.split.position"	/**< (SPA JSON list) If present, this is a
+									 * virtual device corresponding to a subset of
+									 * channels in an underlying PCM, listed in this
+									 * property. The \ref SPA_KEY_API_ALSA_PATH
+									 * contains the underlying split PCM. */
+#define SPA_KEY_API_ALSA_SPLIT_HW_POSITION \
+					"api.alsa.split.hw-position"	/**< (SPA JSON list) Channel map of the
+									 * underlying split PCM. */
+
 /** keys for v4l2 api */
 #define SPA_KEY_API_V4L2		"api.v4l2"			/**< key for the v4l2 api */
 #define SPA_KEY_API_V4L2_PATH		"api.v4l2.path"			/**< v4l2 device path as can be
@@ -81,15 +98,6 @@ extern "C" {
 #define SPA_KEY_API_LIBCAMERA_ROTATION	"api.libcamera.rotation"	/**< rotation of the camera:
 									  * "0", "90", "180" or "270" */
 
-/** info from libcamera_capability */
-#define SPA_KEY_API_LIBCAMERA_CAP_DRIVER	"api.libcamera.cap.driver"	/**< driver from capbility */
-#define SPA_KEY_API_LIBCAMERA_CAP_CARD	"api.libcamera.cap.card"		/**< caps from capability */
-#define SPA_KEY_API_LIBCAMERA_CAP_BUS_INFO	"api.libcamera.cap.bus_info"/**< bus_info from capability */
-#define SPA_KEY_API_LIBCAMERA_CAP_VERSION	"api.libcamera.cap.version"	/**< version from capability as %u.%u.%u */
-#define SPA_KEY_API_LIBCAMERA_CAP_CAPABILITIES	\
-					"api.libcamera.cap.capabilities"	/**< capabilities from capability */
-#define SPA_KEY_API_LIBCAMERA_CAP_DEVICE_CAPS	\
-					"api.libcamera.cap.device-caps"	/**< device_caps from capability */
 /** info from v4l2_capability */
 #define SPA_KEY_API_V4L2_CAP_DRIVER	"api.v4l2.cap.driver"		/**< driver from capbility */
 #define SPA_KEY_API_V4L2_CAP_CARD	"api.v4l2.cap.card"		/**< caps from capability */

@@ -22,13 +22,13 @@
 #ifndef PULSE_CARD_H
 #define PULSE_CARD_H
 
+#include "compat.h"
+
 #ifdef __cplusplus
 extern "C" {
 #else
 #include <stdbool.h>
 #endif
-
-#include "compat.h"
 
 typedef struct pa_card pa_card;
 
@@ -44,9 +44,12 @@ struct pa_card {
 
 	bool use_ucm;
 	bool soft_mixer;
+	bool disable_mixer_path;
 	bool auto_profile;
 	bool auto_port;
 	bool ignore_dB;
+	bool disable_pro_audio;
+	bool use_eld_channels;
 	uint32_t rate;
 	uint32_t pro_channels;
 

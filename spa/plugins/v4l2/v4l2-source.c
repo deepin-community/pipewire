@@ -16,6 +16,7 @@
 #include <spa/utils/keys.h>
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
+#include <spa/utils/dll.h>
 #include <spa/monitor/device.h>
 #include <spa/node/node.h>
 #include <spa/node/io.h>
@@ -31,16 +32,19 @@
 #include "v4l2.h"
 
 static const char default_device[] = "/dev/video0";
+static const char default_clock_name[] = "api.v4l2.unknown";
 
 struct props {
 	char device[64];
 	char device_name[128];
 	int device_fd;
+	char clock_name[64];
 };
 
 static void reset_props(struct props *props)
 {
-	strncpy(props->device, default_device, 64);
+	strncpy(props->device, default_device, sizeof(props->device));
+	strncpy(props->clock_name, default_clock_name, sizeof(props->clock_name));
 }
 
 #define MAX_BUFFERS     32
@@ -58,6 +62,7 @@ struct buffer {
 	struct spa_meta_videotransform *vt;
 	struct v4l2_buffer v4l2_buffer;
 	void *ptr;
+	void *mmap_ptr;
 };
 
 #define MAX_CONTROLS	64
@@ -75,6 +80,8 @@ struct port {
 	bool alloc_buffers;
 	bool probed_expbuf;
 	bool have_expbuf;
+	bool first_buffer;
+	uint32_t max_buffers;
 
 	bool next_fmtdesc;
 	struct v4l2_fmtdesc fmtdesc;
@@ -83,6 +90,7 @@ struct port {
 	struct v4l2_frmivalenum frmival;
 
 	bool have_format;
+	bool have_modifier;
 	struct spa_video_info current_format;
 
 	struct spa_v4l2_device dev;
@@ -105,6 +113,7 @@ struct port {
 	struct spa_port_info info;
 	struct spa_io_buffers *io;
 	struct spa_io_sequence *control;
+	uint32_t control_size;
 #define PORT_PropInfo	0
 #define PORT_EnumFormat	1
 #define PORT_Meta	2
@@ -144,6 +153,8 @@ struct impl {
 	struct spa_io_clock *clock;
 
 	struct spa_latency_info latency[2];
+
+	struct spa_dll dll;
 };
 
 #define CHECK_PORT(this,direction,port_id)  ((direction) == SPA_DIRECTION_OUTPUT && (port_id) == 0)
@@ -210,6 +221,12 @@ static int port_get_format(struct port *port,
 	case SPA_MEDIA_SUBTYPE_raw:
 		spa_pod_builder_add(builder,
 			SPA_FORMAT_VIDEO_format,    SPA_POD_Id(port->current_format.info.raw.format),
+			0);
+		if (port->have_modifier)
+			spa_pod_builder_add(builder,
+				SPA_FORMAT_VIDEO_modifier,  SPA_POD_Long(0),
+				0);
+		spa_pod_builder_add(builder,
 			SPA_FORMAT_VIDEO_size,      SPA_POD_Rectangle(&port->current_format.info.raw.size),
 			SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&port->current_format.info.raw.framerate),
 			0);
@@ -387,7 +404,7 @@ static int impl_node_set_param(void *object,
 						sizeof(p->device)-1);
 				break;
 			default:
-				spa_v4l2_set_control(this, prop->key, prop);
+				spa_v4l2_set_control(this, prop, SPA_POD_BODY_CONST(&prop->value));
 				break;
 			}
 		}
@@ -411,6 +428,11 @@ static int impl_node_set_io(void *object, uint32_t id, void *data, size_t size)
 	switch (id) {
 	case SPA_IO_Clock:
 		this->clock = data;
+		if (this->clock) {
+			SPA_FLAG_SET(this->clock->flags, SPA_IO_CLOCK_FLAG_NO_RATE);
+			spa_scnprintf(this->clock->name, sizeof(this->clock->name),
+					"%s", this->props.clock_name);
+		}
 		break;
 	case SPA_IO_Position:
 		this->position = data;
@@ -578,10 +600,13 @@ static int impl_node_port_enum_params(void *object, int seq,
 			return -EIO;
 		if (result.index > 0)
 			return 0;
+		if (port->max_buffers == 0)
+			return -EIO;
 
 		param = spa_pod_builder_add_object(&b.b,
 			SPA_TYPE_OBJECT_ParamBuffers, id,
-			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(4, 1, MAX_BUFFERS),
+			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(SPA_MIN(4u, port->max_buffers),
+				1, port->max_buffers),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_Int(port->fmt.fmt.pix.sizeimage),
 			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(port->fmt.fmt.pix.bytesperline));
@@ -658,7 +683,7 @@ static int port_set_format(struct impl *this, struct port *port,
 			   const struct spa_pod *format)
 {
 	struct spa_video_info info;
-	int res;
+	int res = 0;
 
 	spa_zero(info);
 
@@ -689,6 +714,7 @@ static int port_set_format(struct impl *this, struct port *port,
 				spa_log_error(this->log, "can't parse video raw");
 				return -EINVAL;
 			}
+			port->have_modifier = info.info.raw.flags & SPA_VIDEO_FLAG_MODIFIER;
 			break;
 		case SPA_MEDIA_SUBTYPE_mjpg:
 			if (spa_format_video_mjpg_parse(format, &info.info.mjpg) < 0)
@@ -738,7 +764,7 @@ static int port_set_format(struct impl *this, struct port *port,
 	emit_port_info(this, port, false);
 	emit_node_info(this, false);
 
-	return 0;
+	return res;
 }
 
 static int impl_node_port_set_param(void *object,
@@ -838,6 +864,7 @@ static int impl_node_port_set_io(void *object,
 		break;
 	case SPA_IO_Control:
 		port->control = data;
+		port->control_size = size;
 		break;
 	default:
 		return -ENOENT;
@@ -865,20 +892,31 @@ static int impl_node_port_reuse_buffer(void *object,
 	return res;
 }
 
-static int process_control(struct impl *this, struct spa_pod_sequence *control)
+static int process_control(struct impl *this, struct spa_pod_sequence *control, uint32_t size)
 {
-	struct spa_pod_control *c;
+	struct spa_pod_parser parser[2];
+	struct spa_pod_frame frame[2];
+	struct spa_pod_sequence seq;
+	const void *seq_body, *c_body;
+	struct spa_pod_control c;
 
-	SPA_POD_SEQUENCE_FOREACH(control, c) {
-		switch (c->type) {
+	spa_pod_parser_init_from_data(&parser[0], control, size, 0, size);
+	if (spa_pod_parser_push_sequence_body(&parser[0], &frame[0], &seq, &seq_body) < 0)
+		return 0;
+
+	while (spa_pod_parser_get_control_body(&parser[0], &c, &c_body) >= 0) {
+		switch (c.type) {
 		case SPA_CONTROL_Properties:
 		{
-			struct spa_pod_prop *prop;
-			struct spa_pod_object *obj = (struct spa_pod_object *) &c->value;
+			struct spa_pod_object obj;
+			struct spa_pod_prop prop;
+			const void *obj_body, *prop_body;
 
-			SPA_POD_OBJECT_FOREACH(obj, prop) {
-				spa_v4l2_set_control(this, prop->key, prop);
-			}
+			if (spa_pod_parser_init_object_body(&parser[1], &frame[1],
+					&c.value, c_body, &obj, &obj_body) < 0)
+				continue;
+			while (spa_pod_parser_get_prop_body(&parser[1], &prop, &prop_body) >= 0)
+				spa_v4l2_set_control(this, &prop, prop_body);
 			break;
 		}
 		default:
@@ -903,7 +941,7 @@ static int impl_node_process(void *object)
 		return -EIO;
 
 	if (port->control)
-		process_control(this, &port->control->sequence);
+		process_control(this, &port->control->sequence, port->control_size);
 
 	spa_log_trace(this->log, "%p; status %d", this, io->status);
 
@@ -991,6 +1029,7 @@ impl_init(const struct spa_handle_factory *factory,
 	struct port *port;
 	uint32_t i;
 	int res;
+	bool have_clock = false;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
@@ -1062,12 +1101,21 @@ impl_init(const struct spa_handle_factory *factory,
 		const char *s = info->items[i].value;
 		if (spa_streq(k, SPA_KEY_API_V4L2_PATH)) {
 			strncpy(this->props.device, s, 63);
-			if ((res = spa_v4l2_open(&port->dev, this->props.device)) < 0)
-				return res;
-			spa_v4l2_close(&port->dev);
 		} else if (spa_streq(k, "meta.videotransform.transform")) {
 			this->transform = spa_debug_type_find_type_short(spa_type_meta_videotransform_type, s);
+		} else if (spa_streq(k, "clock.name")) {
+			spa_scnprintf(this->props.clock_name,
+					sizeof(this->props.clock_name), "%s", s);
+			have_clock = true;
 		}
+	}
+	if ((res = spa_v4l2_open(&port->dev, this->props.device)) < 0)
+		return res;
+	spa_v4l2_close(&port->dev);
+
+	if (!have_clock) {
+		spa_scnprintf(this->props.clock_name,
+				sizeof(this->props.clock_name), "api.v4l2.%s", port->dev.cap.bus_info);
 	}
 	return 0;
 }

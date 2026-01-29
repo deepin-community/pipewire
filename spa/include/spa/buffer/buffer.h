@@ -5,12 +5,20 @@
 #ifndef SPA_BUFFER_H
 #define SPA_BUFFER_H
 
+#include <spa/utils/defs.h>
+#include <spa/buffer/meta.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <spa/utils/defs.h>
-#include <spa/buffer/meta.h>
+#ifndef SPA_API_BUFFER
+ #ifdef SPA_API_IMPL
+  #define SPA_API_BUFFER SPA_API_IMPL
+ #else
+  #define SPA_API_BUFFER static inline
+ #endif
+#endif
 
 /** \defgroup spa_buffer Buffers
  *
@@ -91,7 +99,7 @@ struct spa_buffer {
 };
 
 /** Find metadata in a buffer */
-static inline struct spa_meta *spa_buffer_find_meta(const struct spa_buffer *b, uint32_t type)
+SPA_API_BUFFER struct spa_meta *spa_buffer_find_meta(const struct spa_buffer *b, uint32_t type)
 {
 	uint32_t i;
 
@@ -102,12 +110,23 @@ static inline struct spa_meta *spa_buffer_find_meta(const struct spa_buffer *b, 
 	return NULL;
 }
 
-static inline void *spa_buffer_find_meta_data(const struct spa_buffer *b, uint32_t type, size_t size)
+SPA_API_BUFFER void *spa_buffer_find_meta_data(const struct spa_buffer *b, uint32_t type, size_t size)
 {
 	struct spa_meta *m;
 	if ((m = spa_buffer_find_meta(b, type)) && m->size >= size)
 		return m->data;
 	return NULL;
+}
+
+SPA_API_BUFFER bool spa_buffer_has_meta_features(const struct spa_buffer *b, uint32_t type, uint32_t features)
+{
+	uint32_t i;
+	for (i = 0; i < b->n_metas; i++) {
+		uint32_t t = b->metas[i].type;
+		if ((t >> 16) == type && (t & features) == features)
+			return true;
+	}
+	return false;
 }
 
 /**

@@ -26,7 +26,7 @@
 PW_LOG_TOPIC_EXTERN(log_filter);
 #define PW_LOG_TOPIC_DEFAULT log_filter
 
-#define MAX_BUFFERS	64
+#define MAX_BUFFERS	64u
 
 #define MASK_BUFFERS	(MAX_BUFFERS-1)
 
@@ -36,7 +36,7 @@ struct buffer {
 	struct pw_buffer this;
 	uint32_t id;
 #define BUFFER_FLAG_MAPPED	(1 << 0)
-#define BUFFER_FLAG_QUEUED	(1 << 1)
+#define BUFFER_FLAG_DEQUEUED	(1 << 1)
 #define BUFFER_FLAG_ADDED	(1 << 2)
 	uint32_t flags;
 };
@@ -146,6 +146,7 @@ struct filter {
 	unsigned int warn_mlock:1;
 	unsigned int trigger:1;
 	int in_emit_param_changed;
+	int pending_drain;
 };
 
 static int get_param_index(uint32_t id)
@@ -205,7 +206,7 @@ static void fix_datatype(struct spa_pod *param)
 	if (spa_pod_get_int(&vals[0], (int32_t*)&dataType) < 0)
 		return;
 
-	pw_log_debug("dataType: %u", dataType);
+	pw_log_debug("dataType: %" PRIu32, dataType);
 	if (dataType & (1u << SPA_DATA_MemPtr)) {
 		SPA_POD_VALUE(struct spa_pod_int, &vals[0]) =
 			dataType | (1<<SPA_DATA_MemFd);
@@ -355,10 +356,8 @@ static inline int push_queue(struct port *port, struct queue *queue, struct buff
 {
 	uint32_t index;
 
-	if (SPA_FLAG_IS_SET(buffer->flags, BUFFER_FLAG_QUEUED))
+	if (buffer->id >= port->n_buffers)
 		return -EINVAL;
-
-	SPA_FLAG_SET(buffer->flags, BUFFER_FLAG_QUEUED);
 
 	spa_ringbuffer_get_write_index(&queue->ring, &index);
 	queue->ids[index & MASK_BUFFERS] = buffer->id;
@@ -381,7 +380,6 @@ static inline struct buffer *pop_queue(struct port *port, struct queue *queue)
 	spa_ringbuffer_read_update(&queue->ring, index + 1);
 
 	buffer = &port->buffers[id];
-	SPA_FLAG_CLEAR(buffer->flags, BUFFER_FLAG_QUEUED);
 
 	return buffer;
 }
@@ -406,8 +404,10 @@ static bool filter_set_state(struct pw_filter *filter, enum pw_filter_state stat
 			     pw_filter_state_as_string(old),
 			     pw_filter_state_as_string(state), res, error);
 
-		if (state == PW_FILTER_STATE_ERROR)
+		if (state == PW_FILTER_STATE_ERROR) {
 			pw_log_error("%p: error (%d) %s", filter, res, error);
+			errno = -res;
+		}
 
 		filter->state = state;
 		pw_filter_emit_state_changed(filter, old, state, error);
@@ -498,14 +498,16 @@ static int impl_send_command(void *object, const struct spa_command *command)
 {
 	struct filter *impl = object;
 	struct pw_filter *filter = &impl->this;
+	uint32_t id = SPA_NODE_COMMAND_ID(command);
 
-	switch (SPA_NODE_COMMAND_ID(command)) {
+	pw_log_debug("%p: command %s", impl,
+			spa_debug_type_find_name(spa_type_node_command_id, id));
+
+	switch (id) {
 	case SPA_NODE_COMMAND_Suspend:
 	case SPA_NODE_COMMAND_Flush:
 	case SPA_NODE_COMMAND_Pause:
-		pw_loop_invoke(impl->main_loop,
-			NULL, 0, NULL, 0, false, impl);
-		if (filter->state == PW_FILTER_STATE_STREAMING) {
+		if (filter->state == PW_FILTER_STATE_STREAMING && id != SPA_NODE_COMMAND_Flush) {
 			pw_log_debug("%p: pause", filter);
 			filter_set_state(filter, PW_FILTER_STATE_PAUSED, 0, NULL);
 		}
@@ -881,8 +883,7 @@ static int impl_port_use_buffers(void *object,
 	struct port *port;
 	struct pw_filter *filter = &impl->this;
 	uint32_t i, j, impl_flags;
-	int prot, res;
-	int size = 0;
+	int res, size = 0;
 
 	pw_log_debug("%p: port:%d.%d buffers:%u disconnecting:%d", impl,
 			direction, port_id, n_buffers, impl->disconnecting);
@@ -896,7 +897,6 @@ static int impl_port_use_buffers(void *object,
 	clear_buffers(port);
 
 	impl_flags = port->flags;
-	prot = PROT_READ | (direction == SPA_DIRECTION_OUTPUT ? PROT_WRITE : 0);
 
 	if (n_buffers > MAX_BUFFERS)
 		return -ENOSPC;
@@ -911,7 +911,12 @@ static int impl_port_use_buffers(void *object,
 		if (SPA_FLAG_IS_SET(impl_flags, PW_FILTER_PORT_FLAG_MAP_BUFFERS)) {
 			for (j = 0; j < buffers[i]->n_datas; j++) {
 				struct spa_data *d = &buffers[i]->datas[j];
-				if (SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_MAPPABLE)) {
+				if (d->data == NULL && SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_MAPPABLE)) {
+					int prot = 0;
+					if (SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_READABLE))
+						prot |= PROT_READ;
+					if (SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_WRITABLE))
+						prot |= PROT_WRITE;
 					if ((res = map_data(impl, d, prot)) < 0)
 						return res;
 					SPA_FLAG_SET(b->flags, BUFFER_FLAG_MAPPED);
@@ -934,6 +939,7 @@ static int impl_port_use_buffers(void *object,
 		pw_log_debug("%p: got buffer id:%d datas:%d mapped size %d", filter, i,
 				buffers[i]->n_datas, size);
 	}
+	port->n_buffers = n_buffers;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b = &port->buffers[i];
@@ -946,11 +952,9 @@ static int impl_port_use_buffers(void *object,
 		}
 
 		SPA_FLAG_SET(b->flags, BUFFER_FLAG_ADDED);
+
 		pw_filter_emit_add_buffer(filter, port->user_data, &b->this);
 	}
-
-	port->n_buffers = n_buffers;
-
 	return 0;
 }
 
@@ -963,9 +967,7 @@ static int impl_port_reuse_buffer(void *object, uint32_t port_id, uint32_t buffe
 		return -EINVAL;
 
 	pw_log_trace("%p: recycle buffer %d", impl, buffer_id);
-	if (buffer_id < port->n_buffers)
-		push_queue(port, &port->queued, &port->buffers[buffer_id]);
-
+	push_queue(port, &port->queued, &port->buffers[buffer_id]);
 	return 0;
 }
 
@@ -985,13 +987,19 @@ do_call_drained(struct spa_loop *loop,
 	struct pw_filter *filter = &impl->this;
 	pw_log_trace("%p: drained", filter);
 	pw_filter_emit_drained(filter);
+	SPA_ATOMIC_DEC(impl->pending_drain);
 	return 0;
 }
 
 static void call_drained(struct filter *impl)
 {
-	pw_loop_invoke(impl->main_loop,
-		do_call_drained, 1, NULL, 0, false, impl);
+	pw_log_info("%p: drained", impl);
+	if (SPA_ATOMIC_INC(impl->pending_drain) == 1) {
+		pw_loop_invoke(impl->main_loop,
+			do_call_drained, 1, NULL, 0, false, impl);
+	} else {
+		SPA_ATOMIC_DEC(impl->pending_drain);
+	}
 }
 
 static int impl_node_process(void *object)
@@ -1115,11 +1123,14 @@ static void proxy_destroy(void *_data)
 static void proxy_error(void *_data, int seq, int res, const char *message)
 {
 	struct pw_filter *filter = _data;
+	int old_errno = errno;
 	/* we just emit the state change here to inform the application.
 	 * If this is supposed to be a permanent error, the app should
 	 * do a pw_filter_set_error() */
+	errno = -res;
 	pw_filter_emit_state_changed(filter, filter->state,
 			PW_FILTER_STATE_ERROR, message);
+	errno = old_errno;
 }
 
 static void proxy_bound_props(void *_data, uint32_t global_id, const struct spa_dict *props)
@@ -1376,6 +1387,28 @@ static void free_port(struct filter *impl, struct port *port)
 	free(port);
 }
 
+static void filter_free(struct pw_filter *filter)
+{
+	struct filter *impl = SPA_CONTAINER_OF(filter, struct filter, this);
+
+	pw_log_debug("%p: free", filter);
+	clear_params(impl, NULL, SPA_ID_INVALID);
+
+	free(filter->error);
+
+	pw_properties_free(filter->properties);
+
+	pw_map_clear(&impl->ports[SPA_DIRECTION_INPUT]);
+	pw_map_clear(&impl->ports[SPA_DIRECTION_OUTPUT]);
+
+	free(filter->name);
+
+	if (impl->data.context)
+		pw_context_destroy(impl->data.context);
+
+	free(impl);
+}
+
 SPA_EXPORT
 void pw_filter_destroy(struct pw_filter *filter)
 {
@@ -1398,26 +1431,13 @@ void pw_filter_destroy(struct pw_filter *filter)
 		spa_hook_remove(&filter->core_listener);
 		spa_list_remove(&filter->link);
 	}
-
-	clear_params(impl, NULL, SPA_ID_INVALID);
-
-	pw_log_debug("%p: free", filter);
-	free(filter->error);
-
-	pw_properties_free(filter->properties);
-
 	spa_hook_list_clean(&impl->hooks);
 	spa_hook_list_clean(&filter->listener_list);
 
-	pw_map_clear(&impl->ports[SPA_DIRECTION_INPUT]);
-	pw_map_clear(&impl->ports[SPA_DIRECTION_OUTPUT]);
+	/* Make sure there are no queued invokes from us anymore */
+	pw_loop_invoke(impl->main_loop, NULL, 0, NULL, 0, false, impl);
 
-	free(filter->name);
-
-	if (impl->data.context)
-		pw_context_destroy(impl->data.context);
-
-	free(impl);
+	filter_free(filter);
 }
 
 static int
@@ -1433,7 +1453,7 @@ static void hook_removed(struct spa_hook *hook)
 {
 	struct filter *impl = hook->priv;
 	if (impl->data_loop)
-		pw_loop_invoke(impl->data_loop, do_remove_callbacks, 1, NULL, 0, true, impl);
+		pw_loop_locked(impl->data_loop, do_remove_callbacks, 1, NULL, 0, impl);
 	else
 		spa_zero(impl->rt_callbacks);
 	hook->priv = NULL;
@@ -1463,6 +1483,8 @@ enum pw_filter_state pw_filter_get_state(struct pw_filter *filter, const char **
 {
 	if (error)
 		*error = filter->error;
+	if (filter->state == PW_FILTER_STATE_ERROR)
+		errno = -filter->error_res;
 	return filter->state;
 }
 
@@ -1731,7 +1753,7 @@ static void add_audio_dsp_port_params(struct filter *impl, struct port *port)
 			SPA_FORMAT_AUDIO_format,   SPA_POD_Id(SPA_AUDIO_FORMAT_DSP_F32)));
 
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	add_param(impl, port, SPA_PARAM_Buffers, PARAM_FLAG_LOCKED,
+	add_param(impl, port, SPA_PARAM_Buffers, 0,
 		spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
@@ -1758,17 +1780,26 @@ static void add_video_dsp_port_params(struct filter *impl, struct port *port)
 			SPA_FORMAT_VIDEO_format,   SPA_POD_Id(SPA_VIDEO_FORMAT_DSP_F32)));
 }
 
-static void add_control_dsp_port_params(struct filter *impl, struct port *port)
+static void add_control_dsp_port_params(struct filter *impl, struct port *port, uint32_t types)
 {
 	uint8_t buffer[4096];
 	struct spa_pod_builder b;
+	struct spa_pod_frame f[1];
 
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
+	spa_pod_builder_push_object(&b, &f[0],
+		SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
+	spa_pod_builder_add(&b,
+		SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
+		SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
+		0);
+	if (types != 0) {
+		spa_pod_builder_add(&b,
+			SPA_FORMAT_CONTROL_types, SPA_POD_CHOICE_FLAGS_Int(types),
+			0);
+	}
 	add_param(impl, port, SPA_PARAM_EnumFormat, PARAM_FLAG_LOCKED,
-		spa_pod_builder_add_object(&b,
-			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-			SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
-			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control)));
+			spa_pod_builder_pop(&b, &f[0]));
 }
 
 SPA_EXPORT
@@ -1824,9 +1855,14 @@ void *pw_filter_add_port(struct pw_filter *filter,
 			add_audio_dsp_port_params(impl, p);
 		else if (spa_streq(str, "32 bit float RGBA video"))
 			add_video_dsp_port_params(impl, p);
-		else if (spa_streq(str, "8 bit raw midi") ||
-		    spa_streq(str, "8 bit raw control"))
-			add_control_dsp_port_params(impl, p);
+		else if (spa_streq(str, "8 bit raw midi"))
+			add_control_dsp_port_params(impl, p, 1u << SPA_CONTROL_Midi);
+		else if (spa_streq(str, "8 bit raw control"))
+			add_control_dsp_port_params(impl, p, 0);
+		else if (spa_streq(str, "32 bit raw UMP")) {
+			add_control_dsp_port_params(impl, p, 1u << SPA_CONTROL_UMP);
+			pw_properties_set(props, PW_KEY_FORMAT_DSP, "8 bit raw midi");
+		}
 	}
 	/* then override with user provided if any */
 	if (update_params(impl, p, SPA_ID_INVALID, params, n_params) < 0)
@@ -1938,7 +1974,8 @@ int pw_filter_get_time(struct pw_filter *filter, struct pw_time *time)
 	if (SPA_LIKELY(p != NULL)) {
 		impl->time.now = p->clock.nsec;
 		impl->time.rate = p->clock.rate;
-		if (SPA_UNLIKELY(impl->clock_id != p->clock.id)) {
+		if (SPA_UNLIKELY(impl->clock_id != p->clock.id ||
+		    SPA_FLAG_IS_SET(p->clock.flags, SPA_IO_CLOCK_FLAG_DISCONT))) {
 			impl->base_pos = p->clock.position - impl->time.ticks;
 			impl->clock_id = p->clock.id;
 		}
@@ -1981,6 +2018,7 @@ struct pw_buffer *pw_filter_dequeue_buffer(void *port_data)
 		return NULL;
 	}
 	pw_log_trace_fp("%p: dequeue buffer %d", p->filter, b->id);
+	SPA_FLAG_SET(b->flags, BUFFER_FLAG_DEQUEUED);
 
 	return &b->this;
 }
@@ -1990,6 +2028,13 @@ int pw_filter_queue_buffer(void *port_data, struct pw_buffer *buffer)
 {
 	struct port *p = SPA_CONTAINER_OF(port_data, struct port, user_data);
 	struct buffer *b = SPA_CONTAINER_OF(buffer, struct buffer, this);
+
+	if (!SPA_FLAG_IS_SET(b->flags, BUFFER_FLAG_DEQUEUED)) {
+		pw_log_warn("%p: tried to queue cleared buffer %d", p->filter, b->id);
+		return -EINVAL;
+	}
+	SPA_FLAG_CLEAR(b->flags, BUFFER_FLAG_DEQUEUED);
+
 	pw_log_trace_fp("%p: queue buffer %d", p->filter, b->id);
 	return push_queue(p, &p->queued, b);
 }
@@ -2049,8 +2094,8 @@ SPA_EXPORT
 int pw_filter_flush(struct pw_filter *filter, bool drain)
 {
 	struct filter *impl = SPA_CONTAINER_OF(filter, struct filter, this);
-	pw_loop_invoke(impl->data_loop,
-			drain ? do_drain : do_flush, 1, NULL, 0, true, impl);
+	pw_loop_locked(impl->data_loop,
+			drain ? do_drain : do_flush, 1, NULL, 0, impl);
 	return 0;
 }
 
@@ -2058,6 +2103,12 @@ SPA_EXPORT
 bool pw_filter_is_driving(struct pw_filter *filter)
 {
 	return filter->node->driving;
+}
+
+SPA_EXPORT
+bool pw_filter_is_lazy(struct pw_filter *filter)
+{
+	return filter->node->lazy;
 }
 
 static int
@@ -2069,18 +2120,21 @@ do_trigger_process(struct spa_loop *loop,
 	return spa_node_call_ready(&impl->callbacks, res);
 }
 
-static int do_trigger_request_process(struct spa_loop *loop,
+static int do_emit_event(struct spa_loop *loop,
                  bool async, uint32_t seq, const void *data, size_t size, void *user_data)
 {
 	struct filter *impl = user_data;
-	uint8_t buffer[1024];
-	struct spa_pod_builder b = { 0 };
-
-	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	spa_node_emit_event(&impl->hooks,
-			spa_pod_builder_add_object(&b,
-				SPA_TYPE_EVENT_Node, SPA_NODE_EVENT_RequestProcess));
+	const struct spa_event *event = data;
+	spa_node_emit_event(&impl->hooks, event);
 	return 0;
+}
+
+SPA_EXPORT
+int pw_filter_emit_event(struct pw_filter *filter, const struct spa_event *event)
+{
+	struct filter *impl = SPA_CONTAINER_OF(filter, struct filter, this);
+	return pw_loop_invoke(impl->main_loop,
+		do_emit_event, 1, event, SPA_POD_SIZE(&event->pod), false, impl);
 }
 
 SPA_EXPORT
@@ -2092,13 +2146,13 @@ int pw_filter_trigger_process(struct pw_filter *filter)
 	pw_log_trace_fp("%p: driving:%d", impl, filter->node->driving);
 
 	if (impl->trigger) {
-		pw_impl_node_trigger(filter->node);
+		res = pw_impl_node_trigger(filter->node);
 	} else if (filter->node->driving) {
 		res = pw_loop_invoke(impl->data_loop,
 			do_trigger_process, 1, NULL, 0, false, impl);
 	} else {
-		res = pw_loop_invoke(impl->main_loop,
-			do_trigger_request_process, 1, NULL, 0, false, impl);
+		pw_filter_emit_event(filter,
+				&SPA_NODE_EVENT_INIT(SPA_NODE_EVENT_RequestProcess));
 	}
 	return res;
 }

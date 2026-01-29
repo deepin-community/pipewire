@@ -19,6 +19,7 @@
 #include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/utils/json.h>
+#include <spa/utils/ratelimit.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/debug/types.h>
 
@@ -65,6 +66,8 @@
  * - `sess.ts-refclk = <string>`: the name of a reference clock
  * - `sess.media = <string>`: the media type audio|midi|opus, default audio
  * - `stream.props = {}`: properties to be passed to the stream
+ * - `aes67.driver-group = <string>`: for AES67 streams, can be specified in order to allow
+ *       the sink to be driven by a different node than the PTP driver.
  *
  * ## General options
  *
@@ -74,6 +77,7 @@
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_NAME
  * - \ref PW_KEY_NODE_DESCRIPTION
@@ -85,6 +89,8 @@
  *
  * ## Example configuration
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-rtp-sink.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-rtp-sink
  *     args = {
@@ -145,6 +151,8 @@ PW_LOG_TOPIC(mod_topic, "mod." NAME);
 		"( audio.rate=<sample rate, default:"SPA_STRINGIFY(DEFAULT_RATE)"> ) "			\
 		"( audio.channels=<number of channels, default:"SPA_STRINGIFY(DEFAULT_CHANNELS)"> ) "	\
 		"( audio.position=<channel map, default:"DEFAULT_POSITION"> ) "				\
+		"( audio.layout=<channel layout, default:"DEFAULT_LAYOUT"> ) "				\
+		"( aes67.driver-group=<driver driving the PTP send> ) "					\
 		"( stream.props= { key=value ... } ) "
 
 static const struct spa_dict_item module_info[] = {
@@ -169,6 +177,8 @@ struct impl {
 
 	struct pw_properties *stream_props;
 	struct rtp_stream *stream;
+
+	struct spa_ratelimit rate_limit;
 
 	unsigned int do_disconnect:1;
 
@@ -274,6 +284,13 @@ static void stream_destroy(void *d)
 	impl->stream = NULL;
 }
 
+static inline uint64_t get_time_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return SPA_TIMESPEC_TO_NSEC(&ts);
+}
+
 static void stream_send_packet(void *data, struct iovec *iov, size_t iovlen)
 {
 	struct impl *impl = data;
@@ -288,32 +305,56 @@ static void stream_send_packet(void *data, struct iovec *iov, size_t iovlen)
 	msg.msg_flags = 0;
 
 	n = sendmsg(impl->rtp_fd, &msg, MSG_NOSIGNAL);
-	if (n < 0)
-		pw_log_warn("sendmsg() failed: %m");
+	if (n < 0) {
+		int suppressed;
+		if ((suppressed = spa_ratelimit_test(&impl->rate_limit, get_time_ns())) >= 0)
+			pw_log_warn("(%d suppressed) sendmsg() failed: %m", suppressed);
+	}
 }
 
-static void stream_state_changed(void *data, bool started, const char *error)
+static void stream_report_error(void *data, const char *error)
 {
 	struct impl *impl = data;
-
 	if (error) {
 		pw_log_error("stream error: %s", error);
 		pw_impl_module_schedule_destroy(impl->module);
-	} else if (started) {
-		int res;
+	}
+}
 
-		if ((res = make_socket(&impl->src_addr, impl->src_len,
-					&impl->dst_addr, impl->dst_len,
-					impl->mcast_loop, impl->ttl, impl->dscp,
-					impl->ifname)) < 0) {
-			pw_log_error("can't make socket: %s", spa_strerror(res));
-			rtp_stream_set_error(impl->stream, res, "Can't make socket");
-			return;
-		}
-		impl->rtp_fd = res;
-	} else {
+static void stream_open_connection(void *data, int *result)
+{
+	int res;
+	struct impl *impl = data;
+
+	if ((res = make_socket(&impl->src_addr, impl->src_len,
+				&impl->dst_addr, impl->dst_len,
+				impl->mcast_loop, impl->ttl, impl->dscp,
+				impl->ifname)) < 0) {
+		pw_log_error("can't make socket: %s", spa_strerror(res));
+		rtp_stream_set_error(impl->stream, res, "Can't make socket");
+		if (result)
+			*result = res;
+		return;
+	}
+
+	if (result)
+		*result = 1;
+
+	impl->rtp_fd = res;
+}
+
+static void stream_close_connection(void *data, int *result)
+{
+	struct impl *impl = data;
+
+	if (impl->rtp_fd > 0) {
+		if (result)
+			*result = 1;
 		close(impl->rtp_fd);
 		impl->rtp_fd = -1;
+	} else {
+		if (result)
+			*result = 0;
 	}
 }
 
@@ -332,7 +373,8 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
 			struct spa_pod_frame f;
 			const char *key;
 			struct spa_pod *pod;
-			const char *value;
+			struct spa_dict_item items[4];
+			unsigned int n_items = 0;
 
 			if (spa_pod_parse_object(param, SPA_TYPE_OBJECT_Props, NULL, SPA_PROP_params,
 					SPA_POD_OPT_Pod(&params)) < 0)
@@ -341,27 +383,44 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
 			if (spa_pod_parser_push_struct(&prs, &f) < 0)
 				return;
 
-			while (true) {
+			while (n_items < SPA_N_ELEMENTS(items)) {
+				const char *value_str = NULL;
+				int value_int = -1;
+
 				if (spa_pod_parser_get_string(&prs, &key) < 0)
 					break;
 				if (spa_pod_parser_get_pod(&prs, &pod) < 0)
 					break;
-				if (spa_pod_get_string(pod, &value) < 0)
+				if (spa_pod_get_string(pod, &value_str) < 0 &&
+						spa_pod_get_int(pod, &value_int) < 0)
 					continue;
-				pw_log_info("key '%s', value '%s'", key, value);
-				if (!spa_streq(key, "destination.ip"))
-					continue;
-				if (pw_net_parse_address(value, impl->dst_port, &impl->dst_addr,
-						&impl->dst_len) < 0) {
-					pw_log_error("invalid destination.ip: '%s'", value);
-					break;
+				pw_log_info("key '%s', value '%s'/%u", key, value_str, value_int);
+				if (spa_streq(key, "destination.ip")) {
+					if (!value_str || pw_net_parse_address(value_str, impl->dst_port, &impl->dst_addr,
+								&impl->dst_len) < 0) {
+						pw_log_error("invalid destination.ip: '%s'", value_str);
+						break;
+					}
+					pw_properties_set(impl->stream_props, "rtp.destination.ip", value_str);
+					items[n_items++] = SPA_DICT_ITEM_INIT("rtp.destination.ip", value_str);
+				} else if (spa_streq(key, "sess.name")) {
+					if (!value_str) {
+						pw_log_error("invalid sess.name");
+						break;
+					}
+					pw_properties_set(impl->stream_props, "sess.name", value_str);
+					items[n_items++] = SPA_DICT_ITEM_INIT("sess.name", value_str);
+				} else if (spa_streq(key, "sess.id") || spa_streq(key, "sess.version")) {
+					if (value_int < 0 || (unsigned int)value_int > UINT32_MAX) {
+						pw_log_error("invalid %s: '%d'", key, value_int);
+						break;
+					}
+					pw_properties_setf(impl->stream_props, key, "%d", value_int);
+					items[n_items++] = SPA_DICT_ITEM_INIT(key, pw_properties_get(impl->stream_props, key));
 				}
-				pw_properties_set(impl->stream_props, "rtp.destination.ip", value);
-				struct spa_dict_item item[1];
-				item[0] = SPA_DICT_ITEM_INIT("rtp.destination.ip", value);
-				rtp_stream_update_properties(impl->stream, &SPA_DICT_INIT(item, 1));
-				break;
 			}
+
+			rtp_stream_update_properties(impl->stream, &SPA_DICT_INIT(items, n_items));
 		}
 	}
 }
@@ -381,7 +440,9 @@ static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *
 static const struct rtp_stream_events stream_events = {
 	RTP_VERSION_STREAM_EVENTS,
 	.destroy = stream_destroy,
-	.state_changed = stream_state_changed,
+	.report_error = stream_report_error,
+	.open_connection = stream_open_connection,
+	.close_connection = stream_close_connection,
 	.param_changed = stream_param_changed,
 	.send_packet = stream_send_packet,
 };
@@ -406,8 +467,10 @@ static void impl_destroy(struct impl *impl)
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->rtp_fd != -1)
+	if (impl->rtp_fd != -1) {
+		pw_log_info("closing socket with FD %d as part of shutdown", impl->rtp_fd);
 		close(impl->rtp_fd);
+	}
 
 	pw_properties_free(impl->stream_props);
 	pw_properties_free(impl->props);
@@ -464,6 +527,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	const char *str, *sess_name;
 	int64_t ts_offset;
 	int res = 0;
+	uint32_t header_size;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
 
@@ -492,6 +556,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	}
 	impl->stream_props = stream_props;
 
+	impl->rate_limit.interval = 2 * SPA_NSEC_PER_SEC;
+	impl->rate_limit.burst = 1;
+
 	impl->module = module;
 	impl->context = context;
 	impl->loop = pw_context_get_main_loop(context);
@@ -513,6 +580,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
@@ -525,10 +593,13 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, "net.mtu");
 	copy_props(impl, props, "sess.media");
 	copy_props(impl, props, "sess.name");
+	copy_props(impl, props, "sess.id");
+	copy_props(impl, props, "sess.version");
 	copy_props(impl, props, "sess.min-ptime");
 	copy_props(impl, props, "sess.max-ptime");
 	copy_props(impl, props, "sess.latency.msec");
 	copy_props(impl, props, "sess.ts-refclk");
+	copy_props(impl, props, "aes67.driver-group");
 
 	str = pw_properties_get(props, "local.ifname");
 	impl->ifname = str ? strdup(str) : NULL;
@@ -558,6 +629,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		ts_offset = pw_rand32();
 	pw_properties_setf(stream_props, "rtp.sender-ts-offset", "%u", (uint32_t)ts_offset);
 
+	header_size = impl->dst_addr.ss_family == AF_INET ?
+                        IP4_HEADER_SIZE : IP6_HEADER_SIZE;
+	header_size += UDP_HEADER_SIZE;
+	pw_properties_setf(stream_props, "net.header", "%u", header_size);
 	pw_net_get_ip(&impl->src_addr, addr, sizeof(addr), NULL, NULL);
 	pw_properties_set(stream_props, "rtp.source.ip", addr);
 	pw_net_get_ip(&impl->dst_addr, addr, sizeof(addr), NULL, NULL);

@@ -5,6 +5,15 @@
 #ifndef SPA_PARAM_TAG_UTILS_H
 #define SPA_PARAM_TAG_UTILS_H
 
+#include <float.h>
+
+#include <spa/utils/dict.h>
+#include <spa/pod/builder.h>
+#include <spa/pod/iter.h>
+#include <spa/pod/parser.h>
+#include <spa/pod/compare.h>
+#include <spa/param/tag.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,21 +23,21 @@ extern "C" {
  * \{
  */
 
-#include <float.h>
+#ifndef SPA_API_TAG_UTILS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_TAG_UTILS SPA_API_IMPL
+ #else
+  #define SPA_API_TAG_UTILS static inline
+ #endif
+#endif
 
-#include <spa/utils/dict.h>
-#include <spa/pod/builder.h>
-#include <spa/pod/parser.h>
-#include <spa/param/tag.h>
-
-static inline int
+SPA_API_TAG_UTILS int
 spa_tag_compare(const struct spa_pod *a, const struct spa_pod *b)
 {
-	return ((a == b) || (a && b && SPA_POD_SIZE(a) == SPA_POD_SIZE(b) &&
-	    memcmp(a, b, SPA_POD_SIZE(b)) == 0)) ? 0 : 1;
+	return spa_pod_memcmp(a, b);
 }
 
-static inline int
+SPA_API_TAG_UTILS int
 spa_tag_parse(const struct spa_pod *tag, struct spa_tag_info *info, void **state)
 {
 	int res;
@@ -57,7 +66,7 @@ spa_tag_parse(const struct spa_pod *tag, struct spa_tag_info *info, void **state
 	return 0;
 }
 
-static inline int
+SPA_API_TAG_UTILS int
 spa_tag_info_parse(const struct spa_tag_info *info, struct spa_dict *dict, struct spa_dict_item *items)
 {
 	struct spa_pod_parser prs;
@@ -82,6 +91,8 @@ spa_tag_info_parse(const struct spa_tag_info *info, struct spa_dict *dict, struc
 				SPA_POD_String(&value),
 				NULL) < 0)
 			break;
+		if (key == NULL || value == NULL)
+			return -EINVAL;
 		items[n].key = key;
 		items[n].value = value;
 	}
@@ -90,7 +101,7 @@ spa_tag_info_parse(const struct spa_tag_info *info, struct spa_dict *dict, struc
 	return 0;
 }
 
-static inline void
+SPA_API_TAG_UTILS void
 spa_tag_build_start(struct spa_pod_builder *builder, struct spa_pod_frame *f,
 		uint32_t id, enum spa_direction direction)
 {
@@ -100,7 +111,7 @@ spa_tag_build_start(struct spa_pod_builder *builder, struct spa_pod_frame *f,
 			0);
 }
 
-static inline void
+SPA_API_TAG_UTILS void
 spa_tag_build_add_info(struct spa_pod_builder *builder, const struct spa_pod *info)
 {
 	spa_pod_builder_add(builder,
@@ -108,7 +119,7 @@ spa_tag_build_add_info(struct spa_pod_builder *builder, const struct spa_pod *in
 			0);
 }
 
-static inline void
+SPA_API_TAG_UTILS void
 spa_tag_build_add_dict(struct spa_pod_builder *builder, const struct spa_dict *dict)
 {
 	uint32_t i, n_items;
@@ -126,7 +137,7 @@ spa_tag_build_add_dict(struct spa_pod_builder *builder, const struct spa_dict *d
         spa_pod_builder_pop(builder, &f);
 }
 
-static inline struct spa_pod *
+SPA_API_TAG_UTILS struct spa_pod *
 spa_tag_build_end(struct spa_pod_builder *builder, struct spa_pod_frame *f)
 {
 	return (struct spa_pod*)spa_pod_builder_pop(builder, f);

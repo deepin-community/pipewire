@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <stdalign.h>
@@ -11,13 +13,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "config.h"
-
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/param/profiler.h>
 
+#define PW_API_PROFILER		SPA_EXPORT
 #include <pipewire/private.h>
 #include <pipewire/impl.h>
 #include <pipewire/extensions/profiler.h>
@@ -34,14 +35,36 @@
  *
  * `libpipewire-module-profiler`
  *
+ * ## Module Options
+ *
+ * - `profile.interval.ms`: Can be used to avoid gathering profiling information
+ *			    on every processing cycle. This allows trading off
+ *			    CPU usage for profiling accuracy. Default 0
+ *
+ * ## Config override
+ *
+ * A `module.profiler.args` config section can be added
+ * to override the module arguments.
+ *
+ *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-profiler-args.conf
+ *
+ * module.profiler.args = {
+ *     #profile.interval.ms = 10
+ * }
+ *\endcode
+ *
  * ## Example configuration
  *
- * The module has no arguments and is usually added to the config file of
- * the main pipewire daemon.
+ * The module is usually added to the config file of the main pipewire daemon.
  *
  *\code{.unparsed}
  * context.modules = [
- * { name = libpipewire-module-profiler }
+ * { name = libpipewire-module-profiler
+ *   args = {
+ *       #profile.interval.ms = 0
+ *   }
+ * }
  * ]
  *\endcode
  *
@@ -68,9 +91,14 @@ int pw_protocol_native_ext_profiler_init(struct pw_context *context);
 #define pw_profiler_resource_profile(r,...)        \
         pw_profiler_resource(r,profile,0,__VA_ARGS__)
 
+#define DEFAULT_INTERVAL	0
+
+#define MODULE_USAGE	"( profile.interval.ms=<minimum interval for sampling data (in ms) ) "
+
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
 	{ PW_KEY_MODULE_DESCRIPTION, "Generate Profiling data" },
+	{ PW_KEY_MODULE_USAGE, MODULE_USAGE },
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
@@ -85,6 +113,8 @@ struct node {
 	struct spa_ringbuffer buffer;
 	uint8_t tmp[TMP_BUFFER];
 	uint8_t data[DATA_BUFFER];
+
+	uint64_t last_profile_time;
 
 	unsigned enabled:1;
 };
@@ -109,6 +139,8 @@ struct impl {
 
 	uint8_t *flush;
 	size_t flush_size;
+
+	uint32_t interval;
 };
 
 struct resource_data {
@@ -165,6 +197,13 @@ static void do_flush_event(void *data, uint64_t count)
 		pw_profiler_resource_profile(resource, &p->pod);
 }
 
+static void update_denom(struct spa_fraction *frac, uint32_t denom)
+{
+	if (frac->denom != 0)
+		frac->num = frac->num * denom / frac->denom;
+	frac->denom = denom;
+}
+
 static void context_do_profile(void *data)
 {
 	struct node *n = data;
@@ -181,6 +220,11 @@ static void context_do_profile(void *data)
 
 	if (SPA_FLAG_IS_SET(pos->clock.flags, SPA_IO_CLOCK_FLAG_FREEWHEEL))
 		return;
+
+	if (a->signal_time - n->last_profile_time < impl->interval)
+		goto done;
+
+	n->last_profile_time = a->signal_time;
 
 	spa_pod_builder_init(&b, n->tmp, sizeof(n->tmp));
 	spa_pod_builder_push_object(&b, &f[0],
@@ -206,7 +250,9 @@ static void context_do_profile(void *data)
 			SPA_POD_Long(pos->clock.delay),
 			SPA_POD_Double(pos->clock.rate_diff),
 			SPA_POD_Long(pos->clock.next_nsec),
-			SPA_POD_Int(pos->state));
+			SPA_POD_Int(pos->state),
+			SPA_POD_Int(pos->clock.cycle),
+			SPA_POD_Long(pos->clock.xrun));
 
 	spa_pod_builder_prop(&b, SPA_PROFILER_driverBlock, 0);
 	spa_pod_builder_add_struct(&b,
@@ -221,37 +267,59 @@ static void context_do_profile(void *data)
 			SPA_POD_Int(a->xrun_count));
 
 	spa_list_for_each(t, &node->rt.target_list, link) {
-		struct pw_impl_node *n = t->node;
-		struct pw_node_activation *na;
+		struct pw_impl_node *tn = t->node;
+		struct pw_node_activation *ta = t->activation;
 		struct spa_fraction latency;
+		bool async;
+		int64_t prev_signal_time;
 
 		if (t->id == id)
 			continue;
 
-		if (n != NULL) {
-			latency = n->latency;
-			if (n->force_quantum != 0)
-				latency.num = n->force_quantum;
-			if (n->force_rate != 0)
-				latency.denom = n->force_rate;
-			else if (n->rate.denom != 0)
-				latency.denom = n->rate.denom;
+		if (tn != NULL) {
+			latency = tn->latency;
+			if (tn->force_quantum != 0)
+				latency.num = tn->force_quantum;
+			if (tn->force_rate != 0)
+				update_denom(&latency, tn->force_rate);
+			else if (tn->rate.denom != 0)
+				update_denom(&latency, tn->rate.denom);
+			async = tn->async;
+			prev_signal_time = tn->rt.target.activation->prev_signal_time;
 		} else {
 			spa_zero(latency);
+			async = false;
+			prev_signal_time = ta->prev_signal_time;
 		}
 
-		na = t->activation;
 		spa_pod_builder_prop(&b, SPA_PROFILER_followerBlock, 0);
 		spa_pod_builder_add_struct(&b,
 			SPA_POD_Int(t->id),
 			SPA_POD_String(t->name),
-			SPA_POD_Long(a->signal_time),
-			SPA_POD_Long(na->signal_time),
-			SPA_POD_Long(na->awake_time),
-			SPA_POD_Long(na->finish_time),
-			SPA_POD_Int(na->status),
+			SPA_POD_Long(prev_signal_time),
+			SPA_POD_Long(async ? ta->prev_signal_time : ta->signal_time),
+			SPA_POD_Long(async ? ta->prev_awake_time : ta->awake_time),
+			SPA_POD_Long(async ? ta->prev_finish_time : ta->finish_time),
+			SPA_POD_Int(ta->status),
 			SPA_POD_Fraction(&latency),
-			SPA_POD_Int(na->xrun_count));
+			SPA_POD_Int(ta->xrun_count),
+			SPA_POD_Bool(async));
+
+		if (tn && tn->driver) {
+			struct spa_io_position *tpos = &tn->rt.target.activation->position;
+			spa_pod_builder_prop(&b, SPA_PROFILER_followerClock, 0);
+			spa_pod_builder_add_struct(&b,
+				SPA_POD_Int(tpos->clock.id),
+				SPA_POD_String(tpos->clock.name),
+				SPA_POD_Long(tpos->clock.nsec),
+				SPA_POD_Fraction(&tpos->clock.rate),
+				SPA_POD_Long(tpos->clock.position),
+				SPA_POD_Long(tpos->clock.duration),
+				SPA_POD_Long(tpos->clock.delay),
+				SPA_POD_Double(tpos->clock.rate_diff),
+				SPA_POD_Long(tpos->clock.next_nsec),
+				SPA_POD_Long(tpos->clock.xrun));
+		}
 	}
 	spa_pod_builder_pop(&b, &f[0]);
 
@@ -474,6 +542,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->context = context;
 	impl->properties = props;
 	impl->main_loop = pw_context_get_main_loop(impl->context);
+
+	pw_context_conf_update_props(context, "module."NAME".args", props);
+
+	impl->interval = SPA_NSEC_PER_MSEC *
+		pw_properties_get_uint32(props, "profile.interval.ms", DEFAULT_INTERVAL);
 
 	impl->global = pw_global_new(context,
 			PW_TYPE_INTERFACE_Profiler,

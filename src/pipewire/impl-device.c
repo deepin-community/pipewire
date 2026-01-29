@@ -11,6 +11,7 @@
 #include <spa/utils/string.h>
 #include <spa/utils/json-pod.h>
 
+#define PW_API_DEVICE_IMPL SPA_EXPORT
 #include "pipewire/impl.h"
 #include "pipewire/private.h"
 
@@ -24,6 +25,19 @@ struct impl {
 	struct spa_list pending_list;
 
 	unsigned int cache_params:1;
+};
+
+static const char * const global_keys[] = {
+	PW_KEY_OBJECT_PATH,
+	PW_KEY_MODULE_ID,
+	PW_KEY_FACTORY_ID,
+	PW_KEY_CLIENT_ID,
+	PW_KEY_DEVICE_API,
+	PW_KEY_DEVICE_DESCRIPTION,
+	PW_KEY_DEVICE_NAME,
+	PW_KEY_DEVICE_NICK,
+	PW_KEY_MEDIA_CLASS,
+	NULL
 };
 
 #define pw_device_resource(r,m,v,...)	pw_resource_call(r,struct pw_device_events,m,v,__VA_ARGS__)
@@ -129,7 +143,6 @@ static int execute_match(void *data, const char *location, const char *action,
 	struct pw_impl_device *this = match->device;
 	if (spa_streq(action, "update-props")) {
 		match->count += pw_properties_update_string(this->properties, val, len);
-		this->info.props = &this->properties->dict;
 	}
 	return 1;
 }
@@ -183,7 +196,6 @@ struct pw_impl_device *pw_context_create_device(struct pw_context *context,
 
 	this->context = context;
 	this->properties = properties;
-
 	this->info.props = &properties->dict;
 	this->info.params = this->params;
 	spa_hook_list_init(&this->listener_list);
@@ -580,19 +592,6 @@ SPA_EXPORT
 int pw_impl_device_register(struct pw_impl_device *device,
 		       struct pw_properties *properties)
 {
-	static const char * const keys[] = {
-		PW_KEY_OBJECT_PATH,
-		PW_KEY_MODULE_ID,
-		PW_KEY_FACTORY_ID,
-		PW_KEY_CLIENT_ID,
-		PW_KEY_DEVICE_API,
-		PW_KEY_DEVICE_DESCRIPTION,
-		PW_KEY_DEVICE_NAME,
-		PW_KEY_DEVICE_NICK,
-		PW_KEY_MEDIA_CLASS,
-		NULL
-	};
-
 	struct pw_context *context = device->context;
 	struct object_data *od;
 
@@ -616,9 +615,8 @@ int pw_impl_device_register(struct pw_impl_device *device,
 	pw_properties_setf(device->properties, PW_KEY_OBJECT_ID, "%d", device->info.id);
 	pw_properties_setf(device->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
 			pw_global_get_serial(device->global));
-	device->info.props = &device->properties->dict;
 
-	pw_global_update_keys(device->global, device->info.props, keys);
+	pw_global_update_keys(device->global, device->info.props, global_keys);
 
 	pw_impl_device_emit_initialized(device);
 
@@ -667,10 +665,12 @@ static void emit_info_changed(struct pw_impl_device *device)
 
 	pw_impl_device_emit_info_changed(device, &device->info);
 
-	if (device->global)
+	if (device->global) {
+		if (device->info.change_mask & PW_DEVICE_CHANGE_MASK_PROPS)
+			pw_global_update_keys(device->global, device->info.props, global_keys);
 		spa_list_for_each(resource, &device->global->resource_list, link)
 			pw_device_resource_info(resource, &device->info);
-
+	}
 	device->info.change_mask = 0;
 }
 
@@ -687,7 +687,6 @@ static int update_properties(struct pw_impl_device *device, const struct spa_dic
 	int changed;
 
 	changed = pw_properties_update_ignore(device->properties, dict, filter ? ignored : NULL);
-	device->info.props = &device->properties->dict;
 
 	pw_log_debug("%p: updated %d properties", device, changed);
 

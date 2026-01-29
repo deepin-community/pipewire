@@ -27,6 +27,7 @@
 #include <spa/debug/types.h>
 #include <spa/param/audio/type-info.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/audio/raw-json.h>
 
 #include <pipewire/impl.h>
 
@@ -71,6 +72,7 @@
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_LATENCY
  * - \ref PW_KEY_NODE_RATE
@@ -83,6 +85,8 @@
  * ## Example configuration
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-protocol-simple.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-protocol-simple
  *     args = {
@@ -662,8 +666,9 @@ static int make_tcp_socket(struct server *server, const char *name, const char *
 		const char *ifaddress)
 {
 	struct sockaddr_storage addr;
-	int res, fd, on;
+	int res, on;
 	socklen_t len = 0;
+	spa_autoclose int fd = -1;
 
 	if ((res = pw_net_parse_address_port(name, ifaddress, DEFAULT_PORT, &addr, &len)) < 0) {
 		pw_log_error("%p: can't parse address %s: %s", server,
@@ -690,26 +695,24 @@ static int make_tcp_socket(struct server *server, const char *name, const char *
 	if (bind(fd, (struct sockaddr *) &addr, len) < 0) {
 		res = -errno;
 		pw_log_error("%p: bind() failed: %m", server);
-		goto error_close;
+		goto error;
 	}
 	if (listen(fd, 5) < 0) {
 		res = -errno;
 		pw_log_error("%p: listen() failed: %m", server);
-		goto error_close;
+		goto error;
 	}
 	if (getsockname(fd, (struct sockaddr *)&addr, &len) < 0) {
 		res = -errno;
 		pw_log_error("%p: getsockname() failed: %m", server);
-		goto error_close;
+		goto error;
 	}
 
 	server->type = SERVER_TYPE_TCP;
 	server->addr = addr;
 
-	return fd;
+	return spa_steal_fd(fd);
 
-error_close:
-	close(fd);
 error:
 	return res;
 }
@@ -783,42 +786,6 @@ static void impl_free(struct impl *impl)
 	free(impl);
 }
 
-static inline uint32_t format_from_name(const char *name, size_t len)
-{
-	int i;
-	for (i = 0; spa_type_audio_format[i].name; i++) {
-		if (strncmp(name, spa_debug_type_short_name(spa_type_audio_format[i].name), len) == 0)
-			return spa_type_audio_format[i].type;
-	}
-	return SPA_AUDIO_FORMAT_UNKNOWN;
-}
-
-static inline uint32_t channel_from_name(const char *name)
-{
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static void parse_position(struct spa_audio_info_raw *info, const char *val, size_t len)
-{
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	info->channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    info->channels < SPA_AUDIO_MAX_CHANNELS) {
-		info->position[info->channels++] = channel_from_name(v);
-	}
-}
-
 static int calc_frame_size(struct spa_audio_info_raw *info)
 {
 	int res = info->channels;
@@ -849,29 +816,25 @@ static int calc_frame_size(struct spa_audio_info_raw *info)
 	case SPA_AUDIO_FORMAT_F64_OE:
 		return res * 8;
 	default:
-		return 0;
+		return -ENOTSUP;
 	}
 }
 
 static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	const char *str;
-
-	spa_zero(*info);
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_FORMAT)) == NULL)
-		str = DEFAULT_FORMAT;
-	info->format = format_from_name(str, strlen(str));
-
-	info->rate = pw_properties_get_uint32(props, PW_KEY_AUDIO_RATE, info->rate);
-	if (info->rate == 0)
-		info->rate = DEFAULT_RATE;
-
-	info->channels = pw_properties_get_uint32(props, PW_KEY_AUDIO_CHANNELS, info->channels);
-	info->channels = SPA_MIN(info->channels, SPA_AUDIO_MAX_CHANNELS);
-	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
-		parse_position(info, str, strlen(str));
-	if (info->channels == 0)
-		parse_position(info, DEFAULT_POSITION, strlen(DEFAULT_POSITION));
+	int res;
+	if ((res = spa_audio_info_raw_init_dict_keys(info,
+			&SPA_DICT_ITEMS(
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, DEFAULT_FORMAT),
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, SPA_STRINGIFY(DEFAULT_RATE)),
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_POSITION, DEFAULT_POSITION)),
+			&props->dict,
+			SPA_KEY_AUDIO_FORMAT,
+			SPA_KEY_AUDIO_RATE,
+			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
+			SPA_KEY_AUDIO_POSITION, NULL)) < 0)
+		return res;
 
 	return calc_frame_size(info);
 }
@@ -890,8 +853,9 @@ static void copy_props(struct impl *impl, const char *key)
 static int parse_params(struct impl *impl)
 {
 	const char *str;
-	struct spa_json it[2];
+	struct spa_json it[1];
 	char value[512];
+	int res;
 
 	pw_properties_fetch_bool(impl->props, "capture", &impl->capture);
 	pw_properties_fetch_bool(impl->props, "playback", &impl->playback);
@@ -926,6 +890,7 @@ static int parse_params(struct impl *impl)
 	copy_props(impl, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, PW_KEY_AUDIO_RATE);
 	copy_props(impl, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, PW_KEY_NODE_RATE);
 	copy_props(impl, PW_KEY_NODE_NAME);
@@ -935,19 +900,20 @@ static int parse_params(struct impl *impl)
 	copy_props(impl, PW_KEY_NODE_VIRTUAL);
 	copy_props(impl, PW_KEY_NODE_NETWORK);
 
-	impl->capture_frame_size = parse_audio_info(impl->capture_props, &impl->capture_info);
-	if (impl->capture_frame_size == 0) {
+	if ((res = parse_audio_info(impl->capture_props, &impl->capture_info)) <= 0) {
 		pw_log_error("unsupported capture audio format:%d channels:%d",
 				impl->capture_info.format, impl->capture_info.channels);
 		return -EINVAL;
 	}
+	impl->capture_frame_size = res;
 
-	impl->playback_frame_size = parse_audio_info(impl->playback_props, &impl->playback_info);
-	if (impl->playback_frame_size == 0) {
+	if ((res = parse_audio_info(impl->playback_props, &impl->playback_info)) <= 0) {
 		pw_log_error("unsupported playback audio format:%d channels:%d",
 				impl->playback_info.format, impl->playback_info.channels);
 		return -EINVAL;
 	}
+	impl->playback_frame_size = res;
+
 	if (impl->capture_info.rate != 0 &&
 	    pw_properties_get(impl->capture_props, PW_KEY_NODE_RATE) == NULL)
 		pw_properties_setf(impl->capture_props, PW_KEY_NODE_RATE,
@@ -965,9 +931,8 @@ static int parse_params(struct impl *impl)
 	if ((str = pw_properties_get(impl->props, "server.address")) == NULL)
 		str = DEFAULT_SERVER;
 
-        spa_json_init(&it[0], str, strlen(str));
-        if (spa_json_enter_array(&it[0], &it[1]) > 0) {
-                while (spa_json_get_string(&it[1], value, sizeof(value)) > 0) {
+        if (spa_json_begin_array_relax(&it[0], str, strlen(str)) > 0) {
+                while (spa_json_get_string(&it[0], value, sizeof(value)) > 0) {
                         if (create_server(impl, value) == NULL) {
 				pw_log_warn("%p: can't create server for %s: %m",
 					impl, value);

@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -9,8 +11,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -48,6 +48,8 @@
  * ## Example configuration
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-zeroconf-discover.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-zeroconf-discover
  *     args = { }
@@ -93,6 +95,7 @@ struct impl {
 
 struct tunnel_info {
 	const char *name;
+	const char *mode;
 };
 
 #define TUNNEL_INFO(...) ((struct tunnel_info){ __VA_ARGS__ })
@@ -115,6 +118,7 @@ static struct tunnel *make_tunnel(struct impl *impl, const struct tunnel_info *i
 		return NULL;
 
 	t->info.name = strdup(info->name);
+	t->info.mode = strdup(info->mode);
 	spa_list_append(&impl->tunnel_list, &t->link);
 
 	return t;
@@ -124,7 +128,8 @@ static struct tunnel *find_tunnel(struct impl *impl, const struct tunnel_info *i
 {
 	struct tunnel *t;
 	spa_list_for_each(t, &impl->tunnel_list, link) {
-		if (spa_streq(t->info.name, info->name))
+		if (spa_streq(t->info.name, info->name) &&
+		    spa_streq(t->info.mode, info->mode))
 			return t;
 	}
 	return NULL;
@@ -136,6 +141,7 @@ static void free_tunnel(struct tunnel *t)
 	if (t->module)
 		pw_impl_module_destroy(t->module);
 	free((char *) t->info.name);
+	free((char *) t->info.mode);
 
 	free(t);
 }
@@ -186,17 +192,17 @@ static void pw_properties_from_avahi_string(const char *key, const char *value,
 	else if (spa_streq(key, "channel_map")) {
 		struct channel_map channel_map;
 		uint32_t i, pos[CHANNELS_MAX];
-		char *p, *s;
+		char *p, *s, buf[8];
 
 		spa_zero(channel_map);
 		channel_map_parse(value, &channel_map);
-		channel_map_to_positions(&channel_map, pos);
+		channel_map_to_positions(&channel_map, pos, CHANNELS_MAX);
 
 		p = s = alloca(4 + channel_map.channels * 8);
 		p += spa_scnprintf(p, 2, "[");
 		for (i = 0; i < channel_map.channels; i++)
 			p += spa_scnprintf(p, 8, "%s%s", i == 0 ? "" : ",",
-				channel_id2name(pos[i]));
+				channel_id2name(pos[i], buf, sizeof(buf)));
 		p += spa_scnprintf(p, 2, "]");
 		pw_properties_set(props, SPA_KEY_AUDIO_POSITION, s);
 	}
@@ -243,7 +249,7 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 	struct impl *impl = userdata;
 	struct tunnel *t;
 	struct tunnel_info tinfo;
-	const char *str, *device, *desc, *fqdn, *user;
+	const char *str, *device, *desc, *fqdn, *user, *mode;
 	char if_suffix[16] = "";
 	char at[AVAHI_ADDRESS_STR_MAX];
 	AvahiStringList *l;
@@ -253,13 +259,16 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 	struct pw_impl_module *mod;
 	struct pw_properties *props = NULL;
 
+
 	if (event != AVAHI_RESOLVER_FOUND) {
 		pw_log_error("Resolving of '%s' failed: %s", name,
 				avahi_strerror(avahi_client_errno(impl->client)));
 		goto done;
 	}
 
-	tinfo = TUNNEL_INFO(.name = name);
+	mode = strstr(type, "sink") ? "sink" : "source";
+
+	tinfo = TUNNEL_INFO(.name = name, .mode = mode);
 
 	t = find_tunnel(impl, &tinfo);
 	if (t == NULL)
@@ -297,8 +306,7 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 		pw_properties_setf(props, PW_KEY_NODE_NAME,
 				"tunnel.%s", host_name);
 
-	str = strstr(type, "sink") ? "sink" : "source";
-	pw_properties_set(props, "tunnel.mode", str);
+	pw_properties_set(props, "tunnel.mode", mode);
 
 	if (a->proto == AVAHI_PROTO_INET6 &&
 	    a->data.ipv6.address[0] == 0xfe &&
@@ -485,10 +493,7 @@ static int start_client(struct impl *impl)
 
 static int start_avahi(struct impl *impl)
 {
-	struct pw_loop *loop;
-
-	loop = pw_context_get_main_loop(impl->context);
-	impl->avahi_poll = pw_avahi_poll_new(loop);
+	impl->avahi_poll = pw_avahi_poll_new(impl->context);
 
 	return start_client(impl);
 }

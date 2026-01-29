@@ -26,6 +26,7 @@
 #include <pipewire/impl.h>
 
 #include <module-vban/stream.h>
+#include <module-vban/vban.h>
 #include "network-utils.h"
 
 #ifndef IPTOS_DSCP
@@ -67,6 +68,7 @@
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_NAME
  * - \ref PW_KEY_NODE_DESCRIPTION
@@ -78,6 +80,8 @@
  *
  * ## Example configuration
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-vban-send.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-vban-send
  *     args = {
@@ -352,6 +356,7 @@ SPA_EXPORT
 int pipewire__module_init(struct pw_impl_module *module, const char *args)
 {
 	struct pw_context *context = pw_impl_module_get_context(module);
+	uint32_t id = pw_global_get_id(pw_impl_module_get_global(module));
 	struct impl *impl;
 	struct pw_properties *props = NULL, *stream_props = NULL;
 	char addr[64];
@@ -380,7 +385,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	stream_props = pw_properties_new(NULL, NULL);
 	if (stream_props == NULL) {
 		res = -errno;
-		pw_log_error( "can't create properties: %m");
+		pw_log_error("can't create properties: %m");
 		goto out;
 	}
 	impl->stream_props = stream_props;
@@ -390,14 +395,21 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->loop = pw_context_get_main_loop(context);
 
 	if ((sess_name = pw_properties_get(props, "sess.name")) == NULL)
+		pw_properties_setf(props, "sess.name", "%s-%d",
+				pw_get_host_name(), id);
+	if ((sess_name = pw_properties_get(props, "sess.name")) == NULL)
 		sess_name = pw_get_host_name();
+
+	if (strlen(sess_name) > VBAN_STREAM_NAME_SIZE)
+		pw_log_warn("session name '%s' will be truncated to %d characters",
+				sess_name, VBAN_STREAM_NAME_SIZE);
 
 	if (pw_properties_get(props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(props, PW_KEY_NODE_NAME, "vban_session.%s", sess_name);
 	if (pw_properties_get(props, PW_KEY_NODE_DESCRIPTION) == NULL)
 		pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION, "%s", sess_name);
 	if (pw_properties_get(props, PW_KEY_MEDIA_NAME) == NULL)
-		pw_properties_setf(props, PW_KEY_MEDIA_NAME, "VBAN Session with %s",
+		pw_properties_setf(props, PW_KEY_MEDIA_NAME, "VBAN Session %s",
 				sess_name);
 
 	if ((str = pw_properties_get(props, "stream.props")) != NULL)
@@ -406,6 +418,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);

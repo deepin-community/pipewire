@@ -8,6 +8,7 @@
 #include <spa/utils/names.h>
 #include <spa/utils/result.h>
 
+#define PW_API_LOOP_IMPL	SPA_EXPORT
 #include <pipewire/pipewire.h>
 #include <pipewire/private.h>
 #include <pipewire/loop.h>
@@ -176,16 +177,4 @@ int pw_loop_set_name(struct pw_loop *loop, const char *name)
 	struct impl *impl = SPA_CONTAINER_OF(loop, struct impl, this);
 	snprintf(impl->name, sizeof(impl->name), "%s", name);
 	return 0;
-}
-
-SPA_EXPORT
-int pw_loop_check(struct pw_loop *loop)
-{
-	struct impl *impl = SPA_CONTAINER_OF(loop, struct impl, this);
-	int res;
-	if (impl->cb && impl->cb->check)
-		res = impl->cb->check(impl->user_data, loop);
-	else
-		res = spa_loop_control_check(loop->control);
-	return res;
 }

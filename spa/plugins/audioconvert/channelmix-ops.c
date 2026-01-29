@@ -117,6 +117,7 @@ static const struct channelmix_info *find_channelmix_info(uint32_t src_chan, uin
 #define SQRT3_2      1.224744871f  /* sqrt(3/2) */
 #define SQRT1_2      0.707106781f
 #define SQRT2	     1.414213562f
+#define HALF         0.5f
 
 #define MATRIX_NORMAL	0
 #define MATRIX_DOLBY	1
@@ -127,8 +128,13 @@ static const struct channelmix_info *find_channelmix_info(uint32_t src_chan, uin
 #define _MASK(ch)	(1ULL << _CH(ch))
 #define FRONT		(_MASK(FC))
 #define STEREO		(_MASK(FL)|_MASK(FR))
+#define TSTEREO		(_MASK(TFL)|_MASK(TFR))
+#define TCSTEREO	(_MASK(TFLC)|_MASK(TFRC))
 #define REAR		(_MASK(RL)|_MASK(RR))
+#define TREAR		(_MASK(TRL)|_MASK(TRR))
+#define CREAR		(_MASK(RLC)|_MASK(RRC))
 #define SIDE		(_MASK(SL)|_MASK(SR))
+#define CHANNEL_BITS	(64u)
 
 static uint32_t mask_to_ch(struct channelmix *mix, uint64_t mask)
 {
@@ -141,34 +147,34 @@ static uint32_t mask_to_ch(struct channelmix *mix, uint64_t mask)
 }
 
 static void distribute_mix(struct channelmix *mix,
-		float matrix[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS],
+		float matrix[MAX_CHANNELS][MAX_CHANNELS],
 		uint64_t mask)
 {
 	uint32_t i, ch = mask_to_ch(mix, mask);
-	for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
+	for (i = 0; i < MAX_CHANNELS; i++)
 		matrix[i][ch]= 1.0f;
 }
 static void average_mix(struct channelmix *mix,
-		float matrix[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS],
+		float matrix[MAX_CHANNELS][MAX_CHANNELS],
 		uint64_t mask)
 {
 	uint32_t i, ch = mask_to_ch(mix, mask);
-	for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
+	for (i = 0; i < MAX_CHANNELS; i++)
 		matrix[ch][i]= 1.0f;
 }
-static void pair_mix(float matrix[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS])
+static void pair_mix(float matrix[MAX_CHANNELS][MAX_CHANNELS])
 {
 	uint32_t i;
-	for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
+	for (i = 0; i < MAX_CHANNELS; i++)
 		matrix[i][i]= 1.0f;
 }
 static bool match_mix(struct channelmix *mix,
-		float matrix[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS],
+		float matrix[MAX_CHANNELS][MAX_CHANNELS],
 		uint64_t src_mask, uint64_t dst_mask)
 {
 	bool matched = false;
 	uint32_t i;
-	for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
+	for (i = 0; i < CHANNEL_BITS; i++) {
 		if ((src_mask & dst_mask & (1ULL << i))) {
 			spa_log_info(mix->log, "matched channel %u (%f)", i, 1.0f);
 			matrix[i][i] = 1.0f;
@@ -180,7 +186,7 @@ static bool match_mix(struct channelmix *mix,
 
 static int make_matrix(struct channelmix *mix)
 {
-	float matrix[SPA_AUDIO_MAX_CHANNELS][SPA_AUDIO_MAX_CHANNELS] = {{ 0.0f }};
+	float matrix[MAX_CHANNELS][MAX_CHANNELS] = {{ 0.0f }};
 	uint64_t src_mask = mix->src_mask, src_paired;
 	uint64_t dst_mask = mix->dst_mask, dst_paired;
 	uint32_t src_chan = mix->src_chan;
@@ -292,7 +298,7 @@ static int make_matrix(struct channelmix *mix)
 			keep &= ~STEREO;
 		} else if (dst_mask & _MASK(MONO)){
 			spa_log_info(mix->log, "assign FC to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
+			for (i = 0; i < MAX_CHANNELS; i++)
 				matrix[i][_CH(FC)]= 1.0f;
 			normalize = true;
 		} else {
@@ -312,7 +318,7 @@ static int make_matrix(struct channelmix *mix)
 			keep &= ~FRONT;
 		} else if ((dst_mask & _MASK(MONO))){
 			spa_log_info(mix->log, "assign STEREO to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
+			for (i = 0; i < MAX_CHANNELS; i++) {
 				matrix[i][_CH(FL)]= 1.0f;
 				matrix[i][_CH(FR)]= 1.0f;
 			}
@@ -351,7 +357,7 @@ static int make_matrix(struct channelmix *mix)
 			_MATRIX(FC,RC) += slev * SQRT1_2;
 		} else if (dst_mask & _MASK(MONO)){
 			spa_log_info(mix->log, "assign RC to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
+			for (i = 0; i < MAX_CHANNELS; i++)
 				matrix[i][_CH(RC)]= 1.0f;
 			normalize = true;
 		} else {
@@ -397,13 +403,13 @@ static int make_matrix(struct channelmix *mix)
 			_MATRIX(FC,RR)+= slev * SQRT1_2;
 		} else if (dst_mask & _MASK(MONO)){
 			spa_log_info(mix->log, "assign RL+RR to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
+			for (i = 0; i < MAX_CHANNELS; i++) {
 				matrix[i][_CH(RL)]= 1.0f;
 				matrix[i][_CH(RR)]= 1.0f;
 			}
 			normalize = true;
 		} else {
-			spa_log_warn(mix->log, "can't assign RL");
+			spa_log_warn(mix->log, "can't assign RL+RR");
 		}
 	}
 
@@ -449,7 +455,7 @@ static int make_matrix(struct channelmix *mix)
 			_MATRIX(FC,SR) += slev * SQRT1_2;
 		} else if (dst_mask & _MASK(MONO)){
 			spa_log_info(mix->log, "assign SL+SR to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
+			for (i = 0; i < MAX_CHANNELS; i++) {
 				matrix[i][_CH(SL)]= 1.0f;
 				matrix[i][_CH(SR)]= 1.0f;
 			}
@@ -470,7 +476,7 @@ static int make_matrix(struct channelmix *mix)
 			_MATRIX(FC,FRC)+= SQRT1_2;
 		} else if (dst_mask & _MASK(MONO)){
 			spa_log_info(mix->log, "assign FLC+FRC to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
+			for (i = 0; i < MAX_CHANNELS; i++) {
 				matrix[i][_CH(FLC)]= 1.0f;
 				matrix[i][_CH(FRC)]= 1.0f;
 			}
@@ -491,11 +497,98 @@ static int make_matrix(struct channelmix *mix)
 			_MATRIX(FR,LFE) += llev * SQRT1_2;
 		} else if ((dst_mask & _MASK(MONO))){
 			spa_log_info(mix->log, "assign LFE to MONO (%f)", 1.0f);
-			for (i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++)
+			for (i = 0; i < MAX_CHANNELS; i++)
 				matrix[i][_CH(LFE)]= 1.0f;
 			normalize = true;
 		} else {
 			spa_log_warn(mix->log, "can't assign LFE");
+		}
+	}
+	if (unassigned & TSTEREO){
+		if (dst_mask & STEREO) {
+			spa_log_info(mix->log, "assign TSTEREO to FL+FR (%f)", HALF);
+			_MATRIX(FL,TFL) += HALF;
+			_MATRIX(FR,TFR) += HALF;
+		} else if (dst_mask & _MASK(MONO)){
+			spa_log_info(mix->log, "assign TSTEREO to MONO (%f)", 1.0f);
+			for (i = 0; i < MAX_CHANNELS; i++) {
+				matrix[i][_CH(TFL)]= 1.0f;
+				matrix[i][_CH(TFR)]= 1.0f;
+			}
+			normalize = true;
+		} else {
+			spa_log_warn(mix->log, "can't assign TSTEREO");
+		}
+	}
+	if (unassigned & TCSTEREO){
+		if (dst_mask & STEREO) {
+			spa_log_info(mix->log, "assign TCSTEREO to FL+FR (%f)", HALF);
+			_MATRIX(FL,TFLC) += HALF;
+			_MATRIX(FR,TFRC) += HALF;
+		} else if (dst_mask & _MASK(MONO)){
+			spa_log_info(mix->log, "assign TCSTEREO to MONO (%f)", 1.0f);
+			for (i = 0; i < MAX_CHANNELS; i++) {
+				matrix[i][_CH(TFLC)]= 1.0f;
+				matrix[i][_CH(TFRC)]= 1.0f;
+			}
+			normalize = true;
+		} else {
+			spa_log_warn(mix->log, "can't assign TCSTEREO");
+		}
+	}
+	if (unassigned & TREAR){
+		if (dst_mask & REAR) {
+			if (src_mask & _MASK(RL)) {
+				spa_log_info(mix->log, "assign TREAR to RL+RR (%f)", HALF);
+				_MATRIX(RL,TRL) += HALF;
+				_MATRIX(RR,TRR) += HALF;
+			} else {
+				spa_log_info(mix->log, "assign TREAR to RL+RR (%f)", 1.0f);
+				_MATRIX(RL,TRL) += 1.0f;
+				_MATRIX(RR,TRR) += 1.0f;
+			}
+			keep &= ~REAR;
+		} else if (dst_mask & STEREO) {
+			spa_log_info(mix->log, "assign TREAR to FL+FR (%f)", HALF);
+			_MATRIX(FL,TRL) += HALF;
+			_MATRIX(FR,TRR) += HALF;
+		} else if (dst_mask & _MASK(MONO)){
+			spa_log_info(mix->log, "assign TREAR to MONO (%f)", 1.0f);
+			for (i = 0; i < MAX_CHANNELS; i++) {
+				matrix[i][_CH(TRL)]= 1.0f;
+				matrix[i][_CH(TRR)]= 1.0f;
+			}
+			normalize = true;
+		} else {
+			spa_log_warn(mix->log, "can't assign TREAR");
+		}
+	}
+	if (unassigned & CREAR){
+		if (dst_mask & REAR) {
+			if (src_mask & _MASK(RL)) {
+				spa_log_info(mix->log, "assign CREAR to RL+RR (%f)", SQRT1_2);
+				_MATRIX(RL,RLC) += SQRT1_2;
+				_MATRIX(RR,RRC) += SQRT1_2;
+			} else {
+				spa_log_info(mix->log, "assign CREAR to RL+RR (%f)", 1.0f);
+				_MATRIX(RL,RLC) += 1.0f;
+				_MATRIX(RR,RRC) += 1.0f;
+			}
+			keep &= ~REAR;
+		} else if (dst_mask & STEREO) {
+			spa_log_info(mix->log, "assign CREAR to FL+FR (%f)",
+					SQRT1_2);
+			_MATRIX(FL,RLC) += SQRT1_2;
+			_MATRIX(FR,RRC) += SQRT1_2;
+		} else if (dst_mask & _MASK(MONO)){
+			spa_log_info(mix->log, "assign CREAR to MONO (%f)", 1.0f);
+			for (i = 0; i < MAX_CHANNELS; i++) {
+				matrix[i][_CH(RLC)]= 1.0f;
+				matrix[i][_CH(RRC)]= 1.0f;
+			}
+			normalize = true;
+		} else {
+			spa_log_warn(mix->log, "can't assign CREAR");
 		}
 	}
 
@@ -627,7 +720,7 @@ done:
 	if (src_paired == 0)
 		src_paired = ~0LU;
 
-	for (jc = 0, ic = 0, i = 0; i < SPA_AUDIO_MAX_CHANNELS; i++) {
+	for (jc = 0, ic = 0, i = 0; i < CHANNEL_BITS; i++) {
 		float sum = 0.0f;
 		char str1[1024], str2[1024];
 		struct spa_strbuf sb1, sb2;
@@ -637,7 +730,7 @@ done:
 
 		if ((dst_paired & (1UL << i)) == 0)
 			continue;
-		for (jc = 0, j = 0; j < SPA_AUDIO_MAX_CHANNELS; j++) {
+		for (jc = 0, j = 0; j < CHANNEL_BITS; j++) {
 			if ((src_paired & (1UL << j)) == 0)
 				continue;
 			if (ic >= dst_chan || jc >= src_chan)
@@ -673,7 +766,7 @@ done:
 			spa_log_info(mix->log, "channel %d is FC cutoff:%f", ic, mix->fc_cutoff);
 			lr4_set(&mix->lr4[ic], BQ_LOWPASS, mix->fc_cutoff / mix->freq);
 		} else {
-			mix->lr4[ic].active = false;
+			lr4_set(&mix->lr4[ic], BQ_NONE, mix->fc_cutoff / mix->freq);
 		}
 		ic++;
 	}
@@ -689,7 +782,7 @@ done:
 static void impl_channelmix_set_volume(struct channelmix *mix, float volume, bool mute,
 		uint32_t n_channel_volumes, float *channel_volumes)
 {
-	float volumes[SPA_AUDIO_MAX_CHANNELS];
+	float volumes[MAX_CHANNELS];
 	float vol = mute ? 0.0f : volume, t;
 	uint32_t i, j;
 	uint32_t src_chan = mix->src_chan;
@@ -759,8 +852,8 @@ int channelmix_init(struct channelmix *mix)
 {
 	const struct channelmix_info *info;
 
-	if (mix->src_chan > SPA_AUDIO_MAX_CHANNELS ||
-	    mix->dst_chan > SPA_AUDIO_MAX_CHANNELS)
+	if (mix->src_chan > MAX_CHANNELS ||
+	    mix->dst_chan > MAX_CHANNELS)
 		return -EINVAL;
 
 	info = find_channelmix_info(mix->src_chan, mix->src_mask, mix->dst_chan, mix->dst_mask,
@@ -775,16 +868,25 @@ int channelmix_init(struct channelmix *mix)
 	mix->delay = (uint32_t)(mix->rear_delay * mix->freq / 1000.0f);
 	mix->func_name = info->name;
 
-	spa_log_debug(mix->log, "selected %s delay:%d options:%08x", info->name, mix->delay,
-			mix->options);
+	spa_zero(mix->taps_mem);
+	mix->taps = SPA_PTR_ALIGN(mix->taps_mem, CHANNELMIX_OPS_MAX_ALIGN, float);
+	mix->buffer[0] = SPA_PTR_ALIGN(&mix->buffer_mem[0], CHANNELMIX_OPS_MAX_ALIGN, float);
+	mix->buffer[1] = SPA_PTR_ALIGN(&mix->buffer_mem[2*BUFFER_SIZE], CHANNELMIX_OPS_MAX_ALIGN, float);
 
 	if (mix->hilbert_taps > 0) {
-		mix->n_taps = SPA_CLAMP(mix->hilbert_taps, 15u, 255u) | 1;
+		mix->n_taps = SPA_CLAMP(mix->hilbert_taps, 15u, MAX_TAPS) | 1;
 		blackman_window(mix->taps, mix->n_taps);
 		hilbert_generate(mix->taps, mix->n_taps);
+		reverse_taps(mix->taps, mix->n_taps);
 	} else {
 		mix->n_taps = 1;
 		mix->taps[0] = 1.0f;
 	}
+	if (mix->delay + mix->n_taps > BUFFER_SIZE)
+		mix->delay = BUFFER_SIZE - mix->n_taps;
+
+	spa_log_debug(mix->log, "selected %s delay:%d options:%08x", info->name, mix->delay,
+			mix->options);
+
 	return make_matrix(mix);
 }

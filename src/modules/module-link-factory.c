@@ -2,12 +2,12 @@
 /* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include <dlfcn.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -16,9 +16,108 @@
 
 /** \page page_module_link_factory Link Factory
  *
+ * Allows clients to create links between ports.
+ *
+ * This module creates a new factory. Clients that can see the factory
+ * can use the factory name (`link-factory`) to create new link
+ * objects with \ref pw_core_create_object(). It is also possible to create
+ * objects in the config file.
+ *
+ * Object of the \ref PW_TYPE_INTERFACE_Link will be created and a proxy
+ * to it will be returned.
+ *
+ * As an argument to the create_object call, a set of properties will
+ * control what ports will be linked.
+ *
  * ## Module Name
  *
  * `libpipewire-module-link-factory`
+ *
+ * ## Module Options
+ *
+ * - `allow.link.passive`: if the `link.passive` property is allowed. Default false.
+ *                        By default, the core will decide when a link is passive
+ *                        based on the properties of the node and ports.
+ *
+ * ## Properties for the create_object call
+ *
+ * - `link.output.node`: The output node to use. This can be the node object.id, node.name,
+ *                     node.nick, node.description or object.path of a node. When the
+ *                     property is not given or NULL, the output port should be
+ *                     specified.
+ * - `link.output.port`: The output port to link. This can be a port object.id, port.name,
+ *                     port.alias or object.path. If an output node is specified, the
+ *                     port must belong to the node. Finding a port in a node using the
+ *                     port.id is deprecated and may lead to unexpected results when the
+ *                     port.id also matches an object.id. If no output port is given, an
+ *                     output node must be specified and a random (unlinked) port will
+ *                     be used from the node.
+ * - `link.input.node`: The input node to use. This can be the node object.id, node.name,
+ *                     node.nick, node.description or object.path of a node. When the
+ *                     property is not given or NULL, the input port should be
+ *                     specified.
+ * - `link.input.port`: The input port to link. This can be a port object.id, port.name,
+ *                     port.alias or object.path. If an input node is specified, the
+ *                     port must belong to the node. Finding a port in a node using the
+ *                     port.id is deprecated and may lead to unexpected results when the
+ *                     port.id also matches an object.id. If no input port is given, an
+ *                     input node must be specified and a random (unlinked) port will
+ *                     be used from the node.
+ * - `object.linger`: Keep the link around even when the client that created it is gone.
+ * - `link.passive`: The link is passive, meaning that it will not keep nodes busy.
+ *                 By default this property is ignored and the node and port properties
+ *                 are used to determine the passive state of the link.
+ *
+ * ## Example configuration
+ *
+ * The module is usually added to the config file of the main pipewire daemon.
+ *
+ *\code{.unparsed}
+ * context.modules = [
+ * { name = libpipewire-link-factory
+ *   args = {
+ *       #allow.link.passive = false
+ *   }
+ * }
+ * ]
+ *\endcode
+
+ * ## Config override
+ *
+ * A `module.link-factory.args` config section can be added
+ * to override the module arguments.
+ *
+ *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-link-factory-args.conf
+ *
+ * module.link-factory.args = {
+ *     #allow.link.passive = false
+ * }
+ *\endcode
+ *
+ * ## Config objects
+ *
+ * To create an object from the factory, one can use the \ref pw_core_create_object()
+ * method or make an object in the `context.objects` section like:
+ *
+ *\code{.unparsed}
+ * context.objects = [
+ * { factory = link-factory
+ *     args = {
+ *         link.output.node = system
+ *         link.output.port = capture_2
+ *         link.input.node  = my-mic
+ *         link.input.port  = input_FR
+ *     }
+ * }
+ *\endcode
+ *
+ * Note that this only works when the ports that need to be linked are available
+ * at the time the config file is parsed.
+ *
+ * ## See also
+ *
+ * - `pw-link`: a tool to manage port links
  */
 
 #define NAME "link-factory"
@@ -94,8 +193,7 @@ static const struct pw_resource_events resource_events = {
 static void global_destroy(void *data)
 {
 	struct link_data *ld = data;
-	struct factory_data *d = ld->data;
-	pw_work_queue_cancel(d->work, ld, SPA_ID_INVALID);
+
 	spa_hook_remove(&ld->global_listener);
 	ld->global = NULL;
 }
@@ -114,6 +212,7 @@ static void link_destroy(void *data)
 		spa_hook_remove(&ld->global_listener);
 	if (ld->resource)
 		spa_hook_remove(&ld->resource_listener);
+	pw_work_queue_cancel(ld->data->work, ld, SPA_ID_INVALID);
 }
 
 static void link_initialized(void *data)
@@ -163,8 +262,7 @@ static void link_state_changed(void *data, enum pw_link_state old,
 
 	switch (state) {
 	case PW_LINK_STATE_ERROR:
-		if (ld->linger)
-			pw_work_queue_add(d->work, ld, 0, destroy_link, ld);
+		pw_work_queue_add(d->work, ld, 0, destroy_link, ld);
 		break;
 	default:
 		break;
@@ -181,28 +279,12 @@ static const struct pw_impl_link_events link_events = {
 static struct pw_impl_port *get_port(struct pw_impl_node *node, enum spa_direction direction)
 {
 	struct pw_impl_port *p;
-	struct pw_context *context = pw_impl_node_get_context(node);
-	int res;
 
 	p = pw_impl_node_find_port(node, direction, PW_ID_ANY);
 
-	if (p == NULL || pw_impl_port_is_linked(p)) {
-		uint32_t port_id;
+	if (p == NULL || pw_impl_port_is_linked(p))
+		p = pw_impl_node_get_free_port(node, direction);
 
-		port_id = pw_impl_node_get_free_port_id(node, direction);
-		if (port_id == SPA_ID_INVALID)
-			return NULL;
-
-		p = pw_context_create_port(context, direction, port_id, NULL, 0);
-		if (p == NULL)
-			return NULL;
-
-		if ((res = pw_impl_port_add(p, node)) < 0) {
-			pw_log_warn("can't add port: %s", spa_strerror(res));
-			errno = -res;
-			return NULL;
-		}
-	}
 	return p;
 }
 
@@ -274,11 +356,15 @@ static struct pw_impl_port *find_port(struct pw_context *context,
 	if (find.id != SPA_ID_INVALID) {
 		struct pw_global *global = pw_context_find_global(context, find.id);
 		/* find port by global id */
-		if (global != NULL && pw_global_is_type(global, PW_TYPE_INTERFACE_Port))
-			return pw_global_get_object(global);
+		if (global != NULL && pw_global_is_type(global, PW_TYPE_INTERFACE_Port)) {
+			find.port = pw_global_get_object(global);
+			if (find.port != NULL &&
+			    (node == NULL || pw_impl_port_get_node(find.port) == node))
+				return find.port;
+		}
 	}
 	if (node != NULL) {
-		/* find port by local id */
+		/* find port by local id (deprecated) */
 		if (find.id != SPA_ID_INVALID) {
 			find.port = pw_impl_node_find_port(node, find.direction, find.id);
 			if (find.port != NULL)
@@ -544,6 +630,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	data->props = args ? pw_properties_new_string(args) : NULL;
 
 	if (data->props) {
+		pw_context_conf_update_props(context, "module."NAME".args", data->props);
+
 		data->allow_passive = pw_properties_get_bool(data->props,
 				"allow.link.passive", false);
 	}

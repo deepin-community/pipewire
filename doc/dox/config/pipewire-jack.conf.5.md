@@ -38,11 +38,12 @@ JACK client match rules.
 In addition, the PipeWire context configuration sections 
 may also be specified, see \ref page_man_pipewire_conf_5 "pipewire.conf(5)".
 
-# JACK PROPERTIES  @IDX@ jack.conf
+# JACK PROPERTIES  @IDX@ jack.conf jack.properties
 
 The configuration file can contain an extra JACK specific section called `jack.properties` like this:
-```
-...
+```css
+# ~/.config/pipewire/jack.conf.d/custom.conf
+
 jack.properties = {
     #rt.prio             = 88
     #node.latency        = 1024/48000
@@ -69,7 +70,7 @@ jack.properties = {
     #jack.max-client-ports   = 768
     #jack.fill-aliases       = false
     #jack.writable-input     = false
-
+    #jack.flag-midi2         = false
 }
 ```
 
@@ -197,14 +198,24 @@ from the buffer.
 Set this to true to avoid buffer corruption if you are only dealing with non-buggy clients.
 \endparblock
 
-# MATCH RULES  @IDX@ jack.conf
+@PAR@ jack.conf  jack.flag-midi2
+\parblock
+Use the new JACK MIDI2 port flag on MIDI2 (UMP) ports. This is disabled by default because most
+JACK apps don't know about this flag yet and refuse to show the port.
+
+Set this to true for applications that know how to handle MIDI2 ports.
+\endparblock
+
+# MATCH RULES  @IDX@ jack.conf jack.rules
 
 `jack.rules` provides an `update-props` action that takes an object with properties that are updated
 on the client and node object of the jack client.
 
 Add a `jack.rules` section in the config file like this:
 
-```
+```css
+# ~/.config/pipewire/jack.conf.d/custom.conf
+
 jack.rules = [
     {
         matches = [
