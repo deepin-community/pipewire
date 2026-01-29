@@ -5,6 +5,11 @@
 #ifndef SPA_AUDIO_MP3_UTILS_H
 #define SPA_AUDIO_MP3_UTILS_H
 
+#include <spa/pod/parser.h>
+#include <spa/pod/builder.h>
+#include <spa/param/audio/format.h>
+#include <spa/param/format-utils.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,23 +19,27 @@ extern "C" {
  * \{
  */
 
-#include <spa/pod/parser.h>
-#include <spa/pod/builder.h>
-#include <spa/param/audio/format.h>
-#include <spa/param/format-utils.h>
+#ifndef SPA_API_AUDIO_MP3_UTILS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_AUDIO_MP3_UTILS SPA_API_IMPL
+ #else
+  #define SPA_API_AUDIO_MP3_UTILS static inline
+ #endif
+#endif
 
-static inline int
+SPA_API_AUDIO_MP3_UTILS int
 spa_format_audio_mp3_parse(const struct spa_pod *format, struct spa_audio_info_mp3 *info)
 {
 	int res;
 	res = spa_pod_parse_object(format,
 			SPA_TYPE_OBJECT_Format, NULL,
-			SPA_FORMAT_AUDIO_rate,		SPA_POD_OPT_Int(&info->rate),
-			SPA_FORMAT_AUDIO_channels,	SPA_POD_OPT_Int(&info->channels));
+			SPA_FORMAT_AUDIO_rate,			SPA_POD_OPT_Int(&info->rate),
+			SPA_FORMAT_AUDIO_channels,		SPA_POD_OPT_Int(&info->channels),
+			SPA_FORMAT_AUDIO_MP3_channelMode,	SPA_POD_OPT_Id(&info->channel_mode));
 	return res;
 }
 
-static inline struct spa_pod *
+SPA_API_AUDIO_MP3_UTILS struct spa_pod *
 spa_format_audio_mp3_build(struct spa_pod_builder *builder, uint32_t id,
 			   const struct spa_audio_info_mp3 *info)
 {
@@ -47,6 +56,9 @@ spa_format_audio_mp3_build(struct spa_pod_builder *builder, uint32_t id,
 	if (info->channels != 0)
 		spa_pod_builder_add(builder,
 			SPA_FORMAT_AUDIO_channels,	SPA_POD_Int(info->channels), 0);
+	if (info->channel_mode != 0)
+		spa_pod_builder_add(builder,
+			SPA_FORMAT_AUDIO_MP3_channelMode,	SPA_POD_Id(info->channel_mode), 0);
 	return (struct spa_pod*)spa_pod_builder_pop(builder, &f);
 }
 

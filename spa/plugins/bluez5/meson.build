@@ -16,8 +16,6 @@ bluez5_sources = [
   'media-codecs.c',
   'media-sink.c',
   'media-source.c',
-  'sco-sink.c',
-  'sco-source.c',
   'sco-io.c',
   'iso-io.c',
   'quirks.c',
@@ -56,7 +54,7 @@ if get_option('bluez5-backend-hsp-native').allowed() or get_option('bluez5-backe
     bluez5_deps += mm_dep
     bluez5_sources += ['modemmanager.c']
   endif
-  bluez5_sources += ['backend-native.c', 'upower.c']
+  bluez5_sources += ['backend-native.c', 'upower.c', 'telephony.c']
 endif
 
 if get_option('bluez5-backend-ofono').allowed()
@@ -100,6 +98,22 @@ bluez_codec_faststream = shared_library('spa-codec-bluez5-faststream',
   install : true,
   install_dir : spa_plugindir / 'bluez5')
 
+bluez_codec_hfp_cvsd = shared_library('spa-codec-bluez5-hfp-cvsd',
+  [ 'hfp-codec-cvsd.c', 'media-codecs.c' ],
+  include_directories : [ configinc ],
+  c_args : codec_args,
+  dependencies : [ spa_dep ],
+  install : true,
+  install_dir : spa_plugindir / 'bluez5')
+
+bluez_codec_hfp_msbc = shared_library('spa-codec-bluez5-hfp-msbc',
+  [ 'hfp-codec-msbc.c', 'media-codecs.c' ],
+  include_directories : [ configinc ],
+  c_args : codec_args,
+  dependencies : [ spa_dep, sbc_dep, spandsp_dep ],
+  install : true,
+  install_dir : spa_plugindir / 'bluez5')
+
 if fdk_aac_dep.found()
   bluez_codec_aac = shared_library('spa-codec-bluez5-aac',
     [ 'a2dp-codec-aac.c', 'media-codecs.c' ],
@@ -124,6 +138,10 @@ if ldac_dep.found()
   ldac_args = codec_args
   if ldac_abr_dep.found()
     ldac_args += [ '-DENABLE_LDAC_ABR' ]
+  endif
+  if get_option('bluez5-codec-ldac-dec').allowed() and ldac_dec_dep.found()
+    ldac_args += [ '-DENABLE_LDAC_DEC' ]
+    ldac_dep = [ldac_dep, ldac_dec_dep]
   endif
   bluez_codec_ldac = shared_library('spa-codec-bluez5-ldac',
     [ 'a2dp-codec-ldac.c', 'media-codecs.c' ],
@@ -169,6 +187,32 @@ if get_option('bluez5-codec-lc3').allowed() and lc3_dep.found()
     include_directories : [ configinc ],
     c_args : codec_args,
     dependencies : [ spa_dep, lc3_dep, mathlib ],
+    install : true,
+    install_dir : spa_plugindir / 'bluez5')
+
+  bluez_codec_hfp_lc3_swb = shared_library('spa-codec-bluez5-hfp-lc3-swb',
+    [ 'hfp-codec-lc3-swb.c', 'media-codecs.c' ],
+    include_directories : [ configinc ],
+    c_args : codec_args,
+    dependencies : [ spa_dep, lc3_dep, mathlib ],
+    install : true,
+    install_dir : spa_plugindir / 'bluez5')
+
+  bluez_codec_hfp_lc3_a127 = shared_library('spa-codec-bluez5-hfp-lc3-a127',
+    [ 'hfp-codec-lc3-a127.c', 'media-codecs.c' ],
+    include_directories : [ configinc ],
+    c_args : codec_args,
+    dependencies : [ spa_dep, lc3_dep, mathlib ],
+    install : true,
+    install_dir : spa_plugindir / 'bluez5')
+endif
+
+if get_option('bluez5-codec-g722').allowed()
+  bluez_codec_g722 = shared_library('spa-codec-bluez5-g722',
+    [ 'g722/g722_encode.c', 'asha-codec-g722.c', 'media-codecs.c' ],
+    include_directories : [ configinc ],
+    c_args : codec_args,
+    dependencies : [ spa_dep ],
     install : true,
     install_dir : spa_plugindir / 'bluez5')
 endif

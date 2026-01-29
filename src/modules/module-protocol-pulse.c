@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2020 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -9,8 +11,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 
@@ -48,6 +48,8 @@
  * A config section with server properties can be given.
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire-pulse.conf.d/custom.conf
+ *
  * pulse.properties = {
  *     # the addresses this server listens on
  *     server.address = [
@@ -65,12 +67,12 @@
  *     ]
  *     #server.dbus-name       = "org.pulseaudio.Server"
  *     #pulse.allow-module-loading = true
- *     #pulse.min.req          = 128/48000     # 2.7ms
+ *     #pulse.min.req          = 256/48000     # 5.3ms
  *     #pulse.default.req      = 960/48000     # 20 milliseconds
- *     #pulse.min.frag         = 128/48000     # 2.7ms
+ *     #pulse.min.frag         = 256/48000     # 5.3ms
  *     #pulse.default.frag     = 96000/48000   # 2 seconds
  *     #pulse.default.tlength  = 96000/48000   # 2 seconds
- *     #pulse.min.quantum      = 128/48000     # 2.7ms
+ *     #pulse.min.quantum      = 256/48000     # 5.3ms
  *     #pulse.default.format   = F32
  *     #pulse.default.position = [ FL FR ]
  *     #pulse.idle.timeout     = 0
@@ -138,7 +140,7 @@
  * ### Playback buffering options
  *
  *\code{.unparsed}
- *     pulse.min.req = 128/48000              # 2.7ms
+ *     pulse.min.req = 256/48000              # 5.3ms
  *\endcode
  *
  * The minimum amount of data to request for clients. The client requested
@@ -164,7 +166,7 @@
  * ### Record buffering options
  *
  *\code{.unparsed}
- *     pulse.min.frag = 128/48000             # 2.7ms
+ *     pulse.min.frag = 256/48000             # 5.3ms
  *\endcode
  *
  * The minimum allowed size of the capture buffer before it is sent to a client.
@@ -182,7 +184,7 @@
  * ### Scheduling options
  *
  *\code{.unparsed}
- *     pulse.min.quantum = 128/48000          # 2.7ms
+ *     pulse.min.quantum = 256/48000          # 5.3ms
  *\endcode
  *
  * The minimum quantum (buffer size in samples) to use for pulseaudio clients.
@@ -254,10 +256,12 @@
  * # Extra commands can be executed here.
  * #   load-module : loads a module with args and flags
  * #      args = "<module-name> <module-args>"
- * #      flags = [ "no-fail" ]
+ * #      ( flags = [ "no-fail" ] )
+ * #      ( condition = [ { <key1> = <value1>, ... } ... ] )
+ * # conditions will check the pulse.properties key/values.
  * pulse.cmd = [
  *     { cmd = "load-module" args = "module-always-sink" flags = [ ] }
- *     #{ cmd = "load-module" args = "module-switch-on-connect" }
+ *     #{ cmd = "load-module" args = "module-switch-on-connect" condition = [ { pulse.cmd.switch-on-connect = true } ]
  *     #{ cmd = "load-module" args = "module-gsettings" flags = [ "nofail" ] }
  * ]
  *\endcode
@@ -294,9 +298,12 @@
  * ## Application settings (Rules)
  *
  * The pulse protocol module supports generic config rules. It supports a pulse.rules
- * section with a `quirks` and an `update-props` action.
+ * section with a `quirks` and an `update-props` action. These rules operate on the client
+ * properties (not the stream properties, see above).
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire-pulse.conf.d/custom.conf
+ *
  * pulse.rules = [
  *     {
  *         # skype does not want to use devices that don't have an S16 sample format.
@@ -334,15 +341,26 @@
  * * `block-source-volume` blocks the client from updating any source volumes. This can be used
  *                    to disable things like automatic gain control.
  * * `block-sink-volume` blocks the client from updating any sink volumes.
+ * * `block-record-stream` blocks the client from creating any record stream.
+ * * `block-playback-stream` blocks the client from creating any playback stream.
  *
  * ### update-props
  *
  * Takes an object with the properties to update on the client. Common actions are to
- * tweak the quantum values.
+ * tweak the quantum values. You can use the stream specific keys in pulse.properties.
+ *
+ * ### startup notification
+ *
+ * A newline will be written into the notification file descriptor when the server has
+ * started if the following environment variable is set:
+ *
+ * - PIPEWIRE_PULSE_NOTIFICATION_FD
  *
  * ## Example configuration
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire-pulse.conf.d/custom.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-protocol-pulse
  *     args = { }

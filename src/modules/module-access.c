@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -10,8 +12,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
-
-#include "config.h"
 
 #ifdef HAVE_SYS_VFS_H
 #include <sys/vfs.h>
@@ -95,6 +95,22 @@
  * - \ref PW_KEY_ACCESS
  * - \ref PW_KEY_CLIENT_ACCESS
  *
+ * ## Config override
+ *
+ * A `module.access.args` config section can be added
+ * to override the module arguments.
+ *
+ *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-access-args.conf
+ *
+ * module.access.args = {
+ *      access.socket = {
+ *          pipewire-0 = "default",
+ *          pipewire-0-manager = "unrestricted",
+ *      }
+ * }
+ *\endcode
+ *
  * ## Example configuration
  *
  *\code{.unparsed}
@@ -151,12 +167,13 @@ context_check_access(void *data, struct pw_impl_client *client)
 {
 	struct impl *impl = data;
 	struct pw_permission permissions[1];
-	struct spa_dict_item items[3];
+	struct spa_dict_item items[4];
 	const struct pw_properties *props;
 	const char *str;
 	const char *access;
 	const char *socket;
 	spa_autofree char *flatpak_app_id = NULL;
+	spa_autofree char *flatpak_instance_id = NULL;
 	int nitems = 0;
 	bool sandbox_flatpak;
 	int pid, res;
@@ -181,7 +198,7 @@ context_check_access(void *data, struct pw_impl_client *client)
 	} else {
 		pw_log_info("client %p has trusted pid %d", client, pid);
 
-		res = pw_check_flatpak(pid, &flatpak_app_id, NULL);
+		res = pw_check_flatpak(pid, &flatpak_app_id, &flatpak_instance_id, NULL);
 		if (res != 0) {
 			if (res < 0)
 				pw_log_warn("%p: client %p flatpak check failed: %s",
@@ -217,6 +234,8 @@ context_check_access(void *data, struct pw_impl_client *client)
 	if (sandbox_flatpak) {
 		items[nitems++] = SPA_DICT_ITEM_INIT("pipewire.access.portal.app_id",
 				flatpak_app_id);
+		items[nitems++] = SPA_DICT_ITEM_INIT("pipewire.access.portal.instance_id",
+				flatpak_instance_id);
 		items[nitems++] = SPA_DICT_ITEM_INIT("pipewire.sec.flatpak", "true");
 	}
 
@@ -274,21 +293,16 @@ get_server_name(const struct spa_dict *props)
 
 static int parse_socket_args(struct impl *impl, const char *str)
 {
-	struct spa_json it[2];
+	struct spa_json it[1];
 	char socket[PATH_MAX];
+	const char *val;
+	int len;
 
-	spa_json_init(&it[0], str, strlen(str));
-
-	if (spa_json_enter_object(&it[0], &it[1]) <= 0)
+	if (spa_json_begin_object(&it[0], str, strlen(str)) <= 0)
 		return -EINVAL;
 
-	while (spa_json_get_string(&it[1], socket, sizeof(socket)) > 0) {
+	while ((len = spa_json_object_next(&it[0], socket, sizeof(socket), &val)) > 0) {
 		char value[256];
-		const char *val;
-		int len;
-
-		if ((len = spa_json_next(&it[1], &val)) <= 0)
-			return -EINVAL;
 
 		if (spa_json_parse_stringn(val, len, value, sizeof(value)) <= 0)
 			return -EINVAL;
@@ -299,16 +313,10 @@ static int parse_socket_args(struct impl *impl, const char *str)
 	return 0;
 }
 
-static int parse_args(struct impl *impl, const struct pw_properties *props, const char *args_str)
+static int parse_args(struct impl *impl, const struct pw_properties *props, const struct pw_properties *args)
 {
-	spa_autoptr(pw_properties) args = NULL;
 	const char *str;
 	int res;
-
-	if (args_str)
-		args = pw_properties_new_string(args_str);
-	else
-		args = pw_properties_new(NULL, NULL);
 
 	if ((str = pw_properties_get(args, "access.legacy")) != NULL) {
 		impl->legacy = spa_atob(str);
@@ -352,10 +360,11 @@ static int parse_args(struct impl *impl, const struct pw_properties *props, cons
 }
 
 SPA_EXPORT
-int pipewire__module_init(struct pw_impl_module *module, const char *args)
+int pipewire__module_init(struct pw_impl_module *module, const char *args_str)
 {
 	struct pw_context *context = pw_impl_module_get_context(module);
 	const struct pw_properties *props = pw_context_get_properties(context);
+	spa_autoptr(pw_properties) args = NULL;
 	struct impl *impl;
 	int res;
 
@@ -365,7 +374,19 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	if (impl == NULL)
 		return -errno;
 
-	pw_log_debug("module %p: new %s", impl, args);
+	pw_log_debug("module %p: new %s", impl, args_str);
+
+	if (args_str)
+		args = pw_properties_new_string(args_str);
+	else
+		args = pw_properties_new(NULL, NULL);
+
+	if (!args) {
+		res = -errno;
+		goto error;
+	}
+
+	pw_context_conf_update_props(context, "module."NAME".args", args);
 
 	impl->socket_access = pw_properties_new(NULL, NULL);
 

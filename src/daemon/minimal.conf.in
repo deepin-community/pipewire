@@ -47,6 +47,9 @@ context.properties = {
 
     # Load the pulseaudio emulation daemon
     minimal.use-pulse = true
+
+    # Load the jack-tunnel as a backend
+    minimal.use-jack-tunnel = true
 }
 
 context.properties.rules = [
@@ -153,6 +156,42 @@ context.modules = [
     { name = libpipewire-module-protocol-pulse
       condition = [ { minimal.use-pulse = true } ]
     }
+
+    { name = libpipewire-module-jack-tunnel
+        args = {
+            #jack.library     = libjack.so.0
+            #jack.server      = null
+            #jack.client-name = PipeWire
+            #jack.connect     = true
+            #jack.connect-audio  = [ ]
+            #jack.connect-midi  = [ ]
+            #tunnel.mode      = duplex
+            #midi.ports       = 1
+            #audio.channels   = 2
+            #audio.position   = [ FL FR ]
+            source.props = {
+                # extra sink properties
+                #jack.connect-audio  = [ "system:capture_1" ]
+                #jack.connect-midi  = [ "system:midi_capture_2" ]
+		# jack-tunnel needs a PortConfig from the
+		# session manager so do this here.
+                node.param.PortConfig    = {
+                    direction = Output
+                    mode = dsp
+                }
+            }
+            sink.props = {
+                # extra sink properties
+                #jack.connect-audio  = [ "system:playback_1" ]
+                #jack.connect-midi  = [ "system:midi_playback_2" ]
+                node.param.PortConfig    = {
+                    direction = Input
+                    mode = dsp
+                }
+            }
+	}
+        condition = [ { minimal.use-jack-tunnel = true } ]
+    }
 ]
 
 pulse.properties = {
@@ -176,11 +215,11 @@ context.objects = [
     # Creates an object from a PipeWire factory with the given parameters.
     # If nofail is given, errors are ignored (and no object is created).
     #
-    #{ factory = spa-node-factory   args = { factory.name = videotestsrc node.name = videotestsrc node.description = videotestsrc "Spa:Pod:Object:Param:Props:patternType" = 1 } }
+    #{ factory = spa-node-factory   args = { factory.name = videotestsrc node.name = videotestsrc node.description = videotestsrc node.param.Props = { patternType = 1 } } }
     #{ factory = spa-device-factory args = { factory.name = api.jack.device foo=bar } flags = [ nofail ] }
     #{ factory = spa-device-factory args = { factory.name = api.alsa.enum.udev } }
     #{ factory = spa-node-factory   args = { factory.name = api.alsa.seq.bridge node.name = Internal-MIDI-Bridge } }
-    #{ factory = adapter            args = { factory.name = audiotestsrc node.name = my-test node.description = audiotestsrc } }
+    #{ factory = adapter            args = { factory.name = audiotestsrc node.name = my-test node.description = audiotestsrc node.param.Props = { live = false } } }
     #{ factory = spa-node-factory   args = { factory.name = api.vulkan.compute.source node.name = my-compute-source } }
 
     # Make a default metadata store

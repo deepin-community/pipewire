@@ -36,21 +36,19 @@ else
 LIBCAMERA=enabled
 endif
 
-# lilv and some of its dependencies are in universe
+ifneq (,$(filter alpha hurd-amd64 hurd-i386 m68k powerpc ppc64 sh4 x32,$(DEB_HOST_ARCH)))
+ONNXRUNTIME=disabled
+else
+ONNXRUNTIME=enabled
+endif
+
+# enable snap support in Ubuntu, Debian's kernel doesn't enable the option
+# for fine grained unix mediation at the moment
+SNAP=disabled
 ifeq (yes,$(shell dpkg-vendor --derives-from Ubuntu && echo yes))
-LV2=disabled
-LIBMYSOFA=disabled
-LIBFFADO=disabled
 ifneq (,$(filter amd64 arm64 armhf i386 powerpc ppc64el riscv64 s390x,$(DEB_HOST_ARCH)))
 SNAP=enabled
-else
-SNAP=disabled
 endif
-else
-LV2=enabled
-LIBMYSOFA=enabled
-LIBFFADO=enabled
-SNAP=disabled
 endif
 
 ifneq (,$(filter hurd-amd64 hurd-i386,$(DEB_HOST_ARCH)))
@@ -72,19 +70,24 @@ override_dh_auto_configure:
 		-Dbluez5-codec-lc3=enabled \
 		-Dbluez5-codec-lc3plus=disabled \
 		-Dbluez5-codec-ldac=$(BLUEZ5_CODEC_LDAC) \
+		-Dbluez5-codec-ldac-dec=disabled \
 		-Dbluez5-codec-opus=enabled \
+		-Dbluez5-plc-spandsp=enabled \
 		-Dlibcamera=$(LIBCAMERA) \
-		-Dlibffado=$(LIBFFADO) \
-		-Dlibmysofa=$(LIBMYSOFA) \
+		-Dlibffado=enabled \
+		-Dlibmysofa=enabled \
 		-Ddocs=$(DOCS) \
 		-Dffmpeg=disabled \
 		-Dinstalled_tests=$(INSTTEST) \
-		-Dlv2=$(LV2) \
+		-Dlv2=enabled \
 		-Dman=$(MAN) \
+		-Donnxruntime=$(ONNXRUNTIME) \
 		-Droc=enabled \
 		-Dsdl2=$(SDL2) \
 		-Dsession-managers= \
 		-Dsnap=$(SNAP) \
+		-Dsystemd-system-service=enabled \
+		-Dsystemd-user-service=enabled \
 		-Dtest=enabled \
 		-Dudevrulesdir=$(UDEVRULESDIR) \
 		-Dvideotestsrc=enabled \
@@ -95,7 +98,7 @@ override_dh_auto_configure:
 
 test_timeout_multiplier = 1
 
-ifneq ($(filter arm hppa ia64 m68k riscv64 sh4 sparc%,$(DEB_HOST_ARCH_CPU)),)
+ifneq ($(filter alpha arm hppa ia64 m68k riscv64 sh4 sparc%,$(DEB_HOST_ARCH_CPU)),)
 test_timeout_multiplier = 5
 endif
 
@@ -127,3 +130,13 @@ override_dh_shlibdeps-arch:
 		--remaining-packages \
 		-l/usr/lib/$(DEB_HOST_MULTIARCH)/pipewire-0.3 \
 		$(NULL)
+
+override_dh_installsystemd:
+	# The recommanded way to install pipewire is using user services, but
+	# we install system services anyway for specific use cases (like embedded
+	# and accessibility) without enabling/starting them to avoid clashes.
+	dh_installsystemd -ppipewire-system-services --no-enable --no-start
+
+# Can be dropped in compat >= 14
+execute_after_dh_installinit:
+	dh_installsysusers

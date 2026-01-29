@@ -3,6 +3,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -16,8 +18,6 @@
 #include <limits.h>
 #include <math.h>
 
-#include "config.h"
-
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
@@ -28,6 +28,7 @@
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/latency-utils.h>
 #include <spa/param/audio/raw.h>
+#include <spa/param/audio/raw-json.h>
 
 #include <pipewire/impl.h>
 #include <pipewire/i18n.h>
@@ -78,6 +79,7 @@
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_LATENCY
  * - \ref PW_KEY_NODE_NAME
@@ -93,6 +95,8 @@
  * ## Example configuration of a pipe playback stream
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-pipe-tunnel.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-pipe-tunnel
  *     args = {
@@ -121,7 +125,6 @@
 
 #define DEFAULT_FORMAT "S16"
 #define DEFAULT_RATE 48000
-#define DEFAULT_CHANNELS 2
 #define DEFAULT_POSITION "[ FL FR ]"
 
 #define RINGBUFFER_SIZE		(1u << 22)
@@ -194,7 +197,6 @@ struct impl {
 	void *buffer;
 	uint32_t target_buffer;
 
-	struct spa_io_rate_match *rate_match;
 	struct spa_io_position *position;
 
 	struct spa_dll dll;
@@ -362,22 +364,17 @@ static void playback_stream_process(void *data)
 
 static void update_rate(struct impl *impl, uint32_t filled)
 {
-	float error;
+	double error;
 
-	if (impl->rate_match == NULL)
-		return;
-
-	error = (float)impl->target_buffer - (float)(filled);
-	error = SPA_CLAMP(error, -impl->max_error, impl->max_error);
+	error = (double)impl->target_buffer - (double)(filled);
+	error = SPA_CLAMPD(error, -impl->max_error, impl->max_error);
 
 	impl->corr = spa_dll_update(&impl->dll, error);
 	pw_log_debug("error:%f corr:%f current:%u target:%u",
 			error, impl->corr, filled, impl->target_buffer);
 
-	if (!impl->driving) {
-		SPA_FLAG_SET(impl->rate_match->flags, SPA_IO_RATE_MATCH_FLAG_ACTIVE);
-		impl->rate_match->rate = 1.0 / impl->corr;
-	}
+	if (!impl->driving)
+		pw_stream_set_rate(impl->stream, 1.0 / impl->corr);
 }
 
 static void capture_stream_process(void *data)
@@ -450,9 +447,6 @@ static void stream_io_changed(void *data, uint32_t id, void *area, uint32_t size
 {
 	struct impl *impl = data;
 	switch (id) {
-	case SPA_IO_RateMatch:
-		impl->rate_match = area;
-		break;
 	case SPA_IO_Position:
 		impl->position = area;
 		break;
@@ -752,61 +746,19 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static uint32_t channel_from_name(const char *name)
+static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static void parse_position(struct spa_audio_info_raw *info, const char *val, size_t len)
-{
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	info->channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    info->channels < SPA_AUDIO_MAX_CHANNELS) {
-		info->position[info->channels++] = channel_from_name(v);
-	}
-}
-
-static inline uint32_t format_from_name(const char *name, size_t len)
-{
-	int i;
-	for (i = 0; spa_type_audio_format[i].name; i++) {
-		if (strncmp(name, spa_debug_type_short_name(spa_type_audio_format[i].name), len) == 0)
-			return spa_type_audio_format[i].type;
-	}
-	return SPA_AUDIO_FORMAT_UNKNOWN;
-}
-
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
-{
-	const char *str;
-
-	spa_zero(*info);
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_FORMAT)) == NULL)
-		str = DEFAULT_FORMAT;
-	info->format = format_from_name(str, strlen(str));
-
-	info->rate = pw_properties_get_uint32(props, PW_KEY_AUDIO_RATE, info->rate);
-	if (info->rate == 0)
-		info->rate = DEFAULT_RATE;
-
-	info->channels = pw_properties_get_uint32(props, PW_KEY_AUDIO_CHANNELS, info->channels);
-	info->channels = SPA_MIN(info->channels, SPA_AUDIO_MAX_CHANNELS);
-	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
-		parse_position(info, str, strlen(str));
-	if (info->channels == 0)
-		parse_position(info, DEFAULT_POSITION, strlen(DEFAULT_POSITION));
+	return spa_audio_info_raw_init_dict_keys(info,
+			&SPA_DICT_ITEMS(
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, DEFAULT_FORMAT),
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, SPA_STRINGIFY(DEFAULT_RATE)),
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_POSITION, DEFAULT_POSITION)),
+			&props->dict,
+			SPA_KEY_AUDIO_FORMAT,
+			SPA_KEY_AUDIO_RATE,
+			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
+			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
 static int calc_frame_size(const struct spa_audio_info_raw *info)
@@ -936,6 +888,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
@@ -946,7 +899,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_TARGET_OBJECT);
 	copy_props(impl, props, "pipe.filename");
 
-	parse_audio_info(impl->stream_props, &impl->info);
+	if ((res = parse_audio_info(impl->stream_props, &impl->info)) < 0) {
+		pw_log_error("can't parse format: %s", spa_strerror(res));
+		goto error;
+	}
 
 	impl->frame_size = calc_frame_size(&impl->info);
 	if (impl->frame_size == 0) {

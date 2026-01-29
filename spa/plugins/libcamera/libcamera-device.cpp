@@ -4,9 +4,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
 /* SPDX-License-Identifier: MIT */
 
-#include "config.h"
-
-#include <stddef.h>
+#include <cstddef>
+#include <sstream>
 
 #include <spa/support/plugin.h>
 #include <spa/support/log.h>
@@ -51,34 +50,22 @@ struct impl {
 	     std::string device_id);
 };
 
-}
-
-static const libcamera::Span<const int64_t> cameraDevice(
-			const Camera *camera)
+const libcamera::Span<const int64_t> cameraDevice(const Camera& camera)
 {
-	const ControlList &props = camera->properties();
-
-	if (auto devices = props.get(properties::SystemDevices))
+	if (auto devices = camera.properties().get(properties::SystemDevices))
 		return devices.value();
 
 	return {};
 }
 
-static std::string cameraModel(const Camera *camera)
+std::string cameraModel(const Camera& camera)
 {
-	const ControlList &props = camera->properties();
-
-	if (auto model = props.get(properties::Model))
-		return std::move(model.value());
-
-	return camera->id();
+	return std::string(camera.properties().get(properties::Model).value_or(camera.id()));
 }
 
-static const char *cameraLoc(const Camera *camera)
+const char *cameraLoc(const Camera& camera)
 {
-	const ControlList &props = camera->properties();
-
-	if (auto location = props.get(properties::Location)) {
+	if (auto location = camera.properties().get(properties::Location)) {
 		switch (location.value()) {
 		case properties::CameraLocationFront:
 			return "front";
@@ -92,11 +79,9 @@ static const char *cameraLoc(const Camera *camera)
 	return nullptr;
 }
 
-static const char *cameraRot(const Camera *camera)
+const char *cameraRot(const Camera& camera)
 {
-	const ControlList &props = camera->properties();
-
-	if (auto rotation = props.get(properties::Rotation)) {
+	if (auto rotation = camera.properties().get(properties::Rotation)) {
 		switch (rotation.value()) {
 		case 90:
 			return "90";
@@ -112,51 +97,54 @@ static const char *cameraRot(const Camera *camera)
 	return nullptr;
 }
 
-static int emit_info(struct impl *impl, bool full)
+int emit_info(struct impl *impl, bool full)
 {
 	struct spa_dict_item items[10];
 	struct spa_dict dict;
 	uint32_t n_items = 0;
 	struct spa_device_info info;
 	struct spa_param_info params[2];
-	char path[256], name[256], devices_str[256];
-	struct spa_strbuf buf;
+	Camera& camera = *impl->camera;
 
 	info = SPA_DEVICE_INFO_INIT();
 
 	info.change_mask = SPA_DEVICE_CHANGE_MASK_PROPS;
 
 #define ADD_ITEM(key, value) items[n_items++] = SPA_DICT_ITEM_INIT(key, value)
-	snprintf(path, sizeof(path), "libcamera:%s", impl->device_id.c_str());
-	ADD_ITEM(SPA_KEY_OBJECT_PATH, path);
+
+	const auto path = "libcamera:" + impl->device_id;
+	ADD_ITEM(SPA_KEY_OBJECT_PATH, path.c_str());
+
 	ADD_ITEM(SPA_KEY_DEVICE_API, "libcamera");
 	ADD_ITEM(SPA_KEY_MEDIA_CLASS, "Video/Device");
 	ADD_ITEM(SPA_KEY_API_LIBCAMERA_PATH, impl->device_id.c_str());
 
-	if (auto location = cameraLoc(impl->camera.get()))
+	if (auto location = cameraLoc(camera))
 		ADD_ITEM(SPA_KEY_API_LIBCAMERA_LOCATION, location);
-	if (auto rotation = cameraRot(impl->camera.get()))
+	if (auto rotation = cameraRot(camera))
 		ADD_ITEM(SPA_KEY_API_LIBCAMERA_ROTATION, rotation);
 
-	const auto model = cameraModel(impl->camera.get());
+	const auto model = cameraModel(camera);
 	ADD_ITEM(SPA_KEY_DEVICE_PRODUCT_NAME, model.c_str());
 	ADD_ITEM(SPA_KEY_DEVICE_DESCRIPTION, model.c_str());
 
-	snprintf(name, sizeof(name), "libcamera_device.%s", impl->device_id.c_str());
-	ADD_ITEM(SPA_KEY_DEVICE_NAME, name);
+	const auto name = "libcamera_device." + impl->device_id;
+	ADD_ITEM(SPA_KEY_DEVICE_NAME, name.c_str());
 
-	auto device_numbers = cameraDevice(impl->camera.get());
+	auto device_numbers = cameraDevice(camera);
+	std::string devids;
 
 	if (!device_numbers.empty()) {
-		spa_strbuf_init(&buf, devices_str, sizeof(devices_str));
+		std::ostringstream s;
 
 		/* encode device numbers into a json array */
-		spa_strbuf_append(&buf, "[ ");
-		for(int64_t device_number : device_numbers)
-			spa_strbuf_append(&buf, "%" PRId64 " ", device_number);
+		s << "[ ";
+		for (const auto& devid : device_numbers)
+			s << devid << ' ';
+		s << ']';
 
-		spa_strbuf_append(&buf, "]");
-		ADD_ITEM(SPA_KEY_DEVICE_DEVIDS, devices_str);
+		devids = std::move(s).str();
+		ADD_ITEM(SPA_KEY_DEVICE_DEVIDS, devids.c_str());
 	}
 
 #undef ADD_ITEM
@@ -186,17 +174,17 @@ static int emit_info(struct impl *impl, bool full)
 	return 0;
 }
 
-static int impl_add_listener(void *object,
-			struct spa_hook *listener,
-			const struct spa_device_events *events,
-			void *data)
+int impl_add_listener(void *object,
+		      struct spa_hook *listener,
+		      const struct spa_device_events *events,
+		      void *data)
 {
 	struct impl *impl = (struct impl*)object;
 	struct spa_hook_list save;
 	int res = 0;
 
-	spa_return_val_if_fail(impl != NULL, -EINVAL);
-	spa_return_val_if_fail(events != NULL, -EINVAL);
+	spa_return_val_if_fail(impl != nullptr, -EINVAL);
+	spa_return_val_if_fail(events != nullptr, -EINVAL);
 
 	spa_hook_list_isolate(&impl->hooks, &save, listener, events, data);
 
@@ -208,32 +196,32 @@ static int impl_add_listener(void *object,
 	return res;
 }
 
-static int impl_sync(void *object, int seq)
+int impl_sync(void *object, int seq)
 {
 	struct impl *impl = (struct impl*) object;
 
-	spa_return_val_if_fail(impl != NULL, -EINVAL);
+	spa_return_val_if_fail(impl != nullptr, -EINVAL);
 
-	spa_device_emit_result(&impl->hooks, seq, 0, 0, NULL);
+	spa_device_emit_result(&impl->hooks, seq, 0, 0, nullptr);
 
 	return 0;
 }
 
-static int impl_enum_params(void *object, int seq,
-			    uint32_t id, uint32_t start, uint32_t num,
-			    const struct spa_pod *filter)
+int impl_enum_params(void *object, int seq,
+		     uint32_t id, uint32_t start, uint32_t num,
+		     const struct spa_pod *filter)
 {
 	return -ENOTSUP;
 }
 
-static int impl_set_param(void *object,
-			  uint32_t id, uint32_t flags,
-			  const struct spa_pod *param)
+int impl_set_param(void *object,
+		   uint32_t id, uint32_t flags,
+		   const struct spa_pod *param)
 {
 	return -ENOTSUP;
 }
 
-static const struct spa_device_methods impl_device = {
+const struct spa_device_methods impl_device = {
 	.version = SPA_VERSION_DEVICE_METHODS,
 	.add_listener = impl_add_listener,
 	.sync = impl_sync,
@@ -241,14 +229,12 @@ static const struct spa_device_methods impl_device = {
 	.set_param = impl_set_param,
 };
 
-static int impl_get_interface(struct spa_handle *handle, const char *type, void **interface)
+int impl_get_interface(struct spa_handle *handle, const char *type, void **interface)
 {
-	struct impl *impl;
+	auto *impl = reinterpret_cast<struct impl *>(handle);
 
-	spa_return_val_if_fail(handle != NULL, -EINVAL);
-	spa_return_val_if_fail(interface != NULL, -EINVAL);
-
-	impl = (struct impl *) handle;
+	spa_return_val_if_fail(handle != nullptr, -EINVAL);
+	spa_return_val_if_fail(interface != nullptr, -EINVAL);
 
 	if (spa_streq(type, SPA_TYPE_INTERFACE_Device))
 		*interface = &impl->device;
@@ -258,7 +244,7 @@ static int impl_get_interface(struct spa_handle *handle, const char *type, void 
 	return 0;
 }
 
-static int impl_clear(struct spa_handle *handle)
+int impl_clear(struct spa_handle *handle)
 {
 	std::destroy_at(reinterpret_cast<impl *>(handle));
 	return 0;
@@ -284,14 +270,14 @@ impl::impl(spa_log *log,
 			&impl_device, this);
 }
 
-static size_t
+size_t
 impl_get_size(const struct spa_handle_factory *factory,
 	      const struct spa_dict *params)
 {
 	return sizeof(struct impl);
 }
 
-static int
+int
 impl_init(const struct spa_handle_factory *factory,
 	  struct spa_handle *handle,
 	  const struct spa_dict *info,
@@ -301,8 +287,8 @@ impl_init(const struct spa_handle_factory *factory,
 	const char *str;
 	int res;
 
-	spa_return_val_if_fail(factory != NULL, -EINVAL);
-	spa_return_val_if_fail(handle != NULL, -EINVAL);
+	spa_return_val_if_fail(factory != nullptr, -EINVAL);
+	spa_return_val_if_fail(handle != nullptr, -EINVAL);
 
 	auto log = static_cast<spa_log *>(spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log));
 
@@ -327,17 +313,17 @@ impl_init(const struct spa_handle_factory *factory,
 	return 0;
 }
 
-static const struct spa_interface_info impl_interfaces[] = {
+const struct spa_interface_info impl_interfaces[] = {
 	{SPA_TYPE_INTERFACE_Device,},
 };
 
-static int impl_enum_interface_info(const struct spa_handle_factory *factory,
-				    const struct spa_interface_info **info,
-				    uint32_t *index)
+int impl_enum_interface_info(const struct spa_handle_factory *factory,
+			     const struct spa_interface_info **info,
+			     uint32_t *index)
 {
-	spa_return_val_if_fail(factory != NULL, -EINVAL);
-	spa_return_val_if_fail(info != NULL, -EINVAL);
-	spa_return_val_if_fail(index != NULL, -EINVAL);
+	spa_return_val_if_fail(factory != nullptr, -EINVAL);
+	spa_return_val_if_fail(info != nullptr, -EINVAL);
+	spa_return_val_if_fail(index != nullptr, -EINVAL);
 
 	if (*index >= SPA_N_ELEMENTS(impl_interfaces))
 		return 0;
@@ -346,11 +332,13 @@ static int impl_enum_interface_info(const struct spa_handle_factory *factory,
 	return 1;
 }
 
+}
+
 extern "C" {
 const struct spa_handle_factory spa_libcamera_device_factory = {
 	SPA_VERSION_HANDLE_FACTORY,
 	SPA_NAME_API_LIBCAMERA_DEVICE,
-	NULL,
+	nullptr,
 	impl_get_size,
 	impl_init,
 	impl_enum_interface_info,

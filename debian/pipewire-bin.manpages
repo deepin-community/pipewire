@@ -11,12 +11,12 @@ usr/share/man/man1/pw-metadata.*
 usr/share/man/man1/pw-mididump.*
 usr/share/man/man1/pw-mon.*
 usr/share/man/man1/pw-profiler.*
-usr/share/man/man1/pw-top.*
 usr/share/man/man1/pw-reserve.*
+usr/share/man/man1/pw-top.*
 usr/share/man/man1/spa-acp-tool.*
 usr/share/man/man1/spa-inspect.*
 usr/share/man/man1/spa-json-dump.*
 usr/share/man/man1/spa-monitor.*
 usr/share/man/man1/spa-resample.*
 usr/share/man/man5/*
-usr/share/man/man7/pipewire-devices.*
+usr/share/man/man7/pipewire-props.*

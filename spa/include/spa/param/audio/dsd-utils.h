@@ -5,6 +5,12 @@
 #ifndef SPA_AUDIO_DSD_UTILS_H
 #define SPA_AUDIO_DSD_UTILS_H
 
+#include <spa/pod/iter.h>
+#include <spa/pod/parser.h>
+#include <spa/pod/builder.h>
+#include <spa/param/format-utils.h>
+#include <spa/param/audio/format.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,16 +20,21 @@ extern "C" {
  * \{
  */
 
-#include <spa/pod/parser.h>
-#include <spa/pod/builder.h>
-#include <spa/param/format-utils.h>
-#include <spa/param/audio/format.h>
+#ifndef SPA_API_AUDIO_DSD_UTILS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_AUDIO_DSD_UTILS SPA_API_IMPL
+ #else
+  #define SPA_API_AUDIO_DSD_UTILS static inline
+ #endif
+#endif
 
-static inline int
+SPA_API_AUDIO_DSD_UTILS int
 spa_format_audio_dsd_parse(const struct spa_pod *format, struct spa_audio_info_dsd *info)
 {
 	struct spa_pod *position = NULL;
 	int res;
+	uint32_t max_position = SPA_N_ELEMENTS(info->position);
+
 	info->flags = 0;
 	res = spa_pod_parse_object(format,
 			SPA_TYPE_OBJECT_Format, NULL,
@@ -32,14 +43,17 @@ spa_format_audio_dsd_parse(const struct spa_pod *format, struct spa_audio_info_d
 			SPA_FORMAT_AUDIO_rate,		SPA_POD_OPT_Int(&info->rate),
 			SPA_FORMAT_AUDIO_channels,	SPA_POD_OPT_Int(&info->channels),
 			SPA_FORMAT_AUDIO_position,	SPA_POD_OPT_Pod(&position));
+	if (info->channels > max_position)
+		return -ECHRNG;
 	if (position == NULL ||
-	    !spa_pod_copy_array(position, SPA_TYPE_Id, info->position, SPA_AUDIO_MAX_CHANNELS))
+	    spa_pod_copy_array(position, SPA_TYPE_Id, info->position, max_position) != info->channels) {
 		SPA_FLAG_SET(info->flags, SPA_AUDIO_FLAG_UNPOSITIONED);
-
+		spa_memzero(info->position, max_position * sizeof(info->position[0]));
+	}
 	return res;
 }
 
-static inline struct spa_pod *
+SPA_API_AUDIO_DSD_UTILS struct spa_pod *
 spa_format_audio_dsd_build(struct spa_pod_builder *builder, uint32_t id,
 			   const struct spa_audio_info_dsd *info)
 {

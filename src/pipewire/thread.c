@@ -15,6 +15,7 @@
 #include <spa/utils/list.h>
 #include <spa/utils/json.h>
 
+#define PW_API_THREAD_IMPL SPA_EXPORT
 #include <pipewire/log.h>
 #include <pipewire/private.h>
 #include <pipewire/thread.h>
@@ -30,15 +31,14 @@ do {									\
 
 static int parse_affinity(const char *affinity, cpu_set_t *set)
 {
-	struct spa_json it[2];
+	struct spa_json it[1];
 	int v;
 
 	CPU_ZERO(set);
-	spa_json_init(&it[0], affinity, strlen(affinity));
-	if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-		spa_json_init(&it[1], affinity, strlen(affinity));
+	if (spa_json_begin_array_relax(&it[0], affinity, strlen(affinity)) <= 0)
+		return 0;
 
-	while (spa_json_get_int(&it[1], &v) > 0) {
+	while (spa_json_get_int(&it[0], &v) > 0) {
 		if (v >= 0 && v < CPU_SETSIZE)
 			CPU_SET(v, set);
         }
@@ -92,8 +92,10 @@ static struct spa_thread *impl_create(void *object,
 	pthread_t pt;
 	pthread_attr_t *attr = NULL, attributes;
 	const char *str;
-	int err;
+	int err, old_policy, new_policy;
 	int (*create_func)(pthread_t *, const pthread_attr_t *attr, void *(*start)(void*), void *) = NULL;
+	struct sched_param sp;
+	bool reset_on_fork = true;
 
 	attr = pw_thread_fill_attr(props, &attributes);
 
@@ -117,24 +119,41 @@ static struct spa_thread *impl_create(void *object,
 			pw_log_warn("pthread_setname error: %s", strerror(err));
 		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_AFFINITY)) != NULL &&
 		    (err = thread_setaffinity(pt, str)) != 0)
-			pw_log_warn("pthread_setaffinity error: %s", strerror(err));
+			pw_log_warn("pthread_setaffinity error: %s", strerror(-err));
+		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_RESET_ON_FORK)) != NULL)
+			reset_on_fork = spa_atob(str);
 	}
+
+	pthread_getschedparam(pt, &old_policy, &sp);
+	new_policy = old_policy;
+	SPA_FLAG_UPDATE(new_policy, SCHED_RESET_ON_FORK, reset_on_fork);
+	if (old_policy != new_policy)
+		pthread_setschedparam(pt, new_policy, &sp);
+
 	return (struct spa_thread*)pt;
 }
 
 static int impl_join(void *object, struct spa_thread *thread, void **retval)
 {
 	pthread_t pt = (pthread_t)thread;
-	return pthread_join(pt, retval);
+	return -pthread_join(pt, retval);
 }
 
 static int impl_get_rt_range(void *object, const struct spa_dict *props,
 		int *min, int *max)
 {
-	if (min)
+	if (min) {
 		*min = sched_get_priority_min(SCHED_OTHER);
-	if (max)
+		if (*min < 0)
+			return -errno;
+	}
+
+	if (max) {
 		*max = sched_get_priority_max(SCHED_OTHER);
+		if (*max < 0)
+			return -errno;
+	}
+
 	return 0;
 }
 static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority)

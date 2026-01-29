@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2023 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -14,8 +16,6 @@
 #include <limits.h>
 #include <math.h>
 
-#include "config.h"
-
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
@@ -25,6 +25,7 @@
 #include <spa/pod/builder.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
+#include <spa/param/audio/raw-json.h>
 #include <spa/param/latency-utils.h>
 #include <spa/param/tag-utils.h>
 
@@ -63,6 +64,7 @@
  *
  * - \ref PW_KEY_REMOTE_NAME
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_MEDIA_NAME
  * - \ref PW_KEY_NODE_LATENCY
@@ -75,13 +77,16 @@
  * ## Stream options
  *
  * - `audio.position`: Set the stream channel map. By default this is the same channel
- *                     map as the combine stream.
+ *                     map as the combine stream. You can also use audio.layout
  * - `combine.audio.position`: map the combine audio positions to the stream positions.
  *                     combine input channels are mapped one-by-one to stream output channels.
+ *                     You can also use combine.audio.layout.
  *
  * ## Example configuration
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-combine-stream-1.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-combine-stream
  *     args = {
@@ -122,6 +127,8 @@
  * from 3 separate stereo sinks.
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-combine-stream-2.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-combine-stream
  *     args = {
@@ -170,6 +177,8 @@
  * from 2 separate stereo sources.
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-combine-stream-3.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-combine-stream
  *     args = {
@@ -224,8 +233,8 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 			"( stream.props=<properties> ) "					\
 			"( stream.rules=<properties> ) "
 
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
 #define DELAYBUF_MAX_SIZE	(20 * sizeof(float) * 96000)
-
 
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
@@ -305,57 +314,30 @@ struct stream {
 	struct spa_latency_info latency;
 
 	struct spa_audio_info_raw info;
-	uint32_t remap[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t remap[MAX_CHANNELS];
 
 	void *delaybuf;
-	struct ringbuffer delay[SPA_AUDIO_MAX_CHANNELS];
+	struct ringbuffer delay[MAX_CHANNELS];
 
 	int64_t delay_samples;		/* for main loop */
 	int64_t data_delay_samples;	/* for data loop */
+	int64_t compensate_samples;	/* for main loop */
 
 	unsigned int ready:1;
 	unsigned int added:1;
 	unsigned int have_latency:1;
 };
 
-static uint32_t channel_from_name(const char *name)
+static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static void parse_position(struct spa_audio_info_raw *info, const char *val, size_t len)
-{
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	info->channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    info->channels < SPA_AUDIO_MAX_CHANNELS) {
-		info->position[info->channels++] = channel_from_name(v);
-	}
-}
-
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
-{
-	const char *str;
-
-	spa_zero(*info);
-	info->format = SPA_AUDIO_FORMAT_F32P;
-	info->channels = pw_properties_get_uint32(props, PW_KEY_AUDIO_CHANNELS, 0);
-	info->channels = SPA_MIN(info->channels, SPA_AUDIO_MAX_CHANNELS);
-	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
-		parse_position(info, str, strlen(str));
-	if (info->channels == 0)
-		parse_position(info, DEFAULT_POSITION, strlen(DEFAULT_POSITION));
+	return spa_audio_info_raw_init_dict_keys(info,
+			&SPA_DICT_ITEMS(
+				SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, "F32P"),
+				SPA_DICT_ITEM(SPA_KEY_AUDIO_POSITION, DEFAULT_POSITION)),
+			&props->dict,
+			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
+			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
 static void ringbuffer_init(struct ringbuffer *r, void *buf, uint32_t size)
@@ -384,6 +366,40 @@ static void ringbuffer_memcpy(struct ringbuffer *r, void *dst, void *src, uint32
 		src = SPA_PTROFF(src, size - avail, void);
 	}
 
+	/* src to buf */
+	if (avail > 0) {
+		spa_ringbuffer_write_data(NULL, r->buf, r->size, r->idx, src, avail);
+		r->idx = (r->idx + avail) % r->size;
+	}
+}
+
+static void mix_f32(float *dst, float *src, uint32_t size)
+{
+	uint32_t i, s = size / sizeof(float);
+	for (i = 0; i < s; i++)
+		dst[i] += src[i];
+}
+
+static void ringbuffer_mix(struct ringbuffer *r, void *dst, void *src, uint32_t size)
+{
+	uint32_t avail;
+
+	avail = SPA_MIN(size, r->size);
+
+	/* buf to dst */
+	if (dst && avail > 0) {
+		uint32_t l0 = SPA_MIN(avail, r->size - r->idx), l1 = avail - l0;
+		mix_f32(dst, SPA_PTROFF(r->buf, r->idx, void), l0);
+		if (SPA_UNLIKELY(l1 > 0))
+			mix_f32(SPA_PTROFF(dst, l0, void), r->buf, l1);
+		dst = SPA_PTROFF(dst, avail, void);
+	}
+	/* src to dst */
+	if (size > avail) {
+		if (dst)
+			mix_f32(dst, src, size - avail);
+		src = SPA_PTROFF(src, size - avail, void);
+	}
 	/* src to buf */
 	if (avail > 0) {
 		spa_ringbuffer_write_data(NULL, r->buf, r->size, r->idx, src, avail);
@@ -496,7 +512,7 @@ static void update_latency(struct impl *impl)
 struct replace_delay_info {
 	struct stream *stream;
 	void *buf;
-	struct ringbuffer delay[SPA_AUDIO_MAX_CHANNELS];
+	struct ringbuffer delay[MAX_CHANNELS];
 };
 
 static int do_replace_delay(struct spa_loop *loop, bool async, uint32_t seq,
@@ -541,7 +557,7 @@ static void resize_delay(struct stream *stream, uint32_t size)
 	for (i = 0; i < channels; ++i)
 		ringbuffer_init(&info.delay[i], SPA_PTROFF(info.buf, i*size, void), size);
 
-	pw_loop_invoke(stream->impl->data_loop, do_replace_delay, 0, NULL, 0, true, &info);
+	pw_loop_locked(stream->impl->data_loop, do_replace_delay, 0, NULL, 0, &info);
 
 	free(info.buf);
 }
@@ -562,6 +578,7 @@ static void update_delay(struct impl *impl)
 
 		max_delay = SPA_MAX(max_delay, delay);
 		s->delay_samples = delay;
+		s->compensate_samples = 0;
 	}
 
 	spa_list_for_each(s, &impl->streams, link) {
@@ -569,9 +586,9 @@ static void update_delay(struct impl *impl)
 
 		if (s->delay_samples != INT64_MIN) {
 			int64_t delay = max_delay - s->delay_samples;
+			s->compensate_samples = delay;
 			size = delay * sizeof(float);
 		}
-
 		resize_delay(s, size);
 	}
 
@@ -604,7 +621,7 @@ static int do_clear_delaybuf(struct spa_loop *loop, bool async, uint32_t seq,
 
 static void clear_delaybuf(struct impl *impl)
 {
-	pw_loop_invoke(impl->data_loop, do_clear_delaybuf, 0, NULL, 0, true, impl);
+	pw_loop_locked(impl->data_loop, do_clear_delaybuf, 0, NULL, 0, impl);
 }
 
 static int do_add_stream(struct spa_loop *loop, bool async, uint32_t seq,
@@ -641,6 +658,40 @@ static void param_tag_changed(struct impl *impl, const struct spa_pod *param)
 	}
 }
 
+static void param_latency_changed(struct impl *impl, const struct spa_pod *param)
+{
+	if (param == NULL)
+		return;
+
+	pw_log_debug("latency update");
+	struct stream *s;
+	struct spa_latency_info info;
+	const struct spa_pod *params[1];
+
+	if (spa_latency_parse(param, &info) < 0)
+		return;
+
+	spa_list_for_each(s, &impl->streams, link) {
+		uint8_t buffer[1024];
+		struct spa_pod_builder b;
+
+		if (s->stream == NULL)
+			continue;
+
+		pw_log_debug("updating stream %d", s->id);
+		if (impl->latency_compensate) {
+			struct spa_latency_info other = info;
+			other.min_rate += s->compensate_samples;
+			other.max_rate += s->compensate_samples;
+			spa_pod_builder_init(&b, buffer, sizeof(buffer));
+			params[0] = spa_latency_build(&b, SPA_PARAM_Latency, &other);
+		} else {
+			params[0] = param;
+		}
+		pw_stream_update_params(s->stream, params, 1);
+	}
+}
+
 static int do_remove_stream(struct spa_loop *loop, bool async, uint32_t seq,
                 const void *data, size_t size, void *user_data)
 {
@@ -657,7 +708,7 @@ static void remove_stream(struct stream *s, bool destroy)
 {
 	pw_log_debug("destroy stream %d", s->id);
 
-	pw_loop_invoke(s->impl->data_loop, do_remove_stream, 0, NULL, 0, true, s);
+	pw_loop_locked(s->impl->data_loop, do_remove_stream, 0, NULL, 0, s);
 
 	if (destroy && s->stream) {
 		spa_hook_remove(&s->stream_listener);
@@ -718,6 +769,9 @@ static void stream_state_changed(void *d, enum pw_stream_state old,
 	case PW_STREAM_STATE_UNCONNECTED:
 		stream_destroy(s);
 		break;
+	case PW_STREAM_STATE_STREAMING:
+		update_latency(s->impl);
+		break;
 	default:
 		break;
 	}
@@ -769,7 +823,7 @@ static int create_stream(struct stream_info *info)
 	int res;
 	uint32_t n_params, i, j;
 	const struct spa_pod *params[1];
-	const char *str, *node_name;
+	const char *str, *node_name, *dir_name;
 	uint8_t buffer[1024];
 	struct spa_pod_builder b;
 	struct spa_audio_info_raw remap_info, tmp_info;
@@ -796,16 +850,40 @@ static int create_stream(struct stream_info *info)
 
 	s->id = info->id;
 	s->impl = impl;
+	s->stream_events = stream_events;
+
+	flags = PW_STREAM_FLAG_AUTOCONNECT |
+			PW_STREAM_FLAG_MAP_BUFFERS |
+			PW_STREAM_FLAG_RT_PROCESS |
+			PW_STREAM_FLAG_ASYNC;
+
+	if (impl->mode == MODE_SINK || impl->mode == MODE_CAPTURE) {
+		direction = PW_DIRECTION_OUTPUT;
+		flags |= PW_STREAM_FLAG_TRIGGER;
+		dir_name = "output";
+	} else {
+		direction = PW_DIRECTION_INPUT;
+		s->stream_events.process = stream_input_process;
+		dir_name = "input";
+	}
 
 	s->info = impl->info;
 	if ((str = pw_properties_get(info->stream_props, SPA_KEY_AUDIO_POSITION)) != NULL)
-		parse_position(&s->info, str, strlen(str));
+		spa_audio_parse_position_n(str, strlen(str), s->info.position,
+				SPA_N_ELEMENTS(s->info.position), &s->info.channels);
+	if ((str = pw_properties_get(info->stream_props, SPA_KEY_AUDIO_LAYOUT)) != NULL)
+		spa_audio_parse_layout(str, s->info.position,
+				SPA_N_ELEMENTS(s->info.position), &s->info.channels);
 	if (s->info.channels == 0)
 		s->info = impl->info;
 
 	spa_zero(remap_info);
 	if ((str = pw_properties_get(info->stream_props, "combine.audio.position")) != NULL)
-		parse_position(&remap_info, str, strlen(str));
+		spa_audio_parse_position_n(str, strlen(str), remap_info.position,
+				SPA_N_ELEMENTS(remap_info.position), &remap_info.channels);
+	if ((str = pw_properties_get(info->stream_props, "combine.audio.layout")) != NULL)
+		spa_audio_parse_layout(str, remap_info.position,
+				SPA_N_ELEMENTS(remap_info.position), &remap_info.channels);
 	if (remap_info.channels == 0)
 		remap_info = s->info;
 
@@ -813,7 +891,10 @@ static int create_stream(struct stream_info *info)
 	for (i = 0; i < remap_info.channels; i++) {
 		s->remap[i] = i;
 		for (j = 0; j < tmp_info.channels; j++) {
-			if (tmp_info.position[j] == remap_info.position[i]) {
+			uint32_t pj, pi;
+			pj = tmp_info.position[j];
+			pi = remap_info.position[i];
+			if (pj == pi) {
 				s->remap[i] = j;
 				break;
 			}
@@ -829,10 +910,10 @@ static int create_stream(struct stream_info *info)
 
 	if (pw_properties_get(info->stream_props, PW_KEY_MEDIA_NAME) == NULL)
 		pw_properties_setf(info->stream_props, PW_KEY_MEDIA_NAME,
-				"%s output", str);
+				"%s %s", str, dir_name);
 	if (pw_properties_get(info->stream_props, PW_KEY_NODE_DESCRIPTION) == NULL)
 		pw_properties_setf(info->stream_props, PW_KEY_NODE_DESCRIPTION,
-				"%s output", str);
+				"%s %s", str, dir_name);
 
 	str = pw_properties_get(impl->props, PW_KEY_NODE_NAME);
 	if (str == NULL)
@@ -840,7 +921,7 @@ static int create_stream(struct stream_info *info)
 
 	if (pw_properties_get(info->stream_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(info->stream_props, PW_KEY_NODE_NAME,
-				"output.%s_%s", str, node_name);
+				"%s.%s_%s", dir_name, str, node_name);
 
 	if (info->on_demand_id) {
 		s->on_demand_id = strdup(info->on_demand_id);
@@ -855,21 +936,6 @@ static int create_stream(struct stream_info *info)
 	if (s->stream == NULL)
 		goto error_errno;
 
-	s->stream_events = stream_events;
-
-	flags = PW_STREAM_FLAG_AUTOCONNECT |
-			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_RT_PROCESS |
-			PW_STREAM_FLAG_ASYNC;
-
-	if (impl->mode == MODE_SINK || impl->mode == MODE_CAPTURE) {
-		direction = PW_DIRECTION_OUTPUT;
-		flags |= PW_STREAM_FLAG_TRIGGER;
-	} else {
-		direction = PW_DIRECTION_INPUT;
-		s->stream_events.process = stream_input_process;
-	}
-
 	pw_stream_add_listener(s->stream,
 			&s->stream_listener,
 			&s->stream_events, s);
@@ -883,7 +949,7 @@ static int create_stream(struct stream_info *info)
 			direction, PW_ID_ANY, flags, params, n_params)) < 0)
 		goto error;
 
-	pw_loop_invoke(impl->data_loop, do_add_stream, 0, NULL, 0, true, s);
+	pw_loop_locked(impl->data_loop, do_add_stream, 0, NULL, 0, s);
 	update_delay(impl);
 	return 0;
 
@@ -1057,6 +1123,7 @@ static void combine_state_changed(void *d, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = d;
+	struct stream *s;
 	switch (state) {
 	case PW_STREAM_STATE_ERROR:
 	case PW_STREAM_STATE_UNCONNECTED:
@@ -1064,6 +1131,10 @@ static void combine_state_changed(void *d, enum pw_stream_state old,
 		break;
 	case PW_STREAM_STATE_PAUSED:
 		clear_delaybuf(impl);
+		spa_list_for_each(s, &impl->streams, link) {
+			pw_stream_flush(s->stream, false);
+		}
+		pw_stream_flush(impl->combine, false);
 		impl->combine_id = pw_stream_get_node_id(impl->combine);
 		pw_log_info("got combine id %d", impl->combine_id);
 		break;
@@ -1171,11 +1242,14 @@ static void combine_output_process(void *d)
 	struct pw_buffer *in, *out;
 	struct stream *s;
 	bool delay_changed = false;
+	bool mix[MAX_CHANNELS];
 
 	if ((out = pw_stream_dequeue_buffer(impl->combine)) == NULL) {
 		pw_log_debug("%p: out of output buffers: %m", impl);
 		return;
 	}
+	for (uint32_t i = 0; i < out->buffer->n_datas; i++)
+		mix[i] = false;
 
 	spa_list_for_each(s, &impl->streams, link) {
 		uint32_t j;
@@ -1208,7 +1282,6 @@ static void combine_output_process(void *d)
 
 			ds = &in->buffer->datas[j];
 
-			/* FIXME, need to do mixing for overlapping streams */
 			remap = s->remap[j];
 			if (remap < out->buffer->n_datas) {
 				uint32_t offs, size;
@@ -1219,8 +1292,14 @@ static void combine_output_process(void *d)
 				size = SPA_MIN(ds->chunk->size, ds->maxsize - offs);
 				size = SPA_MIN(size, dd->maxsize);
 
-				ringbuffer_memcpy(&s->delay[j],
-					dd->data, SPA_PTROFF(ds->data, offs, void), size);
+				if (mix[remap]) {
+					ringbuffer_mix(&s->delay[j],
+						dd->data, SPA_PTROFF(ds->data, offs, void), size);
+				} else {
+					ringbuffer_memcpy(&s->delay[j],
+						dd->data, SPA_PTROFF(ds->data, offs, void), size);
+					mix[remap] = true;
+				}
 
 				outsize = SPA_MAX(outsize, size);
 				stride = SPA_MAX(stride, ds->chunk->stride);
@@ -1270,10 +1349,12 @@ static void combine_param_changed(void *d, uint32_t id, const struct spa_pod *pa
 		update_latency(impl);
 		break;
 	}
-	case SPA_PARAM_Tag: {
+	case SPA_PARAM_Tag:
 		param_tag_changed(impl, param);
 		break;
-	}
+	case SPA_PARAM_Latency:
+		param_latency_changed(impl, param);
+		break;
 	default:
 		break;
 	}
@@ -1468,7 +1549,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	spa_list_init(&impl->streams);
 
 	if (args == NULL)
-		args = "";
+		args = "{}";
 
 	props = pw_properties_new_string_checked(args, strlen(args), &loc);
 	if (props == NULL) {
@@ -1555,6 +1636,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	copy_props(props, impl->combine_props, PW_KEY_NODE_LOOP_NAME);
 	copy_props(props, impl->combine_props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(props, impl->combine_props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(props, impl->combine_props, SPA_KEY_AUDIO_POSITION);
 	copy_props(props, impl->combine_props, PW_KEY_NODE_NAME);
 	copy_props(props, impl->combine_props, PW_KEY_NODE_DESCRIPTION);
@@ -1566,7 +1648,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(props, impl->combine_props, "resample.prefill");
 	copy_props(props, impl->combine_props, "resample.disable");
 
-	parse_audio_info(impl->combine_props, &impl->info);
+	if ((res = parse_audio_info(impl->combine_props, &impl->info)) < 0) {
+		pw_log_error( "can't create format: %s", spa_strerror(res));
+		goto error;
+	}
 
 	copy_props(props, impl->stream_props, PW_KEY_NODE_LOOP_NAME);
 	copy_props(props, impl->stream_props, PW_KEY_NODE_GROUP);
