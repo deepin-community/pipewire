@@ -1,3 +1,9 @@
+pipewire (1.5.85-1deepin1) unstable; urgency=medium
+
+  * revert 64-bit time_t transition patch.
+
+ -- tunaichao <tunaichao@uniontech.com>  Thu, 29 Jan 2026 14:47:30 +0800
+
 pipewire (1.5.85-1) experimental; urgency=medium
 
   * New upstream release (1.6 release candidate 5)
