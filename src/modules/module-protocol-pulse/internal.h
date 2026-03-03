@@ -47,7 +47,7 @@ struct stats {
 };
 
 struct impl {
-	struct pw_loop *loop;
+	struct pw_loop *main_loop;
 	struct pw_context *context;
 	struct spa_hook context_listener;
 
@@ -59,6 +59,7 @@ struct impl {
 	struct spa_hook_list hooks;
 	struct spa_list servers;
 
+	struct pw_timer_queue *timer_queue;
 	struct pw_work_queue *work_queue;
 	struct spa_list cleanup_clients;
 
@@ -83,6 +84,6 @@ void impl_add_listener(struct impl *impl,
 		struct spa_hook *listener,
 		const struct impl_events *events, void *data);
 
-void broadcast_subscribe_event(struct impl *impl, uint32_t mask, uint32_t event, uint32_t id);
+void broadcast_subscribe_event(struct impl *impl, uint32_t facility, uint32_t type, uint32_t id);
 
 #endif

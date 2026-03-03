@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Pauli Virtanen */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <errno.h>
 #include <stddef.h>
 
@@ -21,7 +23,6 @@
 #include <spa/node/keys.h>
 
 #include "midi.h"
-#include "config.h"
 
 #include "bluez5-interface-gen.h"
 #include "dbus-monitor.h"
@@ -807,6 +808,8 @@ impl_init(const struct spa_handle_factory *factory,
 		g_error_free(error);
 		goto fail;
 	}
+
+	g_dbus_connection_set_exit_on_close(this->conn, FALSE);
 
 	this->manager = g_dbus_object_manager_server_new(MIDI_OBJECT_PATH);
 	if (!this->manager){

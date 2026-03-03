@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -9,8 +11,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -45,7 +45,7 @@
  *
  * Options specific to the behavior of this module
  *
- * - `roap.discover-local` = allow discovery of local services as well.
+ * - `raop.discover-local` = allow discovery of local services as well.
  *    false by default.
  * - `raop.latency.ms` = latency for all streams in microseconds. This
  *    can be overwritten in the stream rules.
@@ -55,10 +55,12 @@
  * ## Example configuration
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-raop-discover.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-raop-discover
  *     args = {
- *         #roap.discover-local = false;
+ *         #raop.discover-local = false;
  *         #raop.latency.ms = 1000
  *         stream.rules = [
  *             {   matches = [
@@ -69,7 +71,7 @@
  *                          #raop.domain = ""
  *                          #raop.device = ""
  *                          #raop.transport = "udp" | "tcp"
- *                          #raop.encryption.type = "RSA" | "auth_setup" | "none"
+ *                          #raop.encryption.type = "none" | "RSA" | "auth_setup" | "fp_sap25"
  *                          #raop.audio.codec = "PCM" | "ALAC" | "AAC" | "AAC-ELD"
  *                          #audio.channels = 2
  *                          #audio.format = "S16" | "S24" | "S32"
@@ -242,10 +244,12 @@ static void pw_properties_from_avahi_string(const char *key, const char *value,
 		 *  3 = FairPlay,
 		 *  4 = MFiSAP (/auth-setup),
 		 *  5 = FairPlay SAPv2.5 */
-		if (str_in_list(value, ",", "1"))
-			value = "RSA";
+		if (str_in_list(value, ",", "5"))
+			value = "fp_sap25";
 		else if (str_in_list(value, ",", "4"))
 			value = "auth_setup";
+		else if (str_in_list(value, ",", "1"))
+			value = "RSA";
 		else
 			value = "none";
 		pw_properties_set(props, "raop.encryption.type", value);
@@ -380,10 +384,8 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 	}
 
 	avahi_address_snprint(at, sizeof(at), a);
-	if (spa_strstartswith(at, link_local_range)) {
-		pw_log_info("found link-local ip address %s - skipping tunnel creation", at);
-		goto done;
-	}
+	if (spa_strstartswith(at, link_local_range))
+		pw_log_info("found link-local ip address %s for '%s'", at, name);
 
 	tinfo = TUNNEL_INFO(.name = name);
 
@@ -408,6 +410,11 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
 	if (a->proto == AVAHI_PROTO_INET6 &&
 	    a->data.ipv6.address[0] == 0xfe &&
 	    (a->data.ipv6.address[1] & 0xc0) == 0x80)
+		snprintf(if_suffix, sizeof(if_suffix), "%%%d", interface);
+
+	/* For IPv4 link-local, bind to the discovery interface */
+	if (a->proto == AVAHI_PROTO_INET &&
+	    spa_strstartswith(at, link_local_range))
 		snprintf(if_suffix, sizeof(if_suffix), "%%%d", interface);
 
 	pw_properties_setf(props, "raop.ip", "%s%s", at, if_suffix);
@@ -557,10 +564,8 @@ static int start_client(struct impl *impl)
 
 static int start_avahi(struct impl *impl)
 {
-	struct pw_loop *loop;
 
-	loop = pw_context_get_main_loop(impl->context);
-	impl->avahi_poll = pw_avahi_poll_new(loop);
+	impl->avahi_poll = pw_avahi_poll_new(impl->context);
 
 	return start_client(impl);
 }

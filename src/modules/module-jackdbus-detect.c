@@ -3,6 +3,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2019 Red Hat Inc. */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -10,8 +12,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-#include "config.h"
 
 #include <dbus/dbus.h>
 
@@ -40,8 +40,23 @@
  * There are no module-specific options, all arguments are passed to
  * \ref page_module_jack_tunnel.
  *
+ * ## Config override
+ *
+ * A `module.jackdbus-detect.args` config section can be added
+ * to override the module arguments.
+ *
+ *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-jack-dbus-detect-args.conf
+ *
+ * module.jackdbus-detect.args = {
+ *     #tunnel.mode    = duplex
+ * }
+ *\endcode
+ *
  * ## Example configuration
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-jack-dbus-detect.conf
+ *
  * context.modules = [
  *  {   name = libpipewire-module-jackdbus-detect
  *      args {
@@ -356,6 +371,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->context = context;
 	impl->properties = args ? pw_properties_new_string(args) : NULL;
+
+	if (impl->properties)
+		pw_context_conf_update_props(context, "module."NAME".args", impl->properties);
 
 	impl->conn = spa_dbus_get_connection(dbus, SPA_DBUS_TYPE_SESSION);
 	if (impl->conn == NULL) {

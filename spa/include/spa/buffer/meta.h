@@ -5,12 +5,20 @@
 #ifndef SPA_META_H
 #define SPA_META_H
 
+#include <spa/utils/defs.h>
+#include <spa/pod/pod.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <spa/utils/defs.h>
-#include <spa/pod/pod.h>
+#ifndef SPA_API_META
+ #ifdef SPA_API_IMPL
+  #define SPA_API_META SPA_API_IMPL
+ #else
+  #define SPA_API_META static inline
+ #endif
+#endif
 
 /**
  * \addtogroup spa_buffer
@@ -29,9 +37,16 @@ enum spa_meta_type {
 	SPA_META_Busy,			/**< don't write to buffer when count > 0 */
 	SPA_META_VideoTransform,	/**< struct spa_meta_transform */
 	SPA_META_SyncTimeline,		/**< struct spa_meta_sync_timeline */
-
 	_SPA_META_LAST,			/**< not part of ABI/API */
+
+	SPA_META_START_custom		= 0x200,
+
+	SPA_META_START_features		= 0x10000,	/* features start, these have 0 size, the
+							 * type in the upper 16 bits and a bitmask in
+							 * the lower 16 bits with type specific features. */
 };
+
+#define SPA_META_TYPE_FEATURES(type,features)	(((type)<<16)|(features))
 
 /**
  * A metadata element.
@@ -46,14 +61,13 @@ struct spa_meta {
 	void *data;		/**< pointer to metadata */
 };
 
-static inline void *spa_meta_first(const struct spa_meta *m) {
+SPA_API_META void *spa_meta_first(const struct spa_meta *m) {
 	return m->data;
 }
-#define spa_meta_first spa_meta_first
-static inline void *spa_meta_end(const struct spa_meta *m) {
+
+SPA_API_META void *spa_meta_end(const struct spa_meta *m) {
 	return SPA_PTROFF(m->data,m->size,void);
 }
-#define spa_meta_end spa_meta_end
 #define spa_meta_check(p,m)	(SPA_PTROFF(p,sizeof(*(p)),void) <= spa_meta_end(m))
 
 /**
@@ -80,18 +94,15 @@ struct spa_meta_region {
 	struct spa_region region;
 };
 
-static inline bool spa_meta_region_is_valid(const struct spa_meta_region *m) {
+SPA_API_META bool spa_meta_region_is_valid(const struct spa_meta_region *m) {
 	return m->region.size.width != 0 && m->region.size.height != 0;
 }
-#define spa_meta_region_is_valid spa_meta_region_is_valid
 
 /** iterate all the items in a metadata */
 #define spa_meta_for_each(pos,meta)					\
-	for ((pos) = (__typeof(pos))spa_meta_first(meta);			\
+	for ((pos) = (__typeof(pos))spa_meta_first(meta);		\
 	    spa_meta_check(pos, meta);					\
             (pos)++)
-
-#define spa_meta_bitmap_is_valid(m)	((m)->format != 0)
 
 /**
  * Bitmap information
@@ -112,7 +123,9 @@ struct spa_meta_bitmap {
 					  *  info. */
 };
 
-#define spa_meta_cursor_is_valid(m)	((m)->id != 0)
+SPA_API_META bool spa_meta_bitmap_is_valid(const struct spa_meta_bitmap *m) {
+	return m->format != 0;
+}
 
 /**
  * Cursor information
@@ -131,6 +144,10 @@ struct spa_meta_cursor {
 					  *  >= sizeof(struct spa_meta_cursor) there is a
 					  *  struct spa_meta_bitmap at the offset. */
 };
+
+SPA_API_META bool spa_meta_cursor_is_valid(const struct spa_meta_cursor *m) {
+	return m->id != 0;
+}
 
 /** a timed set of events associated with the buffer */
 struct spa_meta_control {
@@ -167,8 +184,18 @@ struct spa_meta_videotransform {
  *
  * Metadata to describe the time on the timeline when the buffer
  * can be acquired and when it can be reused.
+ *
+ * This metadata will require negotiation of 2 extra fds for the acquire
+ * and release timelines respectively.  One way to achieve this is to place
+ * this metadata as SPA_PARAM_BUFFERS_metaType when negotiating a buffer
+ * layout with 2 extra fds.
  */
+#define SPA_META_FEATURE_SYNC_TIMELINE_RELEASE	(1<<0)	/**< metadata supports RELEASE */
+
 struct spa_meta_sync_timeline {
+#define SPA_META_SYNC_TIMELINE_UNSCHEDULED_RELEASE	(1<<0)	/**< this flag is set by the producer and cleared
+								  *  by the consumer when it promises to signal
+								  *  the release point */
 	uint32_t flags;
 	uint32_t padding;
 	uint64_t acquire_point;			/**< the timeline acquire point, this is when the data

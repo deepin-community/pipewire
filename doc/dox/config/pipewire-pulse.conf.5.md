@@ -54,7 +54,7 @@ for the detailed description.
 In addition, the PipeWire context configuration sections 
 may also be specified, see \ref page_man_pipewire_conf_5 "pipewire.conf(5)".
 
-# STREAM PROPERTIES  @IDX@ pipewire-pulse.conf
+# STREAM PROPERTIES  @IDX@ pipewire-pulse.conf stream.properties
 
 The `stream.properties` section contains properties for streams created
 by the pipewire-pulse server.
@@ -74,6 +74,8 @@ Some of these properties map to the PulseAudio `/etc/pulse/default.pa` config en
 ## Example
 
 ```css
+# ~/.config/pipewire/pipewire-pulse.conf.d/custom.conf
+
 stream.properties = {
     #node.latency = 1024/48000
     #node.autoconnect = true
@@ -98,18 +100,18 @@ stream.properties = {
 }
 ```
 
-# STREAM RULES  @IDX@ pipewire-pulse.conf
+# STREAM RULES  @IDX@ pipewire-pulse.conf stream.rules
 
 The `stream.rules` section works the same as
 \ref client_conf__stream_rules "pipewire-client.conf(5) stream.rules".
 
-# PULSEAUDIO PROPERTIES  @IDX@ pipewire-pulse.conf
+# PULSEAUDIO PROPERTIES  @IDX@ pipewire-pulse.conf pulse.properties
 
 For `pulse.properties` section,
 see \ref page_module_protocol_pulse "libpipewire-module-protocol-pulse(7)" 
 for available options.
 
-# PULSEAUDIO RULES  @IDX@ pipewire-pulse.conf
+# PULSEAUDIO RULES  @IDX@ pipewire-pulse.conf pulse.rules
 
 For each client, a set of rules can be written in `pulse.rules`
 section to configure quirks of the client or to force some pulse
@@ -124,6 +126,8 @@ for available options.
 ## Example
 
 ```css
+# ~/.config/pipewire/pipewire-pulse.conf.d/custom.conf
+
 pulse.rules = [
     {
         # skype does not want to use devices that don't have an S16 sample format.
@@ -154,7 +158,8 @@ additional commands with the `pulse.cmd` section in
 `pipewire-pulse.conf`.
 
 ```css
-...
+# ~/.config/pipewire/pipewire-pulse.conf.d/custom.conf
+
 pulse.cmd = [
     { cmd = "load-module" args = "module-always-sink" flags = [ ] }
     { cmd = "load-module" args = "module-switch-on-connect" }

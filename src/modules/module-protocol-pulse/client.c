@@ -87,7 +87,7 @@ bool client_detach(struct client *client)
 	if (server->wait_clients > 0 && --server->wait_clients == 0) {
 		int mask = server->source->mask;
 		SPA_FLAG_SET(mask, SPA_IO_IN);
-		pw_loop_update_io(impl->loop, server->source, mask);
+		pw_loop_update_io(impl->main_loop, server->source, mask);
 	}
 
 	client->server = NULL;
@@ -112,7 +112,7 @@ void client_disconnect(struct client *client)
 	pw_map_for_each(&client->streams, client_free_stream, client);
 
 	if (client->source) {
-		pw_loop_destroy_source(impl->loop, client->source);
+		pw_loop_destroy_source(impl->main_loop, client->source);
 		client->source = NULL;
 	}
 
@@ -207,7 +207,7 @@ int client_queue_message(struct client *client, struct message *msg)
 	uint32_t mask = client->source->mask;
 	if (!SPA_FLAG_IS_SET(mask, SPA_IO_OUT)) {
 		SPA_FLAG_SET(mask, SPA_IO_OUT);
-		pw_loop_update_io(impl->loop, client->source, mask);
+		pw_loop_update_io(impl->main_loop, client->source, mask);
 	}
 
 	client->new_msg_since_last_flush = true;
@@ -278,7 +278,7 @@ int client_flush_messages(struct client *client)
 
 		if (SPA_FLAG_IS_SET(mask, SPA_IO_OUT)) {
 			SPA_FLAG_CLEAR(mask, SPA_IO_OUT);
-			pw_loop_update_io(client->impl->loop, client->source, mask);
+			pw_loop_update_io(client->impl->main_loop, client->source, mask);
 		}
 	} else {
 		if (res != -EAGAIN && res != -EWOULDBLOCK)
@@ -301,23 +301,23 @@ static bool drop_from_out_queue(struct client *client, struct message *m)
 }
 
 /* returns true if an event with the (mask, event, index) triplet should be dropped because it is redundant */
-static bool client_prune_subscribe_events(struct client *client, uint32_t event, uint32_t index)
+static bool client_prune_subscribe_events(struct client *client, uint32_t facility, uint32_t type, uint32_t index)
 {
 	struct message *m, *t;
 
-	if ((event & SUBSCRIPTION_EVENT_TYPE_MASK) == SUBSCRIPTION_EVENT_NEW)
+	if (type == SUBSCRIPTION_EVENT_NEW)
 		return false;
 
 	/* NOTE: reverse iteration */
 	spa_list_for_each_safe_reverse(m, t, &client->out_messages, link) {
 		if (m->type != MESSAGE_TYPE_SUBSCRIPTION_EVENT)
 			continue;
-		if ((m->u.subscription_event.event ^ event) & SUBSCRIPTION_EVENT_FACILITY_MASK)
+		if ((m->u.subscription_event.event & SUBSCRIPTION_EVENT_FACILITY_MASK) != facility)
 			continue;
 		if (m->u.subscription_event.index != index)
 			continue;
 
-		if ((event & SUBSCRIPTION_EVENT_TYPE_MASK) == SUBSCRIPTION_EVENT_REMOVE) {
+		if (type == SUBSCRIPTION_EVENT_REMOVE) {
 			/* This object is being removed, hence there is
 			 * point in keeping the old events regarding
 			 * entry in the queue. */
@@ -338,8 +338,7 @@ static bool client_prune_subscribe_events(struct client *client, uint32_t event,
 			if (is_new)
 				break;
 		}
-
-		if ((event & SUBSCRIPTION_EVENT_TYPE_MASK) == SUBSCRIPTION_EVENT_CHANGE) {
+		else if (type == SUBSCRIPTION_EVENT_CHANGE) {
 			/* This object has changed. If a "new" or "change" event for
 			 * this object is still in the queue we can exit. */
 			goto drop;
@@ -349,27 +348,45 @@ static bool client_prune_subscribe_events(struct client *client, uint32_t event,
 	return false;
 
 drop:
-	pw_log_debug("client %p: dropped redundant event for object %u", client, index);
+	pw_log_debug("client %p: dropped redundant event '%s' on %s #%u",
+			client,
+			subscription_event_type_to_string(type), subscription_event_facility_to_string(facility),
+			index);
 
 	return true;
 }
 
-int client_queue_subscribe_event(struct client *client, uint32_t mask, uint32_t event, uint32_t index)
+int client_queue_subscribe_event(struct client *client, uint32_t facility, uint32_t type, uint32_t index)
 {
+	spa_assert(
+		type == SUBSCRIPTION_EVENT_NEW ||
+		type == SUBSCRIPTION_EVENT_CHANGE ||
+		type == SUBSCRIPTION_EVENT_REMOVE
+	);
+
+	const uint32_t mask = 1u << facility;
+	spa_assert(SUBSCRIPTION_MASK_ALL & mask);
+
 	if (client->disconnect)
 		return -ENOTCONN;
 
 	if (!(client->subscribed & mask))
 		return 0;
 
-	pw_log_debug("client %p: SUBSCRIBE event:%08x index:%u", client, event, index);
+	pw_log_debug("client %p: SUBSCRIBE facility:%s (%u) type:%s (0x%02x) index:%u",
+			client,
+			subscription_event_facility_to_string(facility), facility,
+			subscription_event_type_to_string(type), type,
+			index);
 
-	if (client_prune_subscribe_events(client, event, index))
+	if (client_prune_subscribe_events(client, facility, type, index))
 		return 0;
 
 	struct message *reply = message_alloc(client->impl, -1, 0);
 	if (!reply)
 		return -errno;
+
+	const uint32_t event = facility | type;
 
 	reply->type = MESSAGE_TYPE_SUBSCRIPTION_EVENT;
 	reply->u.subscription_event.event = event;

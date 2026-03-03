@@ -8,6 +8,8 @@
 #include <locale.h>
 #include <ncurses.h>
 
+#undef clear
+
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 #include <spa/pod/parser.h>
@@ -42,6 +44,7 @@ struct measurement {
 	int64_t finish;
 	struct spa_fraction latency;
 	uint32_t xrun_count;
+	bool async;
 };
 
 struct node {
@@ -51,7 +54,9 @@ struct node {
 	char name[MAX_NAME+1];
 	enum pw_node_state state;
 	struct measurement measurement;
+	uint32_t measurement_base;
 	struct driver info;
+	uint32_t info_base;
 	struct node *driver;
 	uint32_t generation;
 	char format[MAX_FORMAT+1];
@@ -233,8 +238,7 @@ static void node_param(void *data, int seq,
 				struct spa_audio_info_raw info = { 0 };
 				if (spa_format_audio_raw_parse(param, &info) >= 0) {
 					snprintf(n->format, sizeof(n->format), "%6.6s %d %d",
-						spa_debug_type_find_short_name(
-							spa_type_audio_format, info.format),
+						spa_type_audio_format_to_short_name(info.format),
 						info.channels, info.rate);
 				}
 				break;
@@ -272,7 +276,7 @@ static void node_param(void *data, int seq,
 				struct spa_video_info_raw info = { 0 };
 				if (spa_format_video_raw_parse(param, &info) >= 0) {
 					snprintf(n->format, sizeof(n->format), "%6.6s %dx%d",
-						spa_debug_type_find_short_name(spa_type_video_format, info.format),
+						spa_type_video_format_to_short_name(info.format),
 						info.size.width, info.size.height);
 				}
 				break;
@@ -416,7 +420,8 @@ static int process_follower_block(struct data *d, const struct spa_pod *pod, str
 			SPA_POD_Long(&m.finish),
 			SPA_POD_Int(&m.status),
 			SPA_POD_Fraction(&m.latency),
-			SPA_POD_OPT_Int(&m.xrun_count))) < 0)
+			SPA_POD_OPT_Int(&m.xrun_count),
+			SPA_POD_OPT_Bool(&m.async))) < 0)
 		return res;
 
 	if ((n = find_node(d, id)) == NULL)
@@ -485,8 +490,9 @@ static const char *state_as_string(enum pw_node_state state, uint32_t transport)
 	return "!";
 }
 
-static void print_node(struct data *d, struct driver *i, struct node *n, int y)
+static void print_node(struct data *d, struct node *dr, struct node *n, int y)
 {
+	struct driver *i = &dr->info;
 	char buf1[64];
 	char buf2[64];
 	char buf3[64];
@@ -533,9 +539,10 @@ static void print_node(struct data *d, struct driver *i, struct node *n, int y)
 			print_perc(buf3, active, 64, waiting, quantum),
 			print_perc(buf4, active, 64, busy, quantum),
 			n->measurement.xrun_count == XRUN_INVALID ?
-					i->xrun_count : n->measurement.xrun_count,
+					i->xrun_count - dr->info_base :
+					n->measurement.xrun_count - n->measurement_base,
 			active ? n->format : "",
-			n->driver == n ? "" : " + ",
+			n->driver == n ? "" : n->measurement.async ? " = " : " + ",
 			n->name);
 }
 
@@ -557,7 +564,7 @@ static void do_refresh(struct data *d, bool force_refresh)
 		return;
 
 	if (!d->batch_mode) {
-		wclear(d->win);
+		werase(d->win);
 		wattron(d->win, A_REVERSE);
 		wprintw(d->win, "%-*.*s", COLS, COLS, HEADER);
 		wattroff(d->win, A_REVERSE);
@@ -569,7 +576,7 @@ static void do_refresh(struct data *d, bool force_refresh)
 		if (n->driver != n)
 			continue;
 
-		print_node(d, &n->info, n, y++);
+		print_node(d, n, n, y++);
 		if(!d->batch_mode && y > LINES)
 			break;
 
@@ -580,7 +587,7 @@ static void do_refresh(struct data *d, bool force_refresh)
 			if (f->driver != n || f == n)
 				continue;
 
-			print_node(d, &n->info, f, y++);
+			print_node(d, n, f, y++);
 			if(!d->batch_mode && y > LINES)
 				break;
 
@@ -608,6 +615,16 @@ static void do_timeout(void *data, uint64_t expirations)
 {
 	struct data *d = data;
 	d->generation++;
+	do_refresh(d, true);
+}
+
+static void reset_xruns(struct data *d)
+{
+	struct node *n;
+	spa_list_for_each(n, &d->node_list, link) {
+		n->info_base = n->info.xrun_count;
+		n->measurement_base = n->measurement.xrun_count;
+	}
 	do_refresh(d, true);
 }
 
@@ -787,6 +804,9 @@ static void do_handle_io(void *data, int fd, uint32_t mask)
 		case 'q':
 			pw_main_loop_quit(d->loop);
 			break;
+		case 'c':
+			reset_xruns(d);
+			break;
 		default:
 			do_refresh(d, !d->batch_mode);
 			break;
@@ -869,8 +889,8 @@ int main(int argc, char *argv[])
 
 	data.core = pw_context_connect(data.context,
 			pw_properties_new(
-				PW_KEY_REMOTE_NAME, opt_remote ? opt_remote :
-					("[" PW_DEFAULT_REMOTE "-manager," PW_DEFAULT_REMOTE "]"),
+				PW_KEY_REMOTE_INTENTION, "manager",
+				PW_KEY_REMOTE_NAME, opt_remote,
 				NULL),
 			0);
 	if (data.core == NULL) {

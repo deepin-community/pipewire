@@ -3,8 +3,10 @@
 
 #include <roc/config.h>
 #include <roc/endpoint.h>
+#include <roc/log.h>
 
 #include <spa/utils/string.h>
+#include <spa/support/log.h>
 
 #define PW_ROC_DEFAULT_IP "0.0.0.0"
 #define PW_ROC_DEFAULT_SOURCE_PORT 10001
@@ -13,10 +15,17 @@
 #define PW_ROC_DEFAULT_SESS_LATENCY 200
 #define PW_ROC_DEFAULT_RATE 44100
 #define PW_ROC_DEFAULT_CONTROL_PROTO ROC_PROTO_RTCP
+#define PW_ROC_DEFAULT_PACKET_LENGTH 5000000 // 5ms in ns
+
+#define PW_ROC_MULTITRACK_ENCODING_ID 100
+#define PW_ROC_STEREO_POSITIONS "[ FL FR ]"
+
+void pw_roc_log_init(void);
+void pw_roc_log_handler(const roc_log_message *message, void *argument);
 
 static inline int pw_roc_parse_fec_encoding(roc_fec_encoding *out, const char *str)
 {
-	if (!str || !*str)
+	if (!str || !*str || spa_streq(str, "default"))
 		*out = ROC_FEC_ENCODING_DEFAULT;
 	else if (spa_streq(str, "disable"))
 		*out = ROC_FEC_ENCODING_DISABLE;
@@ -31,7 +40,7 @@ static inline int pw_roc_parse_fec_encoding(roc_fec_encoding *out, const char *s
 
 static inline int pw_roc_parse_resampler_profile(roc_resampler_profile *out, const char *str)
 {
-	if (!str || !*str)
+	if (!str || !*str || spa_streq(str, "default"))
 		*out = ROC_RESAMPLER_PROFILE_DEFAULT;
 	else if (spa_streq(str, "high"))
 		*out = ROC_RESAMPLER_PROFILE_HIGH;
@@ -39,6 +48,47 @@ static inline int pw_roc_parse_resampler_profile(roc_resampler_profile *out, con
 		*out = ROC_RESAMPLER_PROFILE_MEDIUM;
 	else if (spa_streq(str, "low"))
 		*out = ROC_RESAMPLER_PROFILE_LOW;
+	else
+		return -EINVAL;
+	return 0;
+}
+
+static inline int pw_roc_parse_resampler_backend(roc_resampler_backend *out, const char *str)
+{
+	if (!str || !*str || spa_streq(str, "default"))
+		*out = ROC_RESAMPLER_BACKEND_DEFAULT;
+	else if (spa_streq(str, "builtin"))
+		*out = ROC_RESAMPLER_BACKEND_BUILTIN;
+	else if (spa_streq(str, "speex"))
+		*out = ROC_RESAMPLER_BACKEND_SPEEX;
+	else if (spa_streq(str, "speexdec"))
+		*out = ROC_RESAMPLER_BACKEND_SPEEXDEC;
+	else
+		return -EINVAL;
+	return 0;
+}
+
+static inline int pw_roc_parse_latency_tuner_backend(roc_latency_tuner_backend *out, const char *str)
+{
+	if (!str || !*str || spa_streq(str, "default"))
+		*out = ROC_LATENCY_TUNER_BACKEND_DEFAULT;
+	else if (spa_streq(str, "niq"))
+		*out = ROC_LATENCY_TUNER_BACKEND_NIQ;
+	else
+		return -EINVAL;
+	return 0;
+}
+
+static inline int pw_roc_parse_latency_tuner_profile(roc_latency_tuner_profile *out, const char *str)
+{
+	if (!str || !*str || spa_streq(str, "default"))
+		*out = ROC_LATENCY_TUNER_PROFILE_DEFAULT;
+	else if (spa_streq(str, "intact"))
+		*out = ROC_LATENCY_TUNER_PROFILE_INTACT;
+	else if (spa_streq(str, "responsive"))
+		*out = ROC_LATENCY_TUNER_PROFILE_RESPONSIVE;
+	else if (spa_streq(str, "gradual"))
+		*out = ROC_LATENCY_TUNER_PROFILE_GRADUAL;
 	else
 		return -EINVAL;
 	return 0;
@@ -85,6 +135,64 @@ static inline void pw_roc_fec_encoding_to_proto(roc_fec_encoding fec_code, roc_p
 		*repair = 0;
 		break;
 	}
+}
+
+static inline roc_log_level pw_roc_log_level_pw_2_roc(const enum spa_log_level pw_log_level)
+{
+	switch (pw_log_level) {
+	case SPA_LOG_LEVEL_NONE:
+		return ROC_LOG_NONE;
+	case SPA_LOG_LEVEL_ERROR:
+		return ROC_LOG_ERROR;
+	case SPA_LOG_LEVEL_WARN:
+		return ROC_LOG_ERROR;
+	case SPA_LOG_LEVEL_INFO:
+		return ROC_LOG_INFO;
+	case SPA_LOG_LEVEL_DEBUG:
+		return ROC_LOG_DEBUG;
+	case SPA_LOG_LEVEL_TRACE:
+		return ROC_LOG_TRACE;
+	default:
+		return ROC_LOG_NONE;
+	}
+}
+
+static inline enum spa_log_level pw_roc_log_level_roc_2_pw(const roc_log_level roc_log_level)
+{
+	switch (roc_log_level) {
+	case ROC_LOG_NONE:
+		return SPA_LOG_LEVEL_NONE;
+	case ROC_LOG_ERROR:
+		return SPA_LOG_LEVEL_ERROR;
+	case ROC_LOG_INFO:
+		return SPA_LOG_LEVEL_INFO;
+	case ROC_LOG_DEBUG:
+		return SPA_LOG_LEVEL_DEBUG;
+	case ROC_LOG_TRACE:
+		return SPA_LOG_LEVEL_TRACE;
+	default:
+		return SPA_LOG_LEVEL_NONE;
+	}
+}
+
+static inline int pw_roc_parse_log_level(roc_log_level *loglevel, const char *str,
+																				 roc_log_level default_level)
+{
+	if (spa_streq(str, "DEFAULT"))
+		*loglevel = default_level;
+	else if (spa_streq(str, "NONE"))
+		*loglevel = ROC_LOG_NONE;
+	else if (spa_streq(str, "ERROR"))
+		*loglevel = ROC_LOG_ERROR;
+	else if (spa_streq(str, "INFO"))
+		*loglevel = ROC_LOG_INFO;
+	else if (spa_streq(str, "DEBUG"))
+		*loglevel = ROC_LOG_DEBUG;
+	else if (spa_streq(str, "TRACE"))
+		*loglevel = ROC_LOG_TRACE;
+	else
+		return -EINVAL;
+	return 0;
 }
 
 #endif /* MODULE_ROC_COMMON_H */

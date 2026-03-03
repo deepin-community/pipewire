@@ -5,6 +5,9 @@
 #ifndef SPA_PARAM_FORMAT_UTILS_H
 #define SPA_PARAM_FORMAT_UTILS_H
 
+#include <spa/pod/parser.h>
+#include <spa/param/format.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,10 +18,15 @@ extern "C" {
  * \{
  */
 
-#include <spa/pod/parser.h>
-#include <spa/param/format.h>
+#ifndef SPA_API_FORMAT_UTILS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_FORMAT_UTILS SPA_API_IMPL
+ #else
+  #define SPA_API_FORMAT_UTILS static inline
+ #endif
+#endif
 
-static inline int
+SPA_API_FORMAT_UTILS int
 spa_format_parse(const struct spa_pod *format, uint32_t *media_type, uint32_t *media_subtype)
 {
 	return spa_pod_parse_object(format,

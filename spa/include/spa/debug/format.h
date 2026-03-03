@@ -5,6 +5,15 @@
 #ifndef SPA_DEBUG_FORMAT_H
 #define SPA_DEBUG_FORMAT_H
 
+#include <inttypes.h>
+
+#include <spa/pod/iter.h>
+#include <spa/utils/string.h>
+#include <spa/debug/context.h>
+#include <spa/debug/types.h>
+#include <spa/param/type-info.h>
+#include <spa/param/format-utils.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,14 +23,16 @@ extern "C" {
  * \{
  */
 
-#include <spa/pod/parser.h>
-#include <spa/utils/string.h>
-#include <spa/debug/context.h>
-#include <spa/debug/types.h>
-#include <spa/param/type-info.h>
-#include <spa/param/format-utils.h>
+#ifndef SPA_API_DEBUG_FORMAT
+ #ifdef SPA_API_IMPL
+  #define SPA_API_DEBUG_FORMAT SPA_API_IMPL
+ #else
+  #define SPA_API_DEBUG_FORMAT static inline
+ #endif
+#endif
 
-static inline int
+
+SPA_API_DEBUG_FORMAT int
 spa_debug_strbuf_format_value(struct spa_strbuf *buffer, const struct spa_type_info *info,
 		uint32_t type, void *body, uint32_t size)
 {
@@ -32,10 +43,11 @@ spa_debug_strbuf_format_value(struct spa_strbuf *buffer, const struct spa_type_i
 		break;
 	case SPA_TYPE_Id:
 	{
-		const char *str = spa_debug_type_find_short_name(info, *(int32_t *) body);
+		uint32_t value = *(uint32_t *) body;
+		const char *str = spa_debug_type_find_short_name(info, value);
 		char tmp[64];
 		if (str == NULL) {
-			snprintf(tmp, sizeof(tmp), "%d", *(int32_t*)body);
+			snprintf(tmp, sizeof(tmp), "%" PRIu32, value);
 			str = tmp;
 		}
 		spa_strbuf_append(buffer, "%s", str);
@@ -54,7 +66,7 @@ spa_debug_strbuf_format_value(struct spa_strbuf *buffer, const struct spa_type_i
 		spa_strbuf_append(buffer, "%f", *(double *) body);
 		break;
 	case SPA_TYPE_String:
-		spa_strbuf_append(buffer, "%s", (char *) body);
+		spa_strbuf_append(buffer, "%-*s", size, (char *) body);
 		break;
 	case SPA_TYPE_Rectangle:
 	{
@@ -81,10 +93,12 @@ spa_debug_strbuf_format_value(struct spa_strbuf *buffer, const struct spa_type_i
 		int i = 0;
 		info = info && info->values ? info->values : info;
 		spa_strbuf_append(buffer, "< ");
-		SPA_POD_ARRAY_BODY_FOREACH(b, size, p) {
-			if (i++ > 0)
-				spa_strbuf_append(buffer, ", ");
-			spa_debug_strbuf_format_value(buffer, info, b->child.type, p, b->child.size);
+		if (b->child.size >= spa_pod_type_size(b->child.type)) {
+			SPA_POD_ARRAY_BODY_FOREACH(b, size, p) {
+				if (i++ > 0)
+					spa_strbuf_append(buffer, ", ");
+				spa_debug_strbuf_format_value(buffer, info, b->child.type, p, b->child.size);
+			}
 		}
 		spa_strbuf_append(buffer, " >");
 		break;
@@ -96,7 +110,7 @@ spa_debug_strbuf_format_value(struct spa_strbuf *buffer, const struct spa_type_i
 	return 0;
 }
 
-static inline int
+SPA_API_DEBUG_FORMAT int
 spa_debug_format_value(const struct spa_type_info *info,
 		uint32_t type, void *body, uint32_t size)
 {
@@ -108,7 +122,7 @@ spa_debug_format_value(const struct spa_type_info *info,
 	return 0;
 }
 
-static inline int spa_debugc_format(struct spa_debug_context *ctx, int indent,
+SPA_API_DEBUG_FORMAT int spa_debugc_format(struct spa_debug_context *ctx, int indent,
 		const struct spa_type_info *info, const struct spa_pod *format)
 {
 	const char *media_type;
@@ -119,7 +133,7 @@ static inline int spa_debugc_format(struct spa_debug_context *ctx, int indent,
 	if (info == NULL)
 		info = spa_type_format;
 
-	if (format == NULL || SPA_POD_TYPE(format) != SPA_TYPE_Object)
+	if (format == NULL || format->type != SPA_TYPE_Object)
 		return -EINVAL;
 
 	if (spa_format_parse(format, &mtype, &mstype) < 0)
@@ -149,11 +163,11 @@ static inline int spa_debugc_format(struct spa_debug_context *ctx, int indent,
 
 		type = val->type;
 		size = val->size;
-		vals = SPA_POD_BODY(val);
 
-		if (type < SPA_TYPE_None || type >= _SPA_TYPE_LAST)
+		if (type < SPA_TYPE_None || type >= _SPA_TYPE_LAST || n_vals < 1)
 			continue;
 
+		vals = SPA_POD_BODY(val);
 		ti = spa_debug_type_find(info, prop->key);
 		key = ti ? ti->name : NULL;
 
@@ -198,7 +212,7 @@ static inline int spa_debugc_format(struct spa_debug_context *ctx, int indent,
 	return 0;
 }
 
-static inline int spa_debug_format(int indent,
+SPA_API_DEBUG_FORMAT int spa_debug_format(int indent,
 		const struct spa_type_info *info, const struct spa_pod *format)
 {
 	return spa_debugc_format(NULL, indent, info, format);

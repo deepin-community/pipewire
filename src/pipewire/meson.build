@@ -41,9 +41,11 @@ pipewire_headers = [
   'stream.h',
   'thread.h',
   'thread-loop.h',
+  'timer-queue.h',
   'type.h',
   'utils.h',
   'work-queue.h',
+  'capabilities.h',
 ]
 
 pipewire_sources = [
@@ -78,6 +80,7 @@ pipewire_sources = [
   'stream.c',
   'thread.c',
   'thread-loop.c',
+  'timer-queue.c',
   'utils.c',
   'work-queue.c',
 ]

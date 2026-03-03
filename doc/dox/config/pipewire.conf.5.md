@@ -53,7 +53,9 @@ for configuration is recommended.
 A configuration file `~/.config/pipewire/pipewire.conf.d/custom.conf`
 to change the value of the `default.clock.min-quantum` setting in `pipewire.conf`:
 
-```css
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.properties = {
     default.clock.min-quantum = 128
 }
@@ -138,7 +140,7 @@ Array of dictionaries. Match rules for modifying device properties
 on the server.
 
 
-# CONTEXT PROPERTIES  @IDX@ pipewire.conf
+# CONTEXT PROPERTIES  @IDX@ pipewire.conf context.properties
 
 Available PipeWire properties in `context.properties` and possible
 default values.
@@ -172,7 +174,9 @@ cpu cores.
 @PAR@ pipewire.conf  context.data-loops = [ ... ]
 This controls the data loops that will be created for the context. Is is an array of
 data loop specifications, one entry for each data loop to start:
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.data-loops = [
     {
          #library.name.system = support/libspa-support
@@ -271,6 +275,20 @@ Warn about failures to lock memory.
 @PAR@ pipewire.conf  mem.mlock-all = false
 Try to mlock all current and future memory by the process.
 
+@PAR@ pipewire.conf  rlimit.nofile = 4096
+Try to set the max file descriptor number resource limit of the process.
+A value of -1 raises the limit to the system defined hard maximum value.
+The file resource limit is usually 1024 and should only be raised if the
+program does not use the select() system call. PipeWire does normally not
+use select().
+
+@PAR@ pipewire.conf  rlimit.*resource* = *value*
+Set resource limits. *resource* can be one of: as, core, cpu,
+data, fsize, locks, memlock, msgqueue, nice, nofile, nproc, rss, rtprio,
+rttime, sigpending or stack. See the documentation of setrlimit to get the
+meaning of these resources. A value of -1 will set the maximum allowed
+limit.
+
 @PAR@ pipewire.conf  settings.check-quantum = false
 Check if the quantum in the settings metadata update is compatible
 with the configured limits.
@@ -298,7 +316,7 @@ the `context.modules` and `context.objects` sections can declare
 additional conditions that control whether a module or object is loaded
 depending on what properties are present.
 
-# SPA LIBRARIES  @IDX@ pipewire.conf
+# SPA LIBRARIES  @IDX@ pipewire.conf context.spa-libs
 
 SPA plugins are loaded based on their factory-name. This is a well
 known name that uniquely describes the features that the plugin should
@@ -310,7 +328,9 @@ plugin. The plugin is loaded from the first matching factory-name.
 
 ## Example
 
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.spa-libs = {
     audio.convert.* = audioconvert/libspa-audioconvert
     avb.*           = avb/libspa-avb
@@ -325,12 +345,14 @@ context.spa-libs = {
 }
 ```
 
-# MODULES  @IDX@ pipewire.conf
+# MODULES  @IDX@ pipewire.conf context.modules
 
 PipeWire modules to be loaded. See
 \ref page_man_libpipewire-modules_7 "libpipewire-modules(7)".
 
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.modules = [
     #{ name = MODULENAME
     #    ( args  = { KEY = VALUE ... } )
@@ -356,12 +378,14 @@ A \ref pipewire_conf__match_rules "match rule" `matches` condition.
 The module is loaded only if one of the expressions in the array matches
 to a context property.
 
-# CONTEXT OBJECTS  @IDX@ pipewire.conf
+# CONTEXT OBJECTS  @IDX@ pipewire.conf context.objects
 
 The `context.objects` section allows you to make some objects from factories (usually created
 by loading modules in `context.modules`).
 
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.objects = [
     #{ factory = <factory-name>
     #    ( args  = { <key> = <value> ... } )
@@ -391,7 +415,9 @@ to a context property.
 This fragment creates a new dummy driver node, but only if
 `core.daemon` property is true:
 
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.objects = [
     { factory = spa-node-factory
       args = {
@@ -405,12 +431,14 @@ context.objects = [
 ]
 ```
 
-# COMMAND EXECUTION  @IDX@ pipewire.conf
+# COMMAND EXECUTION  @IDX@ pipewire.conf context.exec
 
 The `context.exec` section can be used to start arbitrary commands as
 part of the initialization of the PipeWire program.
 
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.exec = [
     #{   path = <program-name>
     #    ( args = "<arguments>" | [ <arg1> <arg2> ... ] )
@@ -434,7 +462,9 @@ to a context property.
 
 The following fragment executes a pactl command with the given arguments:
 
-```json
+```
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.exec = [
     { path = "pactl" args = "load-module module-always-sink" }
 ]
@@ -447,7 +477,7 @@ possible to perform some action when an object (usually a node or
 stream) is created/updated that matches certain properties.
 
 The general rules object follows the following pattern:
-```json
+```css
 <rules> = [
     {
         matches = [
@@ -494,7 +524,7 @@ which is used to update the properties of the matched object.
 In the matches array, it is also possible to use regular expressions to match property values.
 For example, to match all nodes with a name that starts with my_, you can use the following condition:
 
-```
+```css
 matches = [
   {
     node.name = "~my_.*"
@@ -508,7 +538,7 @@ expressions is the POSIX extended regex syntax, as described in the regex (7) ma
 In addition to regular expressions, you may also use the ! character to negate a condition. For
 example, to match all nodes with a name that does not start with my_, you can use the following condition:
 
-```
+```css
 matches = [
   {
     node.name = "!~my_.*"
@@ -519,7 +549,7 @@ matches = [
 The ! character can be used with or without a regular expression. For example, to match all
 nodes with a name that is not equal to my_node, you can use the following condition:
 
-```
+```css
 matches = [
   {
     node.name = "!my_node"
@@ -530,7 +560,7 @@ matches = [
 The null value has a special meaning; it checks if the property is not available
 (or unset). To check if a property is not set:
 
-```
+```css
 matches = [
   {
     node.name = null
@@ -540,7 +570,7 @@ matches = [
 
 To check the existence of a property, one can use the !null condition, for example:
 
-```
+```css
 matches = [
   {
     node.name = "!null"
@@ -553,7 +583,7 @@ matches = [
 To handle the "null" string, one needs to escape the string. For example, to check
 if a property has the string value "null", use:
 
-```
+```css
 matches = [
   {
     node.name = "null"
@@ -562,7 +592,7 @@ matches = [
 ```
 To handle anything but the "null" string, use:
 
-```
+```css
 matches = [
   {
     node.name = "!\"null\""
@@ -574,7 +604,7 @@ matches = [
 ```
 
 
-# CONTEXT PROPERTIES RULES  @IDX@ pipewire.conf
+# CONTEXT PROPERTIES RULES  @IDX@ pipewire.conf context.properties.rules
 
 `context.properties.rules` can be used to dynamically update the properties
 based on other properties.
@@ -583,7 +613,9 @@ A typical case is to update custom settings when running inside a VM.
 The `cpu.vm.name` is automatically set when running in a VM with the name of
 the VM. A match rule can be written to set custom properties like this:
 
-```
+```css
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 context.properties.rules = [
     {   matches = [ { cpu.vm.name = !null } ]
         actions = {
@@ -596,7 +628,7 @@ context.properties.rules = [
 }
 ```
 
-# NODE RULES  @IDX@ pipewire.conf
+# NODE RULES  @IDX@ pipewire.conf node.rules
 
 The node.rules are evaluated every time the properties on a node are set
 or updated. This can be used on the server side to override client set
@@ -607,7 +639,9 @@ properties that are updated on the node object.
 
 Add a `node.rules` section in the config file like this:
 
-```
+```css
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 node.rules = [
     {
         matches = [
@@ -627,7 +661,7 @@ node.rules = [
 
 Will set the `node.force-quantum` property of `jack_simple_client` to 512.
 
-# DEVICE RULES  @IDX@ pipewire.conf
+# DEVICE RULES  @IDX@ pipewire.conf device.rules
 
 The device.rules are evaluated every time the properties on a device are set
 or updated. This can be used on the server side to override client set
@@ -638,7 +672,9 @@ properties that are updated on the device object.
 
 Add a `device.rules` section in the config file like this:
 
-```
+```css
+# ~/.config/pipewire/pipewire.conf.d/custom.conf
+
 device.rules = [
     {
         matches = [

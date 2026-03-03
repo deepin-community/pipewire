@@ -29,10 +29,12 @@ struct impl {
 
 	int min_bitpool;
 	int max_bitpool;
+
+	uint32_t enc_delay;
 };
 
 static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
-		uint8_t caps[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t caps[A2DP_MAX_CAPS_SIZE])
 {
 	static const a2dp_sbc_t a2dp_sbc = {
 		.frequency =
@@ -133,7 +135,8 @@ sbc_xq_channel_modes[] = {
 static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
 		const struct media_codec_audio_info *info,
-		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+		void **config_data)
 {
 	a2dp_sbc_t conf;
 	int bitpool, i;
@@ -219,8 +222,8 @@ static int codec_caps_preference_cmp(const struct media_codec *codec, uint32_t f
 	bool xq = (spa_streq(codec->name, "sbc_xq"));
 
 	/* Order selected configurations by preference */
-	res1 = codec->select_config(codec, 0, caps1, caps1_size, info, NULL, (uint8_t *)&conf1);
-	res2 = codec->select_config(codec, 0, caps2, caps2_size, info , NULL, (uint8_t *)&conf2);
+	res1 = codec->select_config(codec, 0, caps1, caps1_size, info, NULL, (uint8_t *)&conf1, NULL);
+	res2 = codec->select_config(codec, 0, caps2, caps2_size, info , NULL, (uint8_t *)&conf2, NULL);
 
 #define PREFER_EXPR(expr)			\
 		do {				\
@@ -344,7 +347,7 @@ static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
         struct spa_pod_frame f[2];
 	struct spa_pod_choice *choice;
 	uint32_t i = 0;
-	uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t position[2];
 
 	if (caps_size < sizeof(conf))
 		return -EINVAL;
@@ -497,9 +500,11 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
 	switch (conf->subbands) {
 	case SBC_SUBBANDS_4:
 		this->sbc.subbands = SBC_SB_4;
+		this->enc_delay = 37;
 		break;
 	case SBC_SUBBANDS_8:
 		this->sbc.subbands = SBC_SB_8;
+		this->enc_delay = 73;
 		break;
 	default:
 		res = -EINVAL;
@@ -595,7 +600,8 @@ static int codec_start_decode (void *data,
 	const struct rtp_header *header = src;
 	size_t header_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 
-	spa_return_val_if_fail (src_size > header_size, -EINVAL);
+	if (src_size <= header_size)
+		return -EINVAL;
 
 	if (seqnum)
 		*seqnum = ntohs(header->sequence_number);
@@ -618,8 +624,19 @@ static int codec_decode(void *data,
 	return res;
 }
 
+static void codec_get_delay(void *data, uint32_t *encoder, uint32_t *decoder)
+{
+	struct impl *this = data;
+
+	if (encoder)
+		*encoder = this->enc_delay;
+	if (decoder)
+		*decoder = 0;
+}
+
 const struct media_codec a2dp_codec_sbc = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_SBC,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_SBC,
 	.name = "sbc",
 	.description = "SBC",
@@ -638,10 +655,12 @@ const struct media_codec a2dp_codec_sbc = {
 	.decode = codec_decode,
 	.reduce_bitpool = codec_reduce_bitpool,
 	.increase_bitpool = codec_increase_bitpool,
+	.get_delay = codec_get_delay,
 };
 
 const struct media_codec a2dp_codec_sbc_xq = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_SBC_XQ,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_SBC,
 	.name = "sbc_xq",
 	.description = "SBC-XQ",
@@ -661,6 +680,7 @@ const struct media_codec a2dp_codec_sbc_xq = {
 	.decode = codec_decode,
 	.reduce_bitpool = codec_reduce_bitpool,
 	.increase_bitpool = codec_increase_bitpool,
+	.get_delay = codec_get_delay,
 };
 
 MEDIA_CODEC_EXPORT_DEF(

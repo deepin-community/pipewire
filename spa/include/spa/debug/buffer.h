@@ -5,6 +5,11 @@
 #ifndef SPA_DEBUG_BUFFER_H
 #define SPA_DEBUG_BUFFER_H
 
+#include <spa/debug/context.h>
+#include <spa/debug/mem.h>
+#include <spa/debug/types.h>
+#include <spa/buffer/type-info.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,12 +23,15 @@ extern "C" {
  * \{
  */
 
-#include <spa/debug/context.h>
-#include <spa/debug/mem.h>
-#include <spa/debug/types.h>
-#include <spa/buffer/type-info.h>
+#ifndef SPA_API_DEBUG_BUFFER
+ #ifdef SPA_API_IMPL
+  #define SPA_API_DEBUG_BUFFER SPA_API_IMPL
+ #else
+  #define SPA_API_DEBUG_BUFFER static inline
+ #endif
+#endif
 
-static inline int spa_debugc_buffer(struct spa_debug_context *ctx, int indent, const struct spa_buffer *buffer)
+SPA_API_DEBUG_BUFFER int spa_debugc_buffer(struct spa_debug_context *ctx, int indent, const struct spa_buffer *buffer)
 {
 	uint32_t i;
 
@@ -98,7 +106,7 @@ static inline int spa_debugc_buffer(struct spa_debug_context *ctx, int indent, c
 	return 0;
 }
 
-static inline int spa_debug_buffer(int indent, const struct spa_buffer *buffer)
+SPA_API_DEBUG_BUFFER int spa_debug_buffer(int indent, const struct spa_buffer *buffer)
 {
 	return spa_debugc_buffer(NULL, indent, buffer);
 }

@@ -7,12 +7,10 @@
 #include <stddef.h>
 #include <errno.h>
 #include <arpa/inet.h>
-#if __BYTE_ORDER != __LITTLE_ENDIAN
-#include <byteswap.h>
-#endif
 
 #include <spa/param/audio/format.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/utils/endian.h>
 
 #include <sbc/sbc.h>
 
@@ -32,7 +30,7 @@ struct duplex_impl {
 };
 
 static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
-		uint8_t caps[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t caps[A2DP_MAX_CAPS_SIZE])
 {
 	const a2dp_faststream_t a2dp_faststream = {
 		.info = codec->vendor,
@@ -63,7 +61,8 @@ duplex_frequencies[] = {
 static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
 		const struct media_codec_audio_info *info,
-		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+		void **config_data)
 {
 	a2dp_faststream_t conf;
 	int i;
@@ -116,7 +115,7 @@ static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
 	a2dp_faststream_t conf;
         struct spa_pod_frame f[2];
 	struct spa_pod_choice *choice;
-	uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t position[2];
 	uint32_t i = 0;
 
 	if (caps_size < sizeof(conf))
@@ -303,6 +302,9 @@ static int codec_encode(void *data,
 static SPA_UNUSED int codec_start_decode (void *data,
 		const void *src, size_t src_size, uint16_t *seqnum, uint32_t *timestamp)
 {
+	if (!src_size)
+		return -EINVAL;
+
 	return 0;
 }
 
@@ -556,6 +558,14 @@ static int duplex_decode(void *data,
 	return res;
 }
 
+static void codec_get_delay(void *data, uint32_t *encoder, uint32_t *decoder)
+{
+	if (encoder)
+		*encoder = 73;
+	if (decoder)
+		*decoder = 0;
+}
+
 /* Voice channel SBC, not a real A2DP codec */
 static const struct media_codec duplex_codec = {
 	.codec_id = A2DP_CODEC_VENDOR,
@@ -578,6 +588,7 @@ static const struct media_codec duplex_codec = {
 };
 
 #define FASTSTREAM_COMMON_DEFS				\
+	.kind = MEDIA_CODEC_A2DP,			\
 	.codec_id = A2DP_CODEC_VENDOR,			\
 	.vendor = { .vendor_id = FASTSTREAM_VENDOR_ID,	\
 		.codec_id = FASTSTREAM_CODEC_ID },	\
@@ -592,7 +603,8 @@ static const struct media_codec duplex_codec = {
 	.start_encode = codec_start_encode,		\
 	.encode = codec_encode,				\
 	.reduce_bitpool = codec_reduce_bitpool,		\
-	.increase_bitpool = codec_increase_bitpool
+	.increase_bitpool = codec_increase_bitpool,	\
+	.get_delay = codec_get_delay
 
 const struct media_codec a2dp_codec_faststream = {
 	FASTSTREAM_COMMON_DEFS,

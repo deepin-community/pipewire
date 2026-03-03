@@ -69,9 +69,20 @@ static struct conv_info conv_table[] =
 	MAKE(S16, F32P, 2, conv_s16_to_f32d_2_sse2, SPA_CPU_FLAG_SSE2),
 	MAKE(S16, F32P, 0, conv_s16_to_f32d_sse2, SPA_CPU_FLAG_SSE2),
 #endif
+#if defined (HAVE_RVV)
+	MAKE(S16, F32P, 0, conv_s16_to_f32d_rvv, SPA_CPU_FLAG_RISCV_V),
+#endif
 	MAKE(S16, F32P, 0, conv_s16_to_f32d_c),
 	MAKE(S16P, F32, 0, conv_s16d_to_f32_c),
 
+#if defined (HAVE_AVX2)
+	MAKE(S16_OE, F32P, 2, conv_s16s_to_f32d_2_avx2, SPA_CPU_FLAG_AVX2),
+	MAKE(S16_OE, F32P, 0, conv_s16s_to_f32d_avx2, SPA_CPU_FLAG_AVX2),
+#endif
+#if defined (HAVE_SSE2)
+	MAKE(S16_OE, F32P, 2, conv_s16s_to_f32d_2_sse2, SPA_CPU_FLAG_SSE2),
+	MAKE(S16_OE, F32P, 0, conv_s16s_to_f32d_sse2, SPA_CPU_FLAG_SSE2),
+#endif
 	MAKE(S16_OE, F32P, 0, conv_s16s_to_f32d_c),
 
 	MAKE(F32, F32, 0, conv_copy32_c),
@@ -102,6 +113,9 @@ static struct conv_info conv_table[] =
 #endif
 #if defined (HAVE_SSE2)
 	MAKE(S32, F32P, 0, conv_s32_to_f32d_sse2, SPA_CPU_FLAG_SSE2),
+#endif
+#if defined (HAVE_RVV)
+	MAKE(S32, F32P, 0, conv_s32_to_f32d_rvv, SPA_CPU_FLAG_RISCV_V),
 #endif
 	MAKE(S32, F32, 0, conv_s32_to_f32_c),
 	MAKE(S32P, F32P, 0, conv_s32d_to_f32d_c),
@@ -177,6 +191,11 @@ static struct conv_info conv_table[] =
 #if defined (HAVE_SSE2)
 	MAKE(F32, S16, 0, conv_f32_to_s16_sse2, SPA_CPU_FLAG_SSE2),
 #endif
+#if defined (HAVE_RVV)
+	MAKE(F32, S16, 0, conv_f32_to_s16_rvv, SPA_CPU_FLAG_RISCV_V),
+	MAKE(F32P, S16P, 0, conv_f32d_to_s16d_rvv, SPA_CPU_FLAG_RISCV_V),
+	MAKE(F32P, S16, 0, conv_f32d_to_s16_rvv, SPA_CPU_FLAG_RISCV_V),
+#endif
 	MAKE(F32, S16, 0, conv_f32_to_s16_c),
 
 	MAKE(F32P, S16P, 0, conv_f32d_to_s16d_shaped_c, 0, CONV_SHAPE),
@@ -212,6 +231,10 @@ static struct conv_info conv_table[] =
 
 	MAKE(F32P, S16_OE, 0, conv_f32d_to_s16s_shaped_c, 0, CONV_SHAPE),
 	MAKE(F32P, S16_OE, 0, conv_f32d_to_s16s_noise_c, 0, CONV_NOISE),
+#if defined (HAVE_SSE2)
+	MAKE(F32P, S16_OE, 2, conv_f32d_to_s16s_2_sse2, SPA_CPU_FLAG_SSE2),
+	MAKE(F32P, S16_OE, 0, conv_f32d_to_s16s_sse2, SPA_CPU_FLAG_SSE2),
+#endif
 	MAKE(F32P, S16_OE, 0, conv_f32d_to_s16s_c),
 
 	MAKE(F32, U32, 0, conv_f32_to_u32_c),
@@ -232,6 +255,9 @@ static struct conv_info conv_table[] =
 #endif
 #if defined (HAVE_SSE2)
 	MAKE(F32P, S32, 0, conv_f32d_to_s32_sse2, SPA_CPU_FLAG_SSE2),
+#endif
+#if defined (HAVE_RVV)
+	MAKE(F32P, S32, 0, conv_f32d_to_s32_rvv, SPA_CPU_FLAG_RISCV_V),
 #endif
 	MAKE(F32P, S32, 0, conv_f32d_to_s32_c),
 
@@ -345,6 +371,64 @@ static const struct conv_info *find_conv_info(uint32_t src_fmt, uint32_t dst_fmt
 		    MATCH_CHAN(c->n_channels, n_channels) &&
 		    MATCH_CPU_FLAGS(c->cpu_flags, cpu_flags) &&
 		    MATCH_DITHER(c->conv_flags, conv_flags))
+			return c;
+	}
+	return NULL;
+}
+
+
+typedef void (*clear_func_t) (struct convert *conv, void * SPA_RESTRICT dst[],
+		uint32_t n_samples);
+
+struct clear_info {
+	uint32_t fmt;
+
+	clear_func_t clear;
+	const char *name;
+
+	uint32_t cpu_flags;
+};
+
+#define MAKE(fmt,func,...) \
+	{  SPA_AUDIO_FORMAT_ ##fmt, func, #func , __VA_ARGS__ }
+
+static struct clear_info clear_table[] =
+{
+	MAKE(U8, conv_clear_u8_c),
+	MAKE(U8P, conv_clear_u8d_c),
+	MAKE(S8, conv_clear_8_c),
+	MAKE(S8P, conv_clear_8d_c),
+	MAKE(U16, conv_clear_u16_c),
+	MAKE(S16, conv_clear_16_c),
+	MAKE(S16_OE, conv_clear_16_c),
+	MAKE(S16P, conv_clear_16d_c),
+	MAKE(U24, conv_clear_u24_c),
+	MAKE(S24, conv_clear_24_c),
+	MAKE(S24_OE, conv_clear_24_c),
+	MAKE(S24P, conv_clear_24d_c),
+	MAKE(U24_32, conv_clear_u24_32_c),
+	MAKE(S24_32, conv_clear_32_c),
+	MAKE(S24_32_OE, conv_clear_32_c),
+	MAKE(U32, conv_clear_u32_c),
+	MAKE(S32, conv_clear_32_c),
+	MAKE(S32_OE, conv_clear_32_c),
+	MAKE(S32P, conv_clear_32d_c),
+	MAKE(F32, conv_clear_32_c),
+	MAKE(F32_OE, conv_clear_32_c),
+	MAKE(F32P, conv_clear_32d_c),
+	MAKE(F64, conv_clear_64_c),
+	MAKE(F64_OE, conv_clear_64_c),
+	MAKE(F64P, conv_clear_64d_c),
+	MAKE(ALAW, conv_clear_alaw_c),
+	MAKE(ULAW, conv_clear_ulaw_c),
+};
+#undef MAKE
+
+static const struct clear_info *find_clear_info(uint32_t fmt, uint32_t cpu_flags)
+{
+	SPA_FOR_EACH_ELEMENT_VAR(clear_table, c) {
+		if (c->fmt == fmt &&
+		    MATCH_CPU_FLAGS(c->cpu_flags, cpu_flags))
 			return c;
 	}
 	return NULL;
@@ -466,7 +550,8 @@ int convert_init(struct convert *conv)
 	const struct conv_info *info;
 	const struct dither_info *dinfo;
 	const struct noise_info *ninfo;
-	uint32_t i, conv_flags, data_size[3];
+	const struct clear_info *cinfo;
+	uint32_t i, conv_flags, data_size[4];
 
 	/* we generate int32 bits of random values. With this scale
 	 * factor, we bring this in the [-1.0, 1.0] range */
@@ -523,20 +608,24 @@ int convert_init(struct convert *conv)
 	if (ninfo == NULL)
 		return -ENOTSUP;
 
+	cinfo = find_clear_info(conv->dst_fmt, conv->cpu_flags);
+
 	conv->noise_size = NOISE_SIZE;
 
 	data_size[0] = SPA_ROUND_UP(conv->noise_size * sizeof(float), FMT_OPS_MAX_ALIGN);
 	data_size[1] = SPA_ROUND_UP(RANDOM_SIZE * sizeof(uint32_t), FMT_OPS_MAX_ALIGN);
 	data_size[2] = SPA_ROUND_UP(RANDOM_SIZE * sizeof(int32_t), FMT_OPS_MAX_ALIGN);
+	data_size[3] = SPA_ROUND_UP(conv->n_channels * sizeof(struct shaper), FMT_OPS_MAX_ALIGN);
 
 	conv->data = calloc(FMT_OPS_MAX_ALIGN +
-			data_size[0] + data_size[1] + data_size[2], 1);
+			data_size[0] + data_size[1] + data_size[2] + data_size[3], 1);
 	if (conv->data == NULL)
 		return -errno;
 
 	conv->noise = SPA_PTR_ALIGN(conv->data, FMT_OPS_MAX_ALIGN, float);
 	conv->random = SPA_PTROFF(conv->noise, data_size[0], uint32_t);
 	conv->prev = SPA_PTROFF(conv->random, data_size[1], int32_t);
+	conv->shaper = SPA_PTROFF(conv->prev, data_size[2], struct shaper);
 
 	for (i = 0; i < RANDOM_SIZE; i++)
 		conv->random[i] = random();
@@ -545,6 +634,7 @@ int convert_init(struct convert *conv)
 	conv->cpu_flags = info->cpu_flags;
 	conv->update_noise = ninfo->noise;
 	conv->process = info->process;
+	conv->clear = cinfo ? cinfo->clear : NULL;
 	conv->free = impl_convert_free;
 	conv->func_name = info->name;
 

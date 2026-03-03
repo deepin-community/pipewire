@@ -5,18 +5,27 @@
 #ifndef SPA_PARAM_VIDEO_FORMAT_UTILS_H
 #define SPA_PARAM_VIDEO_FORMAT_UTILS_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <spa/param/format-utils.h>
 #include <spa/param/video/format.h>
 #include <spa/param/video/raw-utils.h>
 #include <spa/param/video/dsp-utils.h>
 #include <spa/param/video/h264-utils.h>
+#include <spa/param/video/h265-utils.h>
 #include <spa/param/video/mjpg-utils.h>
 
-static inline int
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef SPA_API_VIDEO_FORMAT_UTILS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_VIDEO_FORMAT_UTILS SPA_API_IMPL
+ #else
+  #define SPA_API_VIDEO_FORMAT_UTILS static inline
+ #endif
+#endif
+
+SPA_API_VIDEO_FORMAT_UTILS int
 spa_format_video_parse(const struct spa_pod *format, struct spa_video_info *info)
 {
 	int res;
@@ -40,7 +49,7 @@ spa_format_video_parse(const struct spa_pod *format, struct spa_video_info *info
 	return -ENOTSUP;
 }
 
-static inline struct spa_pod *
+SPA_API_VIDEO_FORMAT_UTILS struct spa_pod *
 spa_format_video_build(struct spa_pod_builder *builder, uint32_t id,
 		       const struct spa_video_info *info)
 {

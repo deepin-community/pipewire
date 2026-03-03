@@ -24,6 +24,7 @@
 #include <SDL2/SDL.h>
 
 #include <spa/support/plugin.h>
+#include <spa/utils/keys.h>
 #include <spa/utils/names.h>
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -43,7 +44,7 @@
 static SPA_LOG_IMPL(default_log);
 
 #define MAX_BUFFERS     8
-
+#define LOOP_TIMEOUT_MS 100
 #define USE_BUFFER 		false
 
 struct buffer {
@@ -83,7 +84,8 @@ struct data {
 	unsigned int n_buffers;
 };
 
-static int load_handle(struct data *data, struct spa_handle **handle, const char *lib, const char *name)
+static int load_handle(struct data *data, struct spa_handle **handle, const char *lib, const char *name,
+		       const struct spa_dict *params)
 {
 	int res;
 	void *hnd;
@@ -117,9 +119,9 @@ static int load_handle(struct data *data, struct spa_handle **handle, const char
 		if (!spa_streq(factory->name, name))
 			continue;
 
-		*handle = calloc(1, spa_handle_factory_get_size(factory, NULL));
+		*handle = calloc(1, spa_handle_factory_get_size(factory, params));
 		if ((res = spa_handle_factory_init(factory, *handle,
-						NULL, data->support,
+						params, data->support,
 						data->n_support)) < 0) {
 			printf("can't make factory instance: %d\n", res);
 			return res;
@@ -129,13 +131,14 @@ static int load_handle(struct data *data, struct spa_handle **handle, const char
 	return -EBADF;
 }
 
-static int make_node(struct data *data, struct spa_node **node, const char *lib, const char *name)
+static int make_node(struct data *data, struct spa_node **node, const char *lib, const char *name,
+		     const struct spa_dict *params)
 {
 	struct spa_handle *handle = NULL;
 	void *iface;
 	int res;
 
-	if ((res = load_handle(data, &handle, lib, name)) < 0)
+	if ((res = load_handle(data, &handle, lib, name, params)) < 0)
 		return res;
 
 	if ((res = spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Node, &iface)) < 0) {
@@ -237,10 +240,13 @@ static int make_nodes(struct data *data, const char *device)
 	uint8_t buffer[256];
 	uint32_t index;
 
-	if ((res =
-	     make_node(data, &data->source,
-		     "libcamera/libspa-libcamera.so",
-		     SPA_NAME_API_LIBCAMERA_SOURCE)) < 0) {
+	const struct spa_dict_item items[] = {
+		{ SPA_KEY_API_LIBCAMERA_PATH, device },
+	};
+
+	if ((res = make_node(data, &data->source,
+			     "libcamera/libspa-libcamera.so", SPA_NAME_API_LIBCAMERA_SOURCE,
+			     &SPA_DICT_INIT_ARRAY(items))) < 0) {
 		printf("can't create libcamera-source: %d\n", res);
 		return res;
 	}
@@ -253,14 +259,6 @@ static int make_nodes(struct data *data, const char *device)
 			&index, NULL, &props, &b)) == 1) {
 		spa_debug_pod(0, NULL, props);
 	}
-
-	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	props = spa_pod_builder_add_object(&b,
-		SPA_TYPE_OBJECT_Props, 0,
-		SPA_PROP_device, SPA_POD_String(device ? device : "/dev/media0"));
-
-	if ((res = spa_node_set_param(data->source, SPA_PARAM_Props, 0, props)) < 0)
-		printf("got set_props error %d\n", res);
 
 	return res;
 }
@@ -401,56 +399,32 @@ static int negotiate_formats(struct data *data)
 	return 0;
 }
 
-static void *loop(void *user_data)
+static void loop(struct data *data)
 {
-	struct data *data = user_data;
-
-	printf("enter thread\n");
-    spa_loop_control_enter(data->control);
-
-    while (data->running) {
-		spa_loop_control_iterate(data->control, -1);
-	}
-
-	printf("leave thread\n");
-    spa_loop_control_leave(data->control);
-	return NULL;
-}
-
-static void run_async_source(struct data *data)
-{
-	int res, err;
+	int res;
 	struct spa_command cmd;
 	SDL_Event event;
-	bool running = true;
 
 	printf("starting...\n\n");
 	cmd = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	if ((res = spa_node_send_command(data->source, &cmd)) < 0)
 		printf("got error %d\n", res);
 
-	spa_loop_control_leave(data->control);
-
 	data->running = true;
-	if ((err = pthread_create(&data->thread, NULL, loop, data)) != 0) {
-		printf("can't create thread: %d %s", err, strerror(err));
-		data->running = false;
-	}
 
-	while (running && SDL_WaitEvent(&event)) {
-		switch (event.type) {
-		case SDL_QUIT:
-			running = false;
-			break;
+	while (data->running) {
+		// must be called from the thread that created the renderer
+		while (SDL_PollEvent(&event)) {
+			switch (event.type) {
+			case SDL_QUIT:
+				data->running = false;
+				break;
+			}
 		}
-	}
 
-	if (data->running) {
-		data->running = false;
-		pthread_join(data->thread, NULL);
+		// small timeout to make sure we don't starve the SDL loop
+		spa_loop_control_iterate(data->control, LOOP_TIMEOUT_MS);
 	}
-
-	spa_loop_control_enter(data->control);
 
 	printf("pausing...\n\n");
 	cmd = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
@@ -466,13 +440,18 @@ int main(int argc, char *argv[])
 	struct spa_handle *handle = NULL;
 	void *iface;
 
+	if (argc < 2) {
+		printf("usage: %s <camera-id>\n", argv[0]);
+		return EXIT_FAILURE;
+	}
+
 	if ((str = getenv("SPA_PLUGIN_DIR")) == NULL)
 		str = PLUGINDIR;
 	data.plugin_dir = str;
 
 	if ((res = load_handle(&data, &handle,
 					"support/libspa-support.so",
-					SPA_NAME_SUPPORT_SYSTEM)) < 0)
+					SPA_NAME_SUPPORT_SYSTEM, NULL)) < 0)
 		return res;
 
 	if ((res = spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_System, &iface)) < 0) {
@@ -484,7 +463,7 @@ int main(int argc, char *argv[])
 
 	if ((res = load_handle(&data, &handle,
 					"support/libspa-support.so",
-					SPA_NAME_SUPPORT_LOOP)) < 0)
+					SPA_NAME_SUPPORT_LOOP, NULL)) < 0)
 		return res;
 
 	if ((res = spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Loop, &iface)) < 0) {
@@ -531,7 +510,7 @@ int main(int argc, char *argv[])
 	}
 
 	spa_loop_control_enter(data.control);
-	run_async_source(&data);
+	loop(&data);
 	spa_loop_control_leave(data.control);
 
 	SDL_DestroyRenderer(data.renderer);

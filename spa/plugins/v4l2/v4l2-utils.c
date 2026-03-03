@@ -2,6 +2,7 @@
 /* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include <linux/videodev2.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -120,7 +121,6 @@ static int spa_v4l2_buffer_recycle(struct impl *this, uint32_t buffer_id)
 		spa_log_error(this->log, "'%s' VIDIOC_QBUF: %m", this->props.device);
 		return -err;
 	}
-
 	return 0;
 }
 
@@ -147,6 +147,8 @@ static int spa_v4l2_clear_buffers(struct impl *this)
 		if (SPA_FLAG_IS_SET(b->flags, BUFFER_FLAG_MAPPED)) {
 			munmap(b->ptr, d[0].maxsize);
 		}
+		if (b->mmap_ptr)
+			munmap(b->mmap_ptr, b->v4l2_buffer.length);
 		if (SPA_FLAG_IS_SET(b->flags, BUFFER_FLAG_ALLOCATED)) {
 			spa_log_debug(this->log, "close %d", (int) d[0].fd);
 			close(d[0].fd);
@@ -397,7 +399,7 @@ enum_filter_format(uint32_t media_type, int32_t media_subtype,
 				if (index == 0)
 					video_format = values[0];
 			} else {
-				if (index + 1 < n_values)
+				if (index < n_values - 1)
 					video_format = values[index + 1];
 			}
 		} else {
@@ -475,21 +477,177 @@ filter_framerate(struct v4l2_frmivalenum *frmival,
 		frmival->stepwise.step.denominator *= step->num;
 		frmival->stepwise.step.numerator *= step->denom;
 
-		if (compare_fraction(&frmival->stepwise.max, min) < 0 ||
-		    compare_fraction(&frmival->stepwise.min, max) > 0)
+		if (compare_fraction(&frmival->stepwise.min, min) < 0 ||
+		    compare_fraction(&frmival->stepwise.max, max) > 0)
 			return false;
 
-		if (compare_fraction(&frmival->stepwise.min, min) < 0) {
-			frmival->stepwise.min.denominator = min->num;
-			frmival->stepwise.min.numerator = min->denom;
+		if (compare_fraction(&frmival->stepwise.max, min) < 0) {
+			frmival->stepwise.max.denominator = min->num;
+			frmival->stepwise.max.numerator = min->denom;
 		}
-		if (compare_fraction(&frmival->stepwise.max, max) > 0) {
-			frmival->stepwise.max.denominator = max->num;
-			frmival->stepwise.max.numerator = max->denom;
+		if (compare_fraction(&frmival->stepwise.min, max) > 0) {
+			frmival->stepwise.min.denominator = max->num;
+			frmival->stepwise.min.numerator = max->denom;
 		}
 	} else
 		return false;
 
+	return true;
+}
+
+struct spa_video_colorimetry v4l2_colorimetry_map[] = {
+	{ /* V4L2_COLORSPACE_DEFAULT */
+		.range = SPA_VIDEO_COLOR_RANGE_UNKNOWN,
+	},
+	{ /* V4L2_COLORSPACE_SMPTE170M */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT601,
+		.transfer = SPA_VIDEO_TRANSFER_BT601,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_SMPTE170M,
+	},
+	{ /* V4L2_COLORSPACE_SMPTE240M */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_SMPTE240M,
+		.transfer = SPA_VIDEO_TRANSFER_SMPTE240M,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_SMPTE240M,
+	},
+	{ /* V4L2_COLORSPACE_REC709 */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT709,
+		.transfer = SPA_VIDEO_TRANSFER_BT709,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_BT709,
+	},
+	{ /* V4L2_COLORSPACE_BT878 (deprecated) */
+		.range = SPA_VIDEO_COLOR_RANGE_UNKNOWN,
+	},
+	{ /* V4L2_COLORSPACE_470_SYSTEM_M */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT601,
+		.transfer = SPA_VIDEO_TRANSFER_BT709,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_BT470M,
+	},
+	{ /* V4L2_COLORSPACE_470_SYSTEM_BG */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT601,
+		.transfer = SPA_VIDEO_TRANSFER_BT709,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_BT470BG,
+	},
+	{ /* V4L2_COLORSPACE_JPEG */
+		.range = SPA_VIDEO_COLOR_RANGE_0_255,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT601,
+		.transfer = SPA_VIDEO_TRANSFER_SRGB,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_BT709,
+	},
+	{ /* V4L2_COLORSPACE_SRGB */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT601,
+		.transfer = SPA_VIDEO_TRANSFER_SRGB,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_BT709,
+	},
+	{ /* V4L2_COLORSPACE_OPRGB */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT601,
+		.transfer = SPA_VIDEO_TRANSFER_ADOBERGB,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_ADOBERGB,
+	},
+	{ /* V4L2_COLORSPACE_BT2020 */
+		.range = SPA_VIDEO_COLOR_RANGE_16_235,
+		.matrix = SPA_VIDEO_COLOR_MATRIX_BT2020,
+		.transfer = SPA_VIDEO_TRANSFER_BT2020_12,
+		.primaries = SPA_VIDEO_COLOR_PRIMARIES_BT2020,
+	},
+	{ /* V4L2_COLORSPACE_RAW */
+		.range = SPA_VIDEO_COLOR_RANGE_UNKNOWN,
+	}
+};
+
+enum spa_video_color_range v4l2_color_range_map[] = {
+	SPA_VIDEO_COLOR_RANGE_UNKNOWN,
+	SPA_VIDEO_COLOR_RANGE_0_255,
+	SPA_VIDEO_COLOR_RANGE_16_235
+};
+
+enum spa_video_color_matrix v4l2_color_matrix_map[] = {
+	/* V4L2_YCBCR_ENC_DEFAULT */
+	SPA_VIDEO_COLOR_MATRIX_UNKNOWN,
+	/* V4L2_YCBCR_ENC_601 */
+	SPA_VIDEO_COLOR_MATRIX_BT601,
+	/* V4L2_YCBCR_ENC_709 */
+	SPA_VIDEO_COLOR_MATRIX_BT709,
+	/* V4L2_YCBCR_ENC_XV601 */
+	SPA_VIDEO_COLOR_MATRIX_BT601,
+	/* V4L2_YCBCR_ENC_XV709 */
+	SPA_VIDEO_COLOR_MATRIX_BT709,
+	/* V4L2_YCBCR_ENC_SYCC */
+	SPA_VIDEO_COLOR_MATRIX_BT601,
+	/* V4L2_YCBCR_ENC_BT2020 */
+	SPA_VIDEO_COLOR_MATRIX_BT2020,
+	/* V4L2_YCBCR_ENC_BT2020_CONST_LUM */
+	SPA_VIDEO_COLOR_MATRIX_BT2020,
+	/* V4L2_YCBCR_ENC_SMPTE240M */
+	SPA_VIDEO_COLOR_MATRIX_SMPTE240M
+};
+
+enum spa_video_transfer_function v4l2_transfer_function_map[] = {
+	/* V4L2_XFER_FUNC_DEFAULT */
+	SPA_VIDEO_TRANSFER_UNKNOWN,
+	/* V4L2_XFER_FUNC_709 */
+	SPA_VIDEO_TRANSFER_BT709,
+	/* V4L2_XFER_FUNC_SRGB */
+	SPA_VIDEO_TRANSFER_SRGB,
+	/* V4L2_XFER_FUNC_OPRGB */
+	SPA_VIDEO_TRANSFER_ADOBERGB,
+	/* V4L2_XFER_FUNC_SMPTE240M */
+	SPA_VIDEO_TRANSFER_SMPTE240M,
+	/* V4L2_XFER_FUNC_NONE */
+	SPA_VIDEO_TRANSFER_GAMMA10,
+	/* V4L2_XFER_FUNC_DCI_P3 */
+	SPA_VIDEO_TRANSFER_UNKNOWN,
+	/* V4L2_XFER_FUNC_SMPTE2084 */
+	SPA_VIDEO_TRANSFER_SMPTE2084
+};
+
+static bool
+parse_colorimetry(struct impl *this, const struct v4l2_pix_format *pix, bool is_rgb,
+		  struct spa_video_colorimetry *colorimetry)
+{
+	struct spa_video_colorimetry c = { 0 };
+
+	if (pix->colorspace < V4L2_COLORSPACE_RAW)
+		c = v4l2_colorimetry_map[pix->colorspace];
+
+	if (c.range == SPA_VIDEO_COLOR_RANGE_UNKNOWN)
+		return false;
+
+	switch (pix->quantization) {
+	case V4L2_QUANTIZATION_FULL_RANGE:
+	case V4L2_QUANTIZATION_LIM_RANGE:
+		c.range = v4l2_color_range_map[pix->quantization];
+		break;
+	case V4L2_QUANTIZATION_DEFAULT:
+		if (is_rgb)
+			c.range = SPA_VIDEO_COLOR_RANGE_0_255;
+		break;
+	default:
+		spa_log_warn(this->log, "Unknown enum v4l2_quantization value %d",
+				pix->quantization);
+		c.range = SPA_VIDEO_COLOR_RANGE_UNKNOWN;
+		break;
+	}
+
+	if (pix->ycbcr_enc >= V4L2_YCBCR_ENC_SMPTE240M)
+		spa_log_warn(this->log, "Unknown enum v4l2_ycbcr_encoding value %d",
+				pix->ycbcr_enc);
+	else if (pix->ycbcr_enc > 0)
+		c.matrix = v4l2_color_matrix_map[pix->ycbcr_enc];
+
+	if (pix->xfer_func >= V4L2_XFER_FUNC_SMPTE2084)
+		spa_log_warn(this->log, "Unknown enum v4l2_xfer_func value %d",
+				pix->xfer_func);
+	else if (pix->xfer_func > 0)
+		c.transfer = v4l2_transfer_function_map[pix->xfer_func];
+
+	*colorimetry = c;
 	return true;
 }
 
@@ -511,12 +669,14 @@ spa_v4l2_enum_format(struct impl *this, int seq,
 	struct spa_pod_builder_state state;
 	struct spa_pod_frame f[2];
 	struct spa_result_node_params result;
-	uint32_t count = 0;
+	struct v4l2_format fmt;
+	uint32_t count = 0, try_width = 0, try_height = 0;
+	bool with_modifier;
 
 	if ((res = spa_v4l2_open(dev, this->props.device)) < 0)
 		return res;
 
-	spa_pod_dynamic_builder_init(&b, buffer, sizeof(buffer), 4096);
+	spa_pod_dynamic_builder_init(&b, buffer, sizeof(buffer), 8192);
 	spa_pod_builder_get_state(&b.b, &state);
 
 	result.id = SPA_PARAM_EnumFormat;
@@ -536,6 +696,7 @@ spa_v4l2_enum_format(struct impl *this, int seq,
 		if ((res = spa_format_parse(filter, &filter_media_type, &filter_media_subtype)) < 0)
 			return res;
 	}
+	with_modifier = !filter || spa_pod_find_prop(filter, NULL, SPA_FORMAT_VIDEO_modifier);
 
 	if (false) {
 	      next_fmtdesc:
@@ -728,6 +889,10 @@ do_frmsize_filter:
 	if (info->media_subtype == SPA_MEDIA_SUBTYPE_raw) {
 		spa_pod_builder_prop(&b.b, SPA_FORMAT_VIDEO_format, 0);
 		spa_pod_builder_id(&b.b, info->format);
+		if (with_modifier) {
+			spa_pod_builder_prop(&b.b, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY);
+			spa_pod_builder_long(&b.b, 0L);
+		}
 	}
 
 	spa_pod_builder_prop(&b.b, SPA_FORMAT_VIDEO_size, 0);
@@ -735,6 +900,8 @@ do_frmsize_filter:
 		spa_pod_builder_rectangle(&b.b,
 				port->frmsize.discrete.width,
 				port->frmsize.discrete.height);
+		try_width = port->frmsize.discrete.width;
+		try_height = port->frmsize.discrete.height;
 	} else if (port->frmsize.type == V4L2_FRMSIZE_TYPE_CONTINUOUS ||
 		   port->frmsize.type == V4L2_FRMSIZE_TYPE_STEPWISE) {
 		spa_pod_builder_push_choice(&b.b, &f[1], SPA_CHOICE_None, 0);
@@ -759,6 +926,35 @@ do_frmsize_filter:
 					port->frmsize.stepwise.max_height);
 		}
 		spa_pod_builder_pop(&b.b, &f[1]);
+		try_width = port->frmsize.stepwise.min_width;
+		try_height = port->frmsize.stepwise.min_height;
+	}
+
+	spa_zero(fmt);
+	fmt.type = port->fmtdesc.type;
+	fmt.fmt.pix.pixelformat = info->fourcc;
+	fmt.fmt.pix.field = V4L2_FIELD_ANY;
+	fmt.fmt.pix.width = try_width;
+	fmt.fmt.pix.height = try_height;
+
+	if ((res = xioctl(dev->fd, VIDIOC_TRY_FMT, &fmt)) < 0) {
+		spa_log_debug(this->log, "'%s' VIDIOC_TRY_FMT %08x: %m",
+				this->props.device, info->fourcc);
+	} else {
+		struct spa_video_colorimetry colorimetry;
+		bool is_rgb = spa_format_video_is_rgb(info->format);
+
+		if (parse_colorimetry(this, &fmt.fmt.pix, is_rgb, &colorimetry)) {
+			spa_pod_builder_add(&b.b,
+				SPA_FORMAT_VIDEO_colorRange,
+				SPA_POD_Id(colorimetry.range),
+				SPA_FORMAT_VIDEO_colorMatrix,
+				SPA_POD_Id(colorimetry.matrix),
+				SPA_FORMAT_VIDEO_transferFunction,
+				SPA_POD_Id(colorimetry.transfer),
+				SPA_FORMAT_VIDEO_colorPrimaries,
+				SPA_POD_Id(colorimetry.primaries), 0);
+		}
 	}
 
 	spa_pod_builder_prop(&b.b, SPA_FORMAT_VIDEO_framerate, 0);
@@ -777,9 +973,9 @@ do_frmsize_filter:
 			if (errno == EINVAL || errno == ENOTTY) {
 				if (port->frmival.index == 0) {
 					port->frmival.type = V4L2_FRMIVAL_TYPE_CONTINUOUS;
-					port->frmival.stepwise.min.denominator = 1;
+					port->frmival.stepwise.min.denominator = 120;
 					port->frmival.stepwise.min.numerator = 1;
-					port->frmival.stepwise.max.denominator = 120;
+					port->frmival.stepwise.max.denominator = 1;
 					port->frmival.stepwise.max.numerator = 1;
 					goto do_frminterval_filter;
 				}
@@ -852,14 +1048,25 @@ do_frminterval_filter:
 			n_fractions++;
 		} else if (port->frmival.type == V4L2_FRMIVAL_TYPE_CONTINUOUS ||
 			   port->frmival.type == V4L2_FRMIVAL_TYPE_STEPWISE) {
-			if (n_fractions == 0)
-				spa_pod_builder_fraction(&b.b, 25, 1);
-			spa_pod_builder_fraction(&b.b,
-						 port->frmival.stepwise.min.denominator,
-						 port->frmival.stepwise.min.numerator);
+			if (n_fractions == 0) {
+				struct spa_fraction f = { 25, 1 };
+				if (compare_fraction(&port->frmival.stepwise.max, &f) > 0) {
+					f.denom = port->frmival.stepwise.max.numerator;
+					f.num = port->frmival.stepwise.max.denominator;
+				}
+				if (compare_fraction(&port->frmival.stepwise.min, &f) < 0) {
+					f.denom = port->frmival.stepwise.min.numerator;
+					f.num = port->frmival.stepwise.min.denominator;
+				}
+
+				spa_pod_builder_fraction(&b.b, f.num, f.denom);
+			}
 			spa_pod_builder_fraction(&b.b,
 						 port->frmival.stepwise.max.denominator,
 						 port->frmival.stepwise.max.numerator);
+			spa_pod_builder_fraction(&b.b,
+						 port->frmival.stepwise.min.denominator,
+						 port->frmival.stepwise.min.numerator);
 
 			if (port->frmival.type == V4L2_FRMIVAL_TYPE_CONTINUOUS) {
 				choice->body.type = SPA_CHOICE_Range;
@@ -887,6 +1094,26 @@ do_frminterval_filter:
 
 	spa_node_emit_result(&this->hooks, seq, 0, SPA_RESULT_TYPE_NODE_PARAMS, &result);
 
+	if (++count == num)
+		goto enum_end;
+
+	if (with_modifier && info->media_subtype == SPA_MEDIA_SUBTYPE_raw) {
+		struct spa_pod_object *op = (struct spa_pod_object *) result.param;
+		const struct spa_pod_prop *p;
+
+		spa_pod_builder_push_object(&b.b, &f[0], op->body.type, op->body.id);
+
+		SPA_POD_OBJECT_FOREACH(op, p) {
+			if (p->key != SPA_FORMAT_VIDEO_modifier)
+				spa_pod_builder_raw_padded(&b.b, p, SPA_POD_PROP_SIZE(p));
+		}
+
+		result.index = result.next++;
+		result.param = spa_pod_builder_pop(&b.b, &f[0]);
+
+		spa_node_emit_result(&this->hooks, seq, 0, SPA_RESULT_TYPE_NODE_PARAMS, &result);
+	}
+
 	if (++count != num)
 		goto next;
 
@@ -911,12 +1138,13 @@ static int probe_expbuf(struct impl *this)
 	spa_zero(reqbuf);
 	reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	reqbuf.memory = V4L2_MEMORY_MMAP;
-	reqbuf.count = 2;
+	reqbuf.count = port->max_buffers = MAX_BUFFERS;
 
 	if (xioctl(dev->fd, VIDIOC_REQBUFS, &reqbuf) < 0) {
 		spa_log_error(this->log, "'%s' VIDIOC_REQBUFS: %m", this->props.device);
 		return -errno;
 	}
+	port->max_buffers = reqbuf.count;
 
 	spa_zero(expbuf);
 	expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1048,6 +1276,8 @@ static int spa_v4l2_set_format(struct impl *this, struct spa_video_info *format,
 	size->width = fmt.fmt.pix.width;
 	size->height = fmt.fmt.pix.height;
 
+	probe_expbuf(this);
+
 	port->fmt = fmt;
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE;
 	port->info.flags = (port->alloc_buffers ? SPA_PORT_FLAG_CAN_ALLOC_BUFFERS : 0) |
@@ -1056,8 +1286,6 @@ static int spa_v4l2_set_format(struct impl *this, struct spa_video_info *format,
 		SPA_PORT_FLAG_TERMINAL;
 	port->info.rate.num = streamparm.parm.capture.timeperframe.numerator;
 	port->info.rate.denom = streamparm.parm.capture.timeperframe.denominator;
-
-	probe_expbuf(this);
 
 	return match ? 0 : 1;
 }
@@ -1070,7 +1298,7 @@ static int query_ext_ctrl_ioctl(struct port *port, struct v4l2_query_ext_ctrl *q
 
 	if (port->have_query_ext_ctrl) {
 		res = xioctl(dev->fd, VIDIOC_QUERY_EXT_CTRL, qctrl);
-		if (errno != ENOTTY)
+		if (res == 0 || errno != ENOTTY)
 			return res;
 		port->have_query_ext_ctrl = false;
 	}
@@ -1119,7 +1347,7 @@ static struct {
 	{ V4L2_CID_SATURATION, SPA_PROP_saturation },
 	{ V4L2_CID_HUE, SPA_PROP_hue },
 	{ V4L2_CID_GAMMA, SPA_PROP_gamma },
-	{ V4L2_CID_EXPOSURE, SPA_PROP_exposure },
+	{ V4L2_CID_EXPOSURE_ABSOLUTE, SPA_PROP_exposure },
 	{ V4L2_CID_GAIN, SPA_PROP_gain },
 	{ V4L2_CID_SHARPNESS, SPA_PROP_sharpness },
 };
@@ -1258,7 +1486,7 @@ spa_v4l2_enum_controls(struct impl *this, int seq,
 		spa_pod_builder_push_object(&b.b, &f[0], SPA_TYPE_OBJECT_PropInfo, SPA_PARAM_PropInfo);
 		spa_pod_builder_add(&b.b,
 			SPA_PROP_INFO_id,    SPA_POD_Id(prop_id),
-			SPA_PROP_INFO_type,  SPA_POD_CHOICE_ENUM_Int(1, (int32_t)queryctrl.default_value),
+			SPA_PROP_INFO_type,  SPA_POD_Int((int32_t)queryctrl.default_value),
 			SPA_PROP_INFO_description,  SPA_POD_String(queryctrl.name),
 			0);
 
@@ -1341,8 +1569,7 @@ done:
 }
 
 static int
-spa_v4l2_set_control(struct impl *this, uint32_t id,
-		       const struct spa_pod_prop *prop)
+spa_v4l2_set_control(struct impl *this, const struct spa_pod_prop *prop, const void *body)
 {
 	struct port *port = &this->out_ports[0];
 	struct spa_v4l2_device *dev = &port->dev;
@@ -1357,13 +1584,21 @@ spa_v4l2_set_control(struct impl *this, uint32_t id,
 	if ((res = spa_v4l2_open(dev, this->props.device)) < 0)
 		return res;
 
-	switch (SPA_POD_TYPE(&prop->value)) {
+	switch (prop->value.type) {
 	case SPA_TYPE_Bool:
 	{
 		bool val;
 		if ((res = spa_pod_get_bool(&prop->value, &val)) < 0)
 			goto done;
 		control.value = val;
+		break;
+	}
+	case SPA_TYPE_Float:
+	{
+		float val;
+		if ((res = spa_pod_get_float(&prop->value, &val)) < 0)
+			goto done;
+		control.value = (int32_t) val;
 		break;
 	}
 	case SPA_TYPE_Int:
@@ -1406,17 +1641,34 @@ static int mmap_read(struct impl *this)
 	if (xioctl(dev->fd, VIDIOC_DQBUF, &buf) < 0)
 		return -errno;
 
+	spa_log_trace(this->log, "v4l2 %p: have output %d/%d", this, buf.index, buf.sequence);
+
 	/* Drop the first frame in order to work around common firmware
 	 * timestamp issues */
-	if (buf.sequence == 0) {
-		xioctl(dev->fd, VIDIOC_QBUF, &buf);
+	if (port->first_buffer) {
+		port->first_buffer = false;
+		if (xioctl(dev->fd, VIDIOC_QBUF, &buf) < 0)
+			spa_log_warn(this->log, "v4l2 %p: error qbuf: %m", this);
 		return 0;
 	}
 
 	pts = SPA_TIMEVAL_TO_NSEC(&buf.timestamp);
-	spa_log_trace(this->log, "v4l2 %p: have output %d", this, buf.index);
+
 
 	if (this->clock) {
+		double target = (double)port->info.rate.num / port->info.rate.denom;
+		double corr;
+
+		if (this->dll.bw == 0.0) {
+			spa_dll_set_bw(&this->dll, SPA_DLL_BW_MAX, port->info.rate.denom, port->info.rate.denom);
+			this->clock->next_nsec = pts;
+			corr = 1.0;
+		} else {
+			double diff = ((double)this->clock->next_nsec - (double)pts) / SPA_NSEC_PER_SEC;
+			double error = port->info.rate.denom * (diff - target);
+			corr = spa_dll_update(&this->dll, SPA_CLAMPD(error, -128., 128.));
+		}
+
 		/* FIXME, we should follow the driver clock and target_ values.
 		 * for now we ignore and use our own. */
 		this->clock->target_rate = port->info.rate;
@@ -1427,8 +1679,8 @@ static int mmap_read(struct impl *this)
 		this->clock->position = buf.sequence;
 		this->clock->duration = 1;
 		this->clock->delay = 0;
-		this->clock->rate_diff = 1.0;
-		this->clock->next_nsec = pts + port->info.rate.num * SPA_NSEC_PER_SEC / port->info.rate.denom;
+		this->clock->rate_diff = corr;
+		this->clock->next_nsec += (uint64_t) (target * SPA_NSEC_PER_SEC * corr);
 	}
 
 	b = &port->buffers[buf.index];
@@ -1447,11 +1699,14 @@ static int mmap_read(struct impl *this)
 
 	d = b->outbuf->datas;
 	d[0].chunk->offset = 0;
-	d[0].chunk->size = buf.bytesused;
+	d[0].chunk->size = SPA_MIN(buf.bytesused, d[0].maxsize);
 	d[0].chunk->stride = port->fmt.fmt.pix.bytesperline;
 	d[0].chunk->flags = 0;
 	if (buf.flags & V4L2_BUF_FLAG_ERROR)
 		d[0].chunk->flags |= SPA_CHUNK_FLAG_CORRUPTED;
+
+	if (b->mmap_ptr && b->ptr)
+		memcpy(b->ptr, b->mmap_ptr, d[0].chunk->size);
 
 	spa_list_append(&port->queue, &b->link);
 	return 0;
@@ -1463,6 +1718,7 @@ static void v4l2_on_fd_events(struct spa_source *source)
 	struct spa_io_buffers *io;
 	struct port *port = &this->out_ports[0];
 	struct buffer *b;
+	int res;
 
 	if (source->rmask & SPA_IO_ERR) {
 		struct port *port = &this->out_ports[0];
@@ -1477,8 +1733,10 @@ static void v4l2_on_fd_events(struct spa_source *source)
 		return;
 	}
 
-	if (mmap_read(this) < 0)
+	if ((res = mmap_read(this)) < 0) {
+		spa_log_warn(this->log, "v4l2 %p: mmap read error:%s", this, spa_strerror(res));
 		return;
+	}
 
 	if (spa_list_is_empty(&port->queue))
 		return;
@@ -1534,8 +1792,22 @@ static int spa_v4l2_use_buffers(struct impl *this, struct spa_buffer **buffers, 
 	reqbuf.count = n_buffers;
 
 	if (xioctl(dev->fd, VIDIOC_REQBUFS, &reqbuf) < 0) {
-		spa_log_error(this->log, "'%s' VIDIOC_REQBUFS %m", this->props.device);
-		return -errno;
+		if (port->memtype != V4L2_MEMORY_USERPTR) {
+			spa_log_error(this->log, "'%s' VIDIOC_REQBUFS %m", this->props.device);
+			return -errno;
+		}
+		/* some drivers (v4l2loopback) don't support USERPTR
+		 * and so we need to try again with MMAP and memcpy */
+		port->memtype = V4L2_MEMORY_MMAP;
+		spa_zero(reqbuf);
+		reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		reqbuf.memory = port->memtype;
+		reqbuf.count = n_buffers;
+
+		if (xioctl(dev->fd, VIDIOC_REQBUFS, &reqbuf) < 0) {
+			spa_log_error(this->log, "'%s' VIDIOC_REQBUFS %m", this->props.device);
+			return -errno;
+		}
 	}
 	spa_log_debug(this->log, "got %d buffers", reqbuf.count);
 	if (reqbuf.count < n_buffers) {
@@ -1568,7 +1840,8 @@ static int spa_v4l2_use_buffers(struct impl *this, struct spa_buffer **buffers, 
 		b->v4l2_buffer.memory = port->memtype;
 		b->v4l2_buffer.index = i;
 
-		if (port->memtype == V4L2_MEMORY_USERPTR) {
+		if (port->memtype == V4L2_MEMORY_USERPTR ||
+		    port->memtype == V4L2_MEMORY_MMAP) {
 			if (d[0].data == NULL) {
 				void *data;
 
@@ -1586,8 +1859,24 @@ static int spa_v4l2_use_buffers(struct impl *this, struct spa_buffer **buffers, 
 			else
 				b->ptr = d[0].data;
 
-			b->v4l2_buffer.m.userptr = (unsigned long) b->ptr;
-			b->v4l2_buffer.length = d[0].maxsize;
+			if (port->memtype == V4L2_MEMORY_USERPTR) {
+				b->v4l2_buffer.m.userptr = (unsigned long) b->ptr;
+				b->v4l2_buffer.length = d[0].maxsize;
+			}
+			else {
+				if (xioctl(dev->fd, VIDIOC_QUERYBUF, &b->v4l2_buffer) < 0) {
+					spa_log_error(this->log, "'%s' VIDIOC_QUERYBUF: %m", this->props.device);
+					return -errno;
+				}
+				b->mmap_ptr = mmap(NULL,
+						b->v4l2_buffer.length,
+						PROT_READ, MAP_PRIVATE,
+						dev->fd, b->v4l2_buffer.m.offset);
+				if (b->mmap_ptr == MAP_FAILED) {
+					spa_log_error(this->log, "'%s' mmap: %m", this->props.device);
+					return -errno;
+				}
+			}
 		}
 		else if (port->memtype == V4L2_MEMORY_DMABUF) {
 			b->v4l2_buffer.m.fd = d[0].fd;
@@ -1798,11 +2087,20 @@ static int spa_v4l2_stream_on(struct impl *this)
 
 	spa_log_debug(this->log, "starting");
 
+	if (port->current_format.media_subtype == SPA_MEDIA_SUBTYPE_raw ||
+	    port->current_format.media_subtype == SPA_MEDIA_SUBTYPE_mjpg ||
+	    port->current_format.media_subtype == SPA_MEDIA_SUBTYPE_jpeg)
+		port->first_buffer = true;
+	else
+		port->first_buffer = false;
+	mmap_read(this);
+
 	type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	if (xioctl(dev->fd, VIDIOC_STREAMON, &type) < 0) {
 		spa_log_error(this->log, "'%s' VIDIOC_STREAMON: %m", this->props.device);
 		return -errno;
 	}
+	this->dll.bw = 0.0;
 
 	port->source.func = v4l2_on_fd_events;
 	port->source.data = this;
@@ -1844,7 +2142,7 @@ static int spa_v4l2_stream_off(struct impl *this)
 
 	spa_log_debug(this->log, "stopping");
 
-	spa_loop_invoke(this->data_loop, do_remove_source, 0, NULL, 0, true, port);
+	spa_loop_locked(this->data_loop, do_remove_source, 0, NULL, 0, port);
 
 	type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	if (xioctl(dev->fd, VIDIOC_STREAMOFF, &type) < 0) {

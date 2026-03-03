@@ -128,6 +128,11 @@ context.modules = [
             # This property is used if you aren't using ptp4l 4
             sess.ts-refclk = "ptp=traceable"
             sess.ts-offset = 0
+            # Directly synchronize output against the PTP-synced driver using the RTP timestamps
+            # This can be set to true if the reference clocks are the same; it then makes the
+            # synchronization more robust against transport delay variations and can help lower
+            # latency
+            sess.ts-direct = false
             # You can adjust the latency buffering here. Use integer values only
             sess.latency.msec = 3
             audio.format = "S24BE"
@@ -135,6 +140,10 @@ context.modules = [
             audio.channels = 2
             # These channel names will be visible both to applications and AES67 receivers
             node.channel-names = ["CH1", "CH2"]
+            # Uncomment this and comment node.group in send/recv stream.props to allow
+            # separate drivers for the RTP sink and PTP sending (i.e. force rate matching on
+            # the AES67 node rather than other nodes)
+            #aes67.driver-group = "pipewire.ptp0"
 
             stream.props = {
                 ### Please change the sink name, this is necessary when you create multiple sinks

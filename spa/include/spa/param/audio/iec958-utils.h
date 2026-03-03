@@ -5,6 +5,11 @@
 #ifndef SPA_AUDIO_IEC958_UTILS_H
 #define SPA_AUDIO_IEC958_UTILS_H
 
+#include <spa/pod/parser.h>
+#include <spa/pod/builder.h>
+#include <spa/param/audio/format.h>
+#include <spa/param/format-utils.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,12 +19,15 @@ extern "C" {
  * \{
  */
 
-#include <spa/pod/parser.h>
-#include <spa/pod/builder.h>
-#include <spa/param/audio/format.h>
-#include <spa/param/format-utils.h>
+#ifndef SPA_API_AUDIO_IEC958_UTILS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_AUDIO_IEC958_UTILS SPA_API_IMPL
+ #else
+  #define SPA_API_AUDIO_IEC958_UTILS static inline
+ #endif
+#endif
 
-static inline int
+SPA_API_AUDIO_IEC958_UTILS int
 spa_format_audio_iec958_parse(const struct spa_pod *format, struct spa_audio_info_iec958 *info)
 {
 	int res;
@@ -30,7 +38,7 @@ spa_format_audio_iec958_parse(const struct spa_pod *format, struct spa_audio_inf
 	return res;
 }
 
-static inline struct spa_pod *
+SPA_API_AUDIO_IEC958_UTILS struct spa_pod *
 spa_format_audio_iec958_build(struct spa_pod_builder *builder, uint32_t id,
 			      const struct spa_audio_info_iec958 *info)
 {

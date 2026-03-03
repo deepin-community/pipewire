@@ -22,6 +22,7 @@
 #include <spa/node/io.h>
 #include <spa/node/keys.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/audio/raw-json.h>
 #include <spa/debug/types.h>
 #include <spa/debug/mem.h>
 #include <spa/param/audio/type-info.h>
@@ -34,12 +35,13 @@
 SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.null-audio-sink");
 
 #define DEFAULT_CLOCK_NAME	"clock.system.monotonic"
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
 
 struct props {
 	uint32_t format;
 	uint32_t channels;
 	uint32_t rate;
-	uint32_t pos[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t pos[MAX_CHANNELS];
 	char clock_name[64];
 	unsigned int debug:1;
 	unsigned int driver:1;
@@ -229,7 +231,7 @@ static int reassign_follower(struct impl *this)
 	if (following != this->following) {
 		spa_log_debug(this->log, "%p: reassign follower %d->%d", this, this->following, following);
 		this->following = following;
-		spa_loop_invoke(this->data_loop, do_set_timers, 0, NULL, 0, true, this);
+		spa_loop_locked(this->data_loop, do_set_timers, 0, NULL, 0, this);
 	}
 	return 0;
 }
@@ -313,7 +315,7 @@ static int do_start(struct impl *this)
 
 	this->following = is_following(this);
 	this->started = true;
-	spa_loop_invoke(this->data_loop, do_set_timers, 0, NULL, 0, true, this);
+	spa_loop_locked(this->data_loop, do_set_timers, 0, NULL, 0, this);
 	return 0;
 }
 
@@ -322,7 +324,7 @@ static int do_stop(struct impl *this)
 	if (!this->started)
 		return 0;
 	this->started = false;
-	spa_loop_invoke(this->data_loop, do_set_timers, 0, NULL, 0, true, this);
+	spa_loop_locked(this->data_loop, do_set_timers, 0, NULL, 0, this);
 	return 0;
 }
 
@@ -635,7 +637,7 @@ port_set_format(struct impl *this,
 
 		if (info.info.raw.rate == 0 ||
 		    info.info.raw.channels == 0 ||
-		    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
+		    info.info.raw.channels > MAX_CHANNELS)
 			return -EINVAL;
 
 		if (this->props.format != 0) {
@@ -846,7 +848,7 @@ static int impl_clear(struct spa_handle *handle)
 
 	this = (struct impl *) handle;
 
-	spa_loop_invoke(this->data_loop, do_remove_timer, 0, NULL, 0, true, this);
+	spa_loop_locked(this->data_loop, do_remove_timer, 0, NULL, 0, this);
 	spa_system_close(this->data_system, this->timer_source.fd);
 
 	return 0;
@@ -857,42 +859,6 @@ impl_get_size(const struct spa_handle_factory *factory,
 	      const struct spa_dict *params)
 {
 	return sizeof(struct impl);
-}
-
-static uint32_t format_from_name(const char *name)
-{
-	int i;
-	for (i = 0; spa_type_audio_format[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_format[i].name)))
-			return spa_type_audio_format[i].type;
-	}
-	return SPA_AUDIO_FORMAT_UNKNOWN;
-}
-
-static uint32_t channel_from_name(const char *name)
-{
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static inline void parse_position(struct impl *this, const char *val, size_t len)
-{
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	this->props.channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    this->props.channels < SPA_AUDIO_MAX_CHANNELS) {
-		this->props.pos[this->props.channels++] = channel_from_name(v);
-	}
 }
 
 static int
@@ -976,7 +942,7 @@ impl_init(const struct spa_handle_factory *factory,
 		if (spa_streq(k, "clock.quantum-limit")) {
 			spa_atou32(s, &this->quantum_limit, 0);
 		} else if (spa_streq(k, SPA_KEY_AUDIO_FORMAT)) {
-			this->props.format = format_from_name(s);
+			this->props.format = spa_type_audio_format_from_short_name(s);
 		} else if (spa_streq(k, SPA_KEY_AUDIO_CHANNELS)) {
 			this->props.channels = atoi(s);
 		} else if (spa_streq(k, SPA_KEY_AUDIO_RATE)) {
@@ -984,7 +950,11 @@ impl_init(const struct spa_handle_factory *factory,
 		} else if (spa_streq(k, SPA_KEY_NODE_DRIVER)) {
 			this->props.driver = spa_atob(s);
 		} else if (spa_streq(k, SPA_KEY_AUDIO_POSITION)) {
-			parse_position(this, s, strlen(s));
+			spa_audio_parse_position_n(s, strlen(s), this->props.pos,
+					SPA_N_ELEMENTS(this->props.pos), &this->props.channels);
+		} else if (spa_streq(k, SPA_KEY_AUDIO_LAYOUT)) {
+			spa_audio_parse_layout(s, this->props.pos,
+					SPA_N_ELEMENTS(this->props.pos), &this->props.channels);
 		} else if (spa_streq(k, "clock.name")) {
 			spa_scnprintf(this->props.clock_name,
 					sizeof(this->props.clock_name),

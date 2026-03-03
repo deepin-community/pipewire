@@ -1,98 +1,197 @@
-pipewire (1.2.5-1deepin17) unstable; urgency=medium
+pipewire (1.6.0-1) experimental; urgency=medium
 
-  * fix: Only set the mono flag to the relevant Node(bug340957).
+  [ Dylan Aïssi ]
+  * New upstream release
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Mon, 22 Dec 2025 18:11:20 +0800
+  [ Luca Boccassi ]
+  * Use dh sequence instead of manual call in d/rules
+  * Drop unused adduser dependency
 
-pipewire (1.2.5-1deepin16) unstable; urgency=medium
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 19 Feb 2026 11:43:23 +0100
 
-  * pulse-server: 修复设备端口变化时缺失订阅事件的问题
+pipewire (1.5.85-1) experimental; urgency=medium
 
- -- fuleyi <fuleyi@uniontech.com>  Tue, 04 Nov 2025 11:06:43 +0800
+  * New upstream release (1.6 release candidate 5)
+    (Closes: #1125964)
 
-pipewire (1.2.5-1deepin15) unstable; urgency=medium
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 19 Jan 2026 17:16:39 +0100
 
-  * fix: Modify rtkit log from warn to debug(bug317451)
+pipewire (1.5.84-1) experimental; urgency=medium
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Wed, 28 May 2025 10:31:40 +0800
+  [ Dylan Aïssi ]
+  * New upstream release (1.6 release candidate 4)
+  * Remove Fix_services.patch, this was required to avoid conflict
+    with pipewire-media-session due to a bug in systemd. systemd is fixed
+    since v253 and pipewire-media-session is no longer available since Trixie,
+    so no reason to keep it.
+  * d/rules: increase test timeout for alpha.
 
-pipewire (1.2.5-1deepin14) unstable; urgency=medium
+  [ Charles ]
+  * d/tests: Update manual-tests.md for modern releases.
 
-  * fix: Cancel to report battery level of HFP AG(bug296483)
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 01 Dec 2025 15:56:30 +0100
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 08 May 2025 14:17:39 +0800
+pipewire (1.5.83-1) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin13) unstable; urgency=medium
+  * New upstream release (1.6 release candidate 3)
+  * Disable onnxruntime on unsupported architectures
+  * Remove redundant "Rules-Requires-Root: no"
 
-  * fix: Optimize the volume algorithm.
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 06 Nov 2025 17:29:27 +0100
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Mon, 28 Apr 2025 16:52:43 +0800
+pipewire (1.5.81-1) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin12) unstable; urgency=medium
+  * New upstream release (1.6 release candidate 1)
+  * Disable bluez5-codec-ldac-dec, not yet available in Debian
+  * Enable bluez5-plc-spandsp, add libspandsp-dev in Build-Deps
+  * Enable onnxruntime, add libonnxruntime-dev in Build-Deps
+  * Install new binaries (pw-midi2play, pw-midi2record and pw-sysex)
+      in pipewire-bin
+  * Update symbols file
+  * Convert watch to version 5 and use Gitlab template
+  * Skip the new test spa-benchmark-aec.test,
+      it requires sample files.
 
-  * fix: Add config for Unis D3830 G3 sound card(bug312139)
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 16 Oct 2025 12:34:32 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Tue, 15 Apr 2025 17:33:43 +0800
+pipewire (1.4.9-1) unstable; urgency=medium
 
-pipewire (1.2.5-1deepin11) unstable; urgency=medium
+  * New upstream release
 
-  * fix: Add config to match lenovo m90h g2t
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 09 Oct 2025 14:16:54 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 10 Apr 2025 20:46:24 +0800
+pipewire (1.4.8-1) unstable; urgency=medium
 
-pipewire (1.2.5-1deepin10) unstable; urgency=medium
+  * New upstream release
+  * Override lintian tag systemd-service-file-refers-to-unusual-wantedby-target
+    for pipewire-system-services.
 
-  * rebuild.
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 11 Sep 2025 11:15:09 +0200
 
- -- lhdjply <lhdjply@126.com>  Thu, 13 Feb 2025 16:33:17 +0800
+pipewire (1.4.7-3) unstable; urgency=medium
 
-pipewire (1.2.5-1deepin9) unstable; urgency=medium
+  * Adjust VCS fields in d/control and d/gbp.conf for unstable.
+  * Upload to unstable.
 
-  * fix: Separate functions for setting sink and source volume.
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 11 Aug 2025 08:43:08 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 06 Dec 2024 13:52:17 +0800
+pipewire (1.4.7-2) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin8) unstable; urgency=medium
+  * Install system-wide services in a new package (pipewire-system-services).
+    (Closes: #1103237)
+  * Create a system user and group "pipewire" using a sysusers file instead
+    of doing it manually in maintainer scripts.
 
-  * fix: Add log info of mono flag
+ -- Dylan Aïssi <daissi@debian.org>  Wed, 30 Jul 2025 11:00:21 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 05 Dec 2024 17:40:57 +0800
+pipewire (1.4.7-1) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin7) unstable; urgency=medium
+  * New upstream release
 
-  * fix: Add debug flags of pod and message.
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 28 Jul 2025 11:27:53 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 05 Dec 2024 14:39:01 +0800
+pipewire (1.4.6-1) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin6) unstable; urgency=medium
+  * New upstream release
 
-  *  fix: Do not start pipewire in Display Manager user.
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 27 Jun 2025 14:58:58 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Tue, 03 Dec 2024 11:26:12 +0800
+pipewire (1.4.5-1) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin5) unstable; urgency=medium
+  * New upstream release
 
-  * Feat: Supports mixing to mono.
+ -- Dylan Aïssi <daissi@debian.org>  Wed, 04 Jun 2025 14:53:43 +0200
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Sat, 30 Nov 2024 16:41:56 +0800
+pipewire (1.4.4-1) experimental; urgency=medium
 
-pipewire (1.2.5-1deepin4) unstable; urgency=medium
+  [ Dylan Aïssi ]
+  * New upstream release
+  * debian/rules: Simplify the logic to enable SNAP support
 
-  * Resolving file conflicts libpipewire-0.3-modules (<= 1.0.7-0deepin1).
+  [ Sebastien Bacher ]
+  * debian/rules: remove the logic to disable plugins on Ubuntu
 
- -- lichenggang <lichenggang@deepin.org>  Wed, 23 Oct 2024 11:30:28 +0800
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 29 May 2025 11:44:18 +0200
 
-pipewire (1.2.5-1deepin2) unstable; urgency=medium
+pipewire (1.4.3-1) experimental; urgency=medium
 
-  * Resolving file conflicts.
+  * New upstream release
+  * Adjust VCS fields in d/control and d/gbp.conf for experimental
 
- -- lichenggang <lichenggang@deepin.org>  Mon, 21 Oct 2024 15:14:55 +0800
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 22 May 2025 11:56:28 +0200
 
-pipewire (1.2.5-1deepin1) unstable; urgency=medium
+pipewire (1.4.2-1) unstable; urgency=medium
 
- *revert 64-bit time_t transition patch.
+  * New upstream release
 
- -- lichenggang <lichenggang@deepin.org>  Sat, 19 Oct 2024 19:08:23 +0800
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 14 Apr 2025 16:04:20 +0200
+
+pipewire (1.4.1-1) unstable; urgency=medium
+
+  * New upstream release
+      - Fix segfault in audioconvert (Closes: #1100160)
+      - Fix issue with Scarlett Solo 4th Gen (Closes: #1100157)
+  * Drop Don-t-automatically-start-pipewire-for-root-logins.patch,
+      included in upstream release.
+  * Bump minimum libasound2-dev to 1.2.6
+  * Bump minimum libroc-dev to 0.4.0
+  * Bump minimum wireplumber to 0.5.0
+  * Standards-Version: 4.7.2 (no changes required)
+  * Install config files for multiple sample rates and upmixing in
+      pipewire-bin and pipewire-pulse packages.
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 14 Mar 2025 13:10:32 +0100
+
+pipewire (1.4.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Adjust VCS fields in d/control and d/gbp.conf
+  * Upload to unstable
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 06 Mar 2025 17:10:21 +0100
+
+pipewire (1.3.83-1) experimental; urgency=medium
+
+  * New upstream release (1.4 release candidate 3)
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 21 Feb 2025 09:07:46 +0100
+
+pipewire (1.3.82-1) experimental; urgency=medium
+
+  * New upstream release (1.4 release candidate 2)
+  * Adjust path in debian/copyright
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 06 Feb 2025 13:37:54 +0100
+
+pipewire (1.3.81-1) experimental; urgency=medium
+
+  * New upstream release (1.4 release candidate 1)
+  * Add libebur128-dev and libfftw3-dev in Build-Deps
+      for filter-chain plugins.
+  * No longer install client-rt.conf in pipewire-bin
+  * Install the new filter-graph module and libspa.so in libspa-0.2-modules
+  * Update symbols file
+  * Adjust VCS fields in d/control and d/gbp.conf for experimental
+  * Apply wrap-and-sort -a
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 23 Jan 2025 14:47:39 +0100
+
+pipewire (1.2.7-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update symbols file
+  * Override shared-library-lacks-prerequisites lintian tag for
+      libjacknet.so.0.3.*, it's a dummy library so no need to complain.
+
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 26 Nov 2024 11:50:10 +0100
+
+pipewire (1.2.6-1) unstable; urgency=medium
+
+  * New upstream release
+  * Rename pipewire-devices.7 to pipewire-props.7
+  * Add lintian overrides for groff-message in manpages
+
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 25 Oct 2024 11:58:28 +0200
 
 pipewire (1.2.5-1) unstable; urgency=medium
 
