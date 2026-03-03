@@ -780,7 +780,7 @@ static void show_help(const char *name, bool error)
 		"  -N, --no-colors                       disable color output\n"
 		"  -C, --color[=WHEN]                    whether to enable color support. WHEN is `never`, `always`, or `auto`\n"
 		"  -o, --hide-props                      hide node properties\n"
-		"  -a, --hide-params                     hide node properties\n"
+		"  -a, --hide-params                     hide node parameters\n"
 		"  -p, --print-separator                 print empty line after every event to help streaming parser\n",
 		name);
 }
@@ -886,8 +886,8 @@ int main(int argc, char *argv[])
 
 	data.core = pw_context_connect(data.context,
 			pw_properties_new(
-				PW_KEY_REMOTE_NAME, opt_remote ? opt_remote :
-					("[" PW_DEFAULT_REMOTE "-manager," PW_DEFAULT_REMOTE "]"),
+				PW_KEY_REMOTE_INTENTION, "manager",
+				PW_KEY_REMOTE_NAME, opt_remote,
 				NULL),
 			0);
 	if (data.core == NULL) {

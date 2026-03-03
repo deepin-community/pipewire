@@ -5,6 +5,13 @@
 #ifndef SPA_UTILS_DEFS_H
 #define SPA_UTILS_DEFS_H
 
+#include <inttypes.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include <stdio.h>
+
 #ifdef __cplusplus
 extern "C" {
 # if __cplusplus >= 201103L
@@ -33,13 +40,6 @@ extern "C" {
 
 #define SPA_CONCAT_NOEXPAND(a, b) a ## b
 #define SPA_CONCAT(a, b) SPA_CONCAT_NOEXPAND(a, b)
-
-#include <inttypes.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stddef.h>
-#include <stdio.h>
 
 /**
  * \defgroup spa_utils_defs Miscellaneous
@@ -133,10 +133,10 @@ struct spa_fraction {
  * ```
  */
 #define SPA_FOR_EACH_ELEMENT(arr, ptr) \
-	for ((ptr) = arr; (void*)(ptr) < SPA_PTROFF(arr, sizeof(arr), void); (ptr)++)
+	for ((ptr) = arr; (ptr) < (arr) + SPA_N_ELEMENTS(arr); (ptr)++)
 
 #define SPA_FOR_EACH_ELEMENT_VAR(arr, var) \
-	for (__typeof__((arr)[0])* var = arr; (void*)(var) < SPA_PTROFF(arr, sizeof(arr), void); (var)++)
+	for (__typeof__((arr)[0])* var = arr; (var) < (arr) + SPA_N_ELEMENTS(arr); (var)++)
 
 #define SPA_ABS(a)			\
 ({					\
@@ -242,6 +242,7 @@ struct spa_fraction {
 #define SPA_UNUSED __attribute__ ((unused))
 #define SPA_NORETURN __attribute__ ((noreturn))
 #define SPA_WARN_UNUSED_RESULT __attribute__ ((warn_unused_result))
+#define SPA_BARRIER __asm__ __volatile__("": : :"memory")
 #else
 #define SPA_PRINTF_FUNC(fmt, arg1)
 #define SPA_FORMAT_ARG_FUNC(arg1)
@@ -252,7 +253,22 @@ struct spa_fraction {
 #define SPA_UNUSED
 #define SPA_NORETURN
 #define SPA_WARN_UNUSED_RESULT
+#define SPA_BARRIER
 #endif
+
+#ifndef SPA_API_IMPL
+#define SPA_API_PROTO static inline
+#define SPA_API_IMPL static inline
+#endif
+
+#ifndef SPA_API_UTILS_DEFS
+ #ifdef SPA_API_IMPL
+  #define SPA_API_UTILS_DEFS SPA_API_IMPL
+ #else
+  #define SPA_API_UTILS_DEFS static inline
+ #endif
+#endif
+
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 #define SPA_RESTRICT restrict
@@ -278,6 +294,13 @@ struct spa_fraction {
 #define SPA_ROUND_DOWN_N(num,align)	((num) & ~SPA_ROUND_MASK(num, align))
 #define SPA_ROUND_UP_N(num,align)	((((num)-1) | SPA_ROUND_MASK(num, align))+1)
 
+#define SPA_SCALE32(val,num,denom)				\
+({								\
+	uint64_t _val = (val);					\
+	uint64_t _denom = (denom);				\
+	(uint32_t)(((_val) * (num)) / (_denom));		\
+})
+
 #define SPA_SCALE32_UP(val,num,denom)				\
 ({								\
 	uint64_t _val = (val);					\
@@ -300,7 +323,7 @@ struct spa_fraction {
 #endif
 #endif
 
-static inline bool spa_ptrinside(const void *p1, size_t s1, const void *p2, size_t s2,
+SPA_API_UTILS_DEFS bool spa_ptrinside(const void *p1, size_t s1, const void *p2, size_t s2,
                                  size_t *remaining)
 {
 	if (SPA_LIKELY((uintptr_t)p1 <= (uintptr_t)p2 && s2 <= s1 &&
@@ -315,7 +338,7 @@ static inline bool spa_ptrinside(const void *p1, size_t s1, const void *p2, size
 	}
 }
 
-static inline bool spa_ptr_inside_and_aligned(const void *p1, size_t s1,
+SPA_API_UTILS_DEFS bool spa_ptr_inside_and_aligned(const void *p1, size_t s1,
                                               const void *p2, size_t s2, size_t align,
                                               size_t *remaining)
 {

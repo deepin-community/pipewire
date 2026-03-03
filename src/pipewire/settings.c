@@ -90,14 +90,13 @@ static bool uint32_array_contains(uint32_t *vals, uint32_t n_vals, uint32_t val)
 static uint32_t parse_uint32_array(const char *str, uint32_t *vals, uint32_t max, uint32_t def)
 {
 	uint32_t count = 0, r;
-	struct spa_json it[2];
+	struct spa_json it[1];
 	char v[256];
 
-	spa_json_init(&it[0], str, strlen(str));
-	if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-		spa_json_init(&it[1], str, strlen(str));
+	if (spa_json_begin_array_relax(&it[0], str, strlen(str)) <= 0)
+		return 0;
 
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
+	while (spa_json_get_string(&it[0], v, sizeof(v)) > 0 &&
 	    count < max) {
 		if (spa_atou32(v, &r, 0))
 	                vals[count++] = r;
@@ -246,24 +245,21 @@ void pw_settings_init(struct pw_context *this)
 static void expose_settings(struct pw_context *context, struct pw_impl_metadata *metadata)
 {
 	struct settings *s = &context->settings;
-	uint32_t i, o;
-	char rates[MAX_RATES*16] = "";
+	uint32_t i;
+	char rates[MAX_RATES*16];
+	struct spa_strbuf b;
 
 	pw_impl_metadata_set_propertyf(metadata,
 			PW_ID_CORE, "log.level", "", "%d", s->log_level);
 	pw_impl_metadata_set_propertyf(metadata,
 			PW_ID_CORE, "clock.rate", "", "%d", s->clock_rate);
-	for (i = 0, o = 0; i < s->n_clock_rates; i++) {
-		int r = snprintf(rates+o, sizeof(rates)-o, "%s%d", i == 0 ? "" : ", ",
+
+	spa_strbuf_init(&b, rates, sizeof(rates));
+	for (i = 0; i < s->n_clock_rates; i++)
+		spa_strbuf_append(&b, "%s%d", i == 0 ? "" : ", ",
 				s->clock_rates[i]);
-		if (r < 0 || o + r >= (int)sizeof(rates)) {
-			snprintf(rates, sizeof(rates), "%d", s->clock_rate);
-			break;
-		}
-		o += r;
-	}
 	if (s->n_clock_rates == 0)
-		snprintf(rates, sizeof(rates), "%d", s->clock_rate);
+		spa_strbuf_append(&b, "%d", s->clock_rate);
 
 	pw_impl_metadata_set_propertyf(metadata,
 			PW_ID_CORE, "clock.allowed-rates", "", "[ %s ]", rates);

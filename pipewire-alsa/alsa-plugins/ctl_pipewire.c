@@ -22,9 +22,11 @@ PW_LOG_TOPIC_STATIC(alsa_log_topic, "alsa.ctl");
 #define VOLUME_MIN ((uint32_t) 0U)
 #define VOLUME_MAX ((uint32_t) 0x10000U)
 
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
+
 struct volume {
 	uint32_t channels;
-	long values[SPA_AUDIO_MAX_CHANNELS];
+	long values[MAX_CHANNELS];
 };
 
 typedef struct {
@@ -498,7 +500,7 @@ static struct spa_pod *build_volume_mute(struct spa_pod_builder *b, struct volum
 	spa_pod_builder_push_object(b, &f[0],
 			SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
 	if (volume) {
-		float volumes[SPA_AUDIO_MAX_CHANNELS];
+		float volumes[MAX_CHANNELS];
 		uint32_t i, n_volumes = 0;
 
 		n_volumes = volume->channels;
@@ -555,7 +557,7 @@ static int set_volume_mute(snd_ctl_pipewire_t *ctl, const char *name, struct vol
 		param = spa_pod_builder_pop(&b, &f[0]);
 
 		pw_log_debug("set device %d mute/volume for node %d", dg->id, g->id);
-		pw_device_set_param((struct pw_node*)dg->proxy,
+		pw_device_set_param((struct pw_device*)dg->proxy,
 			SPA_PARAM_Route, 0, param);
 	} else {
 		if (!SPA_FLAG_IS_SET(g->permissions, PW_PERM_W | PW_PERM_X))
@@ -850,11 +852,11 @@ static void parse_props(struct global *g, const struct spa_pod *param, bool devi
 			break;
 		case SPA_PROP_channelVolumes:
 		{
-			float volumes[SPA_AUDIO_MAX_CHANNELS];
+			float volumes[MAX_CHANNELS];
 			uint32_t n_volumes, i;
 
 			n_volumes = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
-					volumes, SPA_AUDIO_MAX_CHANNELS);
+					volumes, SPA_N_ELEMENTS(volumes));
 
 			g->node.channel_volume.channels = n_volumes;
 			for (i = 0; i < n_volumes; i++)
@@ -1019,29 +1021,6 @@ static const struct global_info node_info = {
 };
 
 /** metadata */
-static int json_object_find(const char *obj, const char *key, char *value, size_t len)
-{
-	struct spa_json it[2];
-	const char *v;
-	char k[128];
-
-	spa_json_init(&it[0], obj, strlen(obj));
-	if (spa_json_enter_object(&it[0], &it[1]) <= 0)
-		return -EINVAL;
-
-	while (spa_json_get_string(&it[1], k, sizeof(k)) > 0) {
-		if (spa_streq(k, key)) {
-			if (spa_json_get_string(&it[1], value, len) <= 0)
-				continue;
-			return 0;
-		} else {
-			if (spa_json_next(&it[1], &v) <= 0)
-				break;
-		}
-	}
-	return -ENOENT;
-}
-
 static int metadata_property(void *data,
                         uint32_t subject,
                         const char *key,
@@ -1054,14 +1033,14 @@ static int metadata_property(void *data,
 	if (subject == PW_ID_CORE) {
 		if (key == NULL || spa_streq(key, "default.audio.sink")) {
 			if (value == NULL ||
-			    json_object_find(value, "name",
+			    spa_json_str_object_find(value, strlen(value), "name",
 					ctl->default_sink, sizeof(ctl->default_sink)) < 0)
 				ctl->default_sink[0] = '\0';
 			pw_log_debug("found default sink: %s", ctl->default_sink);
 		}
 		if (key == NULL || spa_streq(key, "default.audio.source")) {
 			if (value == NULL ||
-			    json_object_find(value, "name",
+			    spa_json_str_object_find(value, strlen(value), "name",
 					ctl->default_source, sizeof(ctl->default_source)) < 0)
 				ctl->default_source[0] = '\0';
 			pw_log_debug("found default source: %s", ctl->default_source);
@@ -1367,7 +1346,6 @@ SND_CTL_PLUGIN_DEFINE_FUNC(pipewire)
 	ctl->context = pw_context_new(loop,
 					pw_properties_new(
 						PW_KEY_CLIENT_API, "alsa",
-						PW_KEY_CONFIG_NAME, "client-rt.conf",
 						NULL),
 					0);
 	if (ctl->context == NULL) {

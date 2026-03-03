@@ -83,6 +83,11 @@ static int try_connect(struct pw_protocol_client *client,
 	else
 		name_size = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/%s", runtime_dir, name) + 1;
 
+	if (addr.sun_path[0] == '@') {
+		addr.sun_path[0] = '\0';
+		name_size--;
+	}
+
 	if (name_size > (int) sizeof addr.sun_path) {
 		if (runtime_dir == NULL)
 			pw_log_error("client %p: socket path \"%s\" plus null terminator exceeds %i bytes",
@@ -122,14 +127,21 @@ error:
 }
 
 static int try_connect_name(struct pw_protocol_client *client,
-		const char *name,
+		const char *name, bool manager,
 		void (*done_callback) (void *data, int res),
 		void *data)
 {
 	const char *runtime_dir;
+	char path[PATH_MAX];
 	int res;
 
-	if (name[0] == '/') {
+	if (manager && !spa_strendswith(name, "-manager")) {
+		snprintf(path, sizeof(path), "%s-manager", name);
+		res = try_connect_name(client, path, false, done_callback, data);
+		if (res >= 0)
+			return res;
+	}
+	if (name[0] == '/' || name[0] == '@') {
 		return try_connect(client, NULL, name, done_callback, data);
 	} else {
 		runtime_dir = get_runtime_dir();
@@ -152,21 +164,22 @@ int pw_protocol_native_connect_local_socket(struct pw_protocol_client *client,
 					    void *data)
 {
 	const char *name;
-	struct spa_json it[2];
+	struct spa_json it[1];
 	char path[PATH_MAX];
 	int res = -EINVAL;
+	bool manager;
+
+	manager = props && spa_streq(spa_dict_lookup(props, PW_KEY_REMOTE_INTENTION), "manager");
 
 	name = get_remote(props);
 	if (name == NULL)
 		return -EINVAL;
 
-	spa_json_init(&it[0], name, strlen(name));
+	if (spa_json_begin_array(&it[0], name, strlen(name)) <= 0)
+		return try_connect_name(client, name, manager, done_callback, data);
 
-	if (spa_json_enter_array(&it[0], &it[1]) < 0)
-		return try_connect_name(client, name, done_callback, data);
-
-	while (spa_json_get_string(&it[1], path, sizeof(path)) > 0) {
-		res = try_connect_name(client, path, done_callback, data);
+	while (spa_json_get_string(&it[0], path, sizeof(path)) > 0) {
+		res = try_connect_name(client, path, manager, done_callback, data);
 		if (res < 0)
 			continue;
 		break;

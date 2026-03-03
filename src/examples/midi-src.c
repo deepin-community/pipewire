@@ -103,7 +103,7 @@ static void on_process(void *userdata, struct spa_io_position *position)
 	while (sample_offset < position->clock.duration) {
 		if (cycle % 2 == 0) {
 			/* MIDI note on, channel 0, middle C, max velocity */
-			uint8_t buf[] = { 0x90, 0x3c, 0x7f };
+			uint32_t event = 0x20903c7f;
 
 			/* The time position of the message in the graph cycle
 			 * is given as offset from the cycle start, in
@@ -111,18 +111,18 @@ static void on_process(void *userdata, struct spa_io_position *position)
 			 * samples, and the sample offset should satisfy
 			 * 0 <= sample_offset < position->clock.duration.
 			 */
-			spa_pod_builder_control(&builder, sample_offset, SPA_CONTROL_Midi);
+			spa_pod_builder_control(&builder, sample_offset, SPA_CONTROL_UMP);
 
 			/* Raw MIDI data for the message */
-			spa_pod_builder_bytes(&builder, buf, sizeof(buf));
+			spa_pod_builder_bytes(&builder, &event, sizeof(event));
 
 			pw_log_info("note on at %"PRIu64, sample_position + sample_offset);
 		} else {
 			/* MIDI note off, channel 0, middle C, max velocity */
-			uint8_t buf[] = { 0x80, 0x3c, 0x7f };
+			uint32_t event = 0x20803c7f;
 
-			spa_pod_builder_control(&builder, sample_offset, SPA_CONTROL_Midi);
-			spa_pod_builder_bytes(&builder, buf, sizeof(buf));
+			spa_pod_builder_control(&builder, sample_offset, SPA_CONTROL_UMP);
+			spa_pod_builder_bytes(&builder, &event, sizeof(event));
 
 			pw_log_info("note off at %"PRIu64, sample_position + sample_offset);
 		}
@@ -178,6 +178,7 @@ int main(int argc, char *argv[])
 	uint8_t buffer[1024];
 	struct spa_pod_builder builder;
 	struct spa_pod *params[1];
+	uint32_t n_params = 0;
 
 	pw_init(&argc, &argv);
 
@@ -213,7 +214,7 @@ int main(int argc, char *argv[])
 			PW_FILTER_PORT_FLAG_MAP_BUFFERS,
 			sizeof(struct port),
 			pw_properties_new(
-				PW_KEY_FORMAT_DSP, "8 bit raw midi",
+				PW_KEY_FORMAT_DSP, "32 bit raw UMP",
 				PW_KEY_PORT_NAME, "output",
 				NULL),
 			NULL, 0);
@@ -226,7 +227,7 @@ int main(int argc, char *argv[])
 	 */
 	spa_pod_builder_init(&builder, buffer, sizeof(buffer));
 
-	params[0] = spa_pod_builder_add_object(&builder,
+	params[n_params++] = spa_pod_builder_add_object(&builder,
 			/* POD Object for the buffer parameter */
 			SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
 			/* Default 1 buffer, minimum of 1, max of 32 buffers.
@@ -242,7 +243,7 @@ int main(int argc, char *argv[])
 			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(1));
 
 	pw_filter_update_params(data.filter, data.port,
-			(const struct spa_pod **)params, SPA_N_ELEMENTS(params));
+			(const struct spa_pod **)params, n_params);
 
 	/* Now connect this filter. We ask that our process function is
 	 * called in a realtime thread. */

@@ -1,5 +1,4 @@
 subdir('module-rt')
-subdir('spa')
 
 # The list of "main" source files for modules, the ones that have the
 # doxygen documentation
@@ -39,6 +38,10 @@ module_sources = [
   'module-rtp-session.c',
   'module-rtp-source.c',
   'module-rtp-sink.c',
+  'module-spa-node.c',
+  'module-spa-node-factory.c',
+  'module-spa-device.c',
+  'module-spa-device-factory.c',
   'module-snapcast-discover.c',
   'module-vban-recv.c',
   'module-vban-send.c',
@@ -71,101 +74,14 @@ pipewire_module_loopback = shared_library('pipewire-module-loopback',
   dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
 )
 
-plugin_dependencies = []
-if get_option('spa-plugins').allowed()
-  plugin_dependencies += audioconvert_dep
-endif
-
-simd_cargs = []
-simd_dependencies = []
-
-if have_sse
-  filter_chain_sse = static_library('filter_chain_sse',
-    ['module-filter-chain/pffft.c',
-     'module-filter-chain/dsp-ops-sse.c' ],
-    c_args : [sse_args, '-O3', '-DHAVE_SSE'],
-    dependencies : [ spa_dep ],
-    install : false
-    )
-  simd_cargs += ['-DHAVE_SSE']
-  simd_dependencies += filter_chain_sse
-endif
-if have_avx
-  filter_chain_avx = static_library('filter_chain_avx',
-    ['module-filter-chain/dsp-ops-avx.c' ],
-    c_args : [avx_args, fma_args,'-O3', '-DHAVE_AVX'],
-    dependencies : [ spa_dep ],
-    install : false
-    )
-  simd_cargs += ['-DHAVE_AVX']
-  simd_dependencies += filter_chain_avx
-endif
-if have_neon
-  filter_chain_neon = static_library('filter_chain_neon',
-    ['module-filter-chain/pffft.c' ],
-    c_args : [neon_args, '-O3', '-DHAVE_NEON'],
-    dependencies : [ spa_dep ],
-    install : false
-    )
-  simd_cargs += ['-DHAVE_NEON']
-  simd_dependencies += filter_chain_neon
-endif
-
-filter_chain_c = static_library('filter_chain_c',
-  ['module-filter-chain/pffft.c',
-   'module-filter-chain/dsp-ops.c',
-   'module-filter-chain/dsp-ops-c.c' ],
-  c_args : [simd_cargs, '-O3', '-DPFFFT_SIMD_DISABLE'],
-  dependencies : [ spa_dep ],
-  install : false
-)
-simd_dependencies += filter_chain_c
-
-filter_chain_sources = [
-  'module-filter-chain.c',
-  'module-filter-chain/biquad.c',
-  'module-filter-chain/ladspa_plugin.c',
-  'module-filter-chain/builtin_plugin.c',
-  'module-filter-chain/convolver.c'
-]
-filter_chain_dependencies = [
-  mathlib, dl_lib, pipewire_dep, sndfile_dep, plugin_dependencies
-]
-
 pipewire_module_filter_chain = shared_library('pipewire-module-filter-chain',
-  filter_chain_sources,
+  [ 'module-filter-chain.c' ],
   include_directories : [configinc],
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  link_with : simd_dependencies,
-  dependencies : filter_chain_dependencies,
+  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
 )
-
-if libmysofa_dep.found()
-pipewire_module_filter_chain_sofa = shared_library('pipewire-module-filter-chain-sofa',
-  [ 'module-filter-chain/sofa_plugin.c',
-    'module-filter-chain/convolver.c' ],
-  include_directories : [configinc],
-  install : true,
-  install_dir : modules_install_dir,
-  install_rpath: modules_install_dir,
-  link_with : simd_dependencies,
-  dependencies : [ filter_chain_dependencies, libmysofa_dep ]
-)
-endif
-
-if lilv_lib.found()
-pipewire_module_filter_chain_lv2 = shared_library('pipewire-module-filter-chain-lv2',
-  [ 'module-filter-chain/lv2_plugin.c' ],
-  include_directories : [configinc],
-  install : true,
-  install_dir : modules_install_dir,
-  install_rpath: modules_install_dir,
-  dependencies : [ filter_chain_dependencies, lilv_lib ]
-)
-endif
-
 
 pipewire_module_combine_stream = shared_library('pipewire-module-combine-stream',
   [ 'module-combine-stream.c' ],
@@ -259,7 +175,7 @@ pipewire_module_parametric_equalizer = shared_library('pipewire-module-parametri
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  dependencies : [filter_chain_dependencies],
+  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
 )
 
 pipewire_module_profiler = shared_library('pipewire-module-profiler',
@@ -291,6 +207,39 @@ if build_module_rtkit
   )
 endif
 summary({'rt': '@0@ RTKit'.format(build_module_rtkit ? 'with' : 'without')}, section: 'Optional Modules')
+
+pipewire_module_spa_node = shared_library('pipewire-module-spa-node',
+  [ 'module-spa-node.c', 'spa/spa-node.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
+)
+pipewire_module_spa_node_factory = shared_library('pipewire-module-spa-node-factory',
+  [ 'module-spa-node-factory.c', 'spa/spa-node.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
+)
+pipewire_module_spa_device = shared_library('pipewire-module-spa-device',
+  [ 'module-spa-device.c', 'spa/spa-device.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
+)
+pipewire_module_spa_device_factory = shared_library('pipewire-module-spa-device-factory',
+  [ 'module-spa-device-factory.c', 'spa/spa-device.c' ],
+  include_directories : [configinc],
+  install : true,
+  install_dir : modules_install_dir,
+  install_rpath: modules_install_dir,
+  dependencies : [spa_dep, mathlib, dl_lib, pipewire_dep],
+)
 
 build_module_portal = dbus_dep.found()
 if build_module_portal
@@ -327,10 +276,6 @@ pipewire_module_link_factory = shared_library('pipewire-module-link-factory',
 
 pipewire_module_protocol_deps = [mathlib, dl_lib, pipewire_dep]
 
-if systemd_dep.found()
-  pipewire_module_protocol_deps += systemd_dep
-endif
-
 if selinux_dep.found()
   pipewire_module_protocol_deps += selinux_dep
 endif
@@ -340,7 +285,6 @@ pipewire_module_protocol_native = shared_library('pipewire-module-protocol-nativ
     'module-protocol-native/local-socket.c',
     'module-protocol-native/portal-screencast.c',
     'module-protocol-native/protocol-native.c',
-    'module-protocol-native/v0/protocol-native.c',
     'module-protocol-native/protocol-footer.c',
     'module-protocol-native/security-context.c',
     'module-protocol-native/connection.c' ],
@@ -527,9 +471,6 @@ pipewire_module_client_node = shared_library('pipewire-module-client-node',
     'module-client-node/remote-node.c',
     'module-client-node/client-node.c',
     'module-client-node/protocol-native.c',
-    'module-client-node/v0/client-node.c',
-    'module-client-node/v0/transport.c',
-    'module-client-node/v0/protocol-native.c',
     'spa/spa-node.c', ],
   include_directories : [configinc],
   link_with : pipewire_module_protocol_native,
@@ -628,6 +569,22 @@ if build_module_zeroconf_discover
 endif
 summary({'zeroconf-discover': build_module_zeroconf_discover}, bool_yn: true, section: 'Optional Modules')
 
+# Several modules (rtp-sink, rtp-source, raop-sink) use the same code
+# for actual RTP transport. To not have to recompile the same code
+# multiple times, and to make the build script a little more robust
+# (by avoiding build script code duplication), create a static library
+# that contains that common code.
+pipewire_module_rtp_common_lib = static_library('pipewire-module-rtp-common-lib',
+  [ 'module-rtp/stream.c' ],
+  include_directories : [configinc],
+  install : false,
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, opus_dep],
+)
+pipewire_module_rtp_common_dep = declare_dependency(
+  link_with: pipewire_module_rtp_common_lib,
+  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, opus_dep],
+)
+
 build_module_raop_discover = avahi_dep.found()
 if build_module_raop_discover
   pipewire_module_raop_discover = shared_library('pipewire-module-raop-discover',
@@ -660,51 +617,47 @@ build_module_raop = openssl_lib.found()
 if build_module_raop
   pipewire_module_raop_sink = shared_library('pipewire-module-raop-sink',
     [ 'module-raop-sink.c',
-      'module-raop/rtsp-client.c',
-      'module-rtp/stream.c' ],
+      'module-raop/rtsp-client.c' ],
     include_directories : [configinc],
     install : true,
     install_dir : modules_install_dir,
     install_rpath: modules_install_dir,
-    dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, opus_dep, openssl_lib],
+    dependencies : [pipewire_module_rtp_common_dep, openssl_lib],
   )
 endif
 summary({'raop-sink (requires OpenSSL)': build_module_raop}, bool_yn: true, section: 'Optional Modules')
 
-roc_dep = dependency('roc', version: '>= 0.3.0', required: get_option('roc'))
+roc_dep = dependency('roc', version: '>= 0.4.0', required: get_option('roc'))
 summary({'ROC': roc_dep.found()}, bool_yn: true, section: 'Streaming between daemons')
 
 pipewire_module_rtp_source = shared_library('pipewire-module-rtp-source',
-  [ 'module-rtp-source.c',
-    'module-rtp/stream.c' ],
+  [ 'module-rtp-source.c' ],
   include_directories : [configinc],
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, opus_dep],
+  dependencies : [pipewire_module_rtp_common_dep],
 )
 
 pipewire_module_rtp_sink = shared_library('pipewire-module-rtp-sink',
-  [ 'module-rtp-sink.c',
-    'module-rtp/stream.c' ],
+  [ 'module-rtp-sink.c' ],
   include_directories : [configinc],
   install : true,
   install_dir : modules_install_dir,
   install_rpath: modules_install_dir,
-  dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, opus_dep],
+  dependencies : [pipewire_module_rtp_common_dep],
 )
 
 build_module_rtp_session = avahi_dep.found()
 if build_module_rtp_session
   pipewire_module_rtp_session = shared_library('pipewire-module-rtp-session',
-    [ 'module-rtp/stream.c',
-      'module-zeroconf-discover/avahi-poll.c',
-     'module-rtp-session.c' ],
+    [ 'module-zeroconf-discover/avahi-poll.c',
+      'module-rtp-session.c' ],
     include_directories : [configinc],
     install : true,
     install_dir : modules_install_dir,
     install_rpath: modules_install_dir,
-    dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep, avahi_dep, opus_dep],
+    dependencies : [pipewire_module_rtp_common_dep, avahi_dep],
   )
 endif
 
@@ -740,7 +693,7 @@ pipewire_module_vban_recv = shared_library('pipewire-module-vban-recv',
 build_module_roc = roc_dep.found()
 if build_module_roc
   pipewire_module_roc_sink = shared_library('pipewire-module-roc-sink',
-    [ 'module-roc-sink.c' ],
+    [ 'module-roc-sink.c', 'module-roc/common.c'],
     include_directories : [configinc],
     install : true,
     install_dir : modules_install_dir,
@@ -749,7 +702,7 @@ if build_module_roc
   )
 
   pipewire_module_roc_source = shared_library('pipewire-module-roc-source',
-    [ 'module-roc-source.c' ],
+    [ 'module-roc-source.c', 'module-roc/common.c' ],
     include_directories : [configinc],
     install : true,
     install_dir : modules_install_dir,
@@ -791,7 +744,23 @@ if build_module_avb
       'module-avb/acmp.c',
       'module-avb/aecp.c',
       'module-avb/aecp-aem.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-available.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-get-set-control.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-get-set-name.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-get-set-clock-source.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-get-set-sampling-rate.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-register-unsolicited-notifications.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-deregister-unsolicited-notifications.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-register-unsolicited-notifications.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-get-set-stream-format.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-lock-entity.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-get-set-configuration.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-lock-entity.c',
+      'module-avb/aecp-aem-cmds-resps/cmd-register-unsolicited-notifications.c',
+      'module-avb/aecp-aem-cmds-resps/reply-unsol-helpers.c',
+      'module-avb/es-builder.c',
       'module-avb/avdecc.c',
+      'module-avb/descriptors.c',
       'module-avb/maap.c',
       'module-avb/mmrp.c',
       'module-avb/mrp.c',

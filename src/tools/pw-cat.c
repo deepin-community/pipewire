@@ -3,6 +3,8 @@
 /*                         @author Pantelis Antoniou <pantelis.antoniou@konsulko.com> */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <stdio.h>
 #include <errno.h>
 #include <time.h>
@@ -19,7 +21,8 @@
 
 #include <spa/param/audio/layout.h>
 #include <spa/param/audio/format-utils.h>
-#include <spa/param/audio/type-info.h>
+#include <spa/param/audio/raw-json.h>
+#include <spa/utils/type-info.h>
 #include <spa/param/tag-utils.h>
 #include <spa/param/props.h>
 #include <spa/utils/result.h>
@@ -27,20 +30,29 @@
 #include <spa/utils/json.h>
 #include <spa/debug/types.h>
 #include <spa/debug/file.h>
+#include <spa/control/ump-utils.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/i18n.h>
 #include <pipewire/extensions/metadata.h>
 
-#include "config.h"
-
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/log.h>
+
+#ifndef AV_PROFILE_DTS_HD_MA
+#define AV_PROFILE_DTS_HD_MA FF_PROFILE_DTS_HD_MA
+#endif
+
+#ifndef AV_PROFILE_DTS_HD_HRA
+#define AV_PROFILE_DTS_HD_HRA FF_PROFILE_DTS_HD_HRA
+#endif
+
 #endif
 
 #include "midifile.h"
+#include "midiclip.h"
 #include "dfffile.h"
 #include "dsffile.h"
 
@@ -57,6 +69,8 @@
 #define DEFAULT_FORMAT		"s16"
 #define DEFAULT_VOLUME		1.0
 #define DEFAULT_QUALITY		4
+
+#define MAX_CHANNELS		SPA_AUDIO_MAX_CHANNELS
 
 enum mode {
 	mode_none,
@@ -77,11 +91,6 @@ struct data;
 
 typedef int (*fill_fn)(struct data *d, void *dest, unsigned int n_frames, bool *null_frame);
 
-struct channelmap {
-	int n_channels;
-	int channels[SPA_AUDIO_MAX_CHANNELS];
-};
-
 struct data {
 	struct pw_main_loop *loop;
 	struct pw_context *context;
@@ -101,24 +110,27 @@ struct data {
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 #define TYPE_ENCODED    3
 #endif
+#define TYPE_SYSEX	4
+#define TYPE_MIDI2	5
 	int data_type;
+	bool rawfile;
 	const char *remote_name;
 	const char *media_type;
 	const char *media_category;
 	const char *media_role;
 	const char *channel_map;
 	const char *format;
+	const char *container;
 	const char *target;
 	const char *latency;
 	struct pw_properties *props;
 
 	const char *filename;
-	SNDFILE *file;
 
 	unsigned int bitrate;
 	unsigned int rate;
-	int channels;
-	struct channelmap channelmap;
+	uint32_t channels;
+	struct spa_audio_layout_info channelmap;
 	unsigned int stride;
 	enum unit latency_unit;
 	unsigned int latency_value;
@@ -136,9 +148,20 @@ struct data {
 	uint64_t clock_time;
 
 	struct {
+		SNDFILE *file;
+	} sndfile;
+	struct {
 		struct midi_file *file;
 		struct midi_file_info info;
+#define MIDI_FORCE_NONE		0
+#define MIDI_FORCE_UMP		1
+#define MIDI_FORCE_MIDI1	2
+		int force_type;
 	} midi;
+	struct {
+		struct midi_clip *file;
+		struct midi_clip_info info;
+	} clip;
 	struct {
 		struct dsf_file *file;
 		struct dsf_file_info info;
@@ -159,9 +182,18 @@ struct data {
 		int64_t accumulated_excess_playtime;
 	} encoded;
 #endif
-};
+	struct {
+		FILE *file;
+		bool close;
+	} sysex;
+	struct {
+		FILE *file;
+		bool close;
+	} raw;
 
-#define STR_FMTS "(ulaw|alaw|u8|s8|s16|s32|f32|f64)"
+	uint64_t sample_limit;         /* 0 means unlimited */
+	uint64_t samples_processed;
+};
 
 static const struct format_info {
 	const char *name;
@@ -178,6 +210,35 @@ static const struct format_info {
 	{  "s32", SF_FORMAT_PCM_32, SPA_AUDIO_FORMAT_S32, 4 },
 	{  "f32", SF_FORMAT_FLOAT, SPA_AUDIO_FORMAT_F32, 4 },
 	{  "f64", SF_FORMAT_DOUBLE, SPA_AUDIO_FORMAT_F32, 8 },
+
+	{  "mp1", SF_FORMAT_MPEG_LAYER_I, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "mp2", SF_FORMAT_MPEG_LAYER_II, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "mp3", SF_FORMAT_MPEG_LAYER_III, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "vorbis", SF_FORMAT_VORBIS, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "opus", SF_FORMAT_OPUS, SPA_AUDIO_FORMAT_F32, 1 },
+
+	{  "ima-adpcm", SF_FORMAT_IMA_ADPCM, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "ms-adpcm", SF_FORMAT_MS_ADPCM, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "nms-adpcm-16", SF_FORMAT_NMS_ADPCM_16, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "nms-adpcm-24", SF_FORMAT_NMS_ADPCM_24, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "nms-adpcm-32", SF_FORMAT_NMS_ADPCM_32, SPA_AUDIO_FORMAT_F32, 1 },
+
+	{  "alac-16", SF_FORMAT_ALAC_16, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "alac-20", SF_FORMAT_ALAC_20, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "alac-24", SF_FORMAT_ALAC_24, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "alac-32", SF_FORMAT_ALAC_32, SPA_AUDIO_FORMAT_F32, 1 },
+
+	{  "gsm610", SF_FORMAT_GSM610, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "g721-32", SF_FORMAT_G721_32, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "g723-24", SF_FORMAT_G723_24, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "g723-40", SF_FORMAT_G723_40, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "dwvw-12", SF_FORMAT_DWVW_12, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "dwvw-16", SF_FORMAT_DWVW_16, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "dwvw-24", SF_FORMAT_DWVW_24, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "vox", SF_FORMAT_VOX_ADPCM, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "dpcm-16", SF_FORMAT_DPCM_16, SPA_AUDIO_FORMAT_F32, 1 },
+	{  "dpcm-8", SF_FORMAT_DPCM_8, SPA_AUDIO_FORMAT_F32, 1 },
+
 };
 
 static const struct format_info *format_info_by_name(const char *str)
@@ -197,11 +258,19 @@ static const struct format_info *format_info_by_sf_format(int format)
 	return NULL;
 }
 
+static void list_formats(struct data *d)
+{
+
+	fprintf(stdout, _("Supported formats:\n"));
+	SPA_FOR_EACH_ELEMENT_VAR(format_info, i)
+		fprintf(stdout, "  %s\n", i->name);
+}
+
 static int sf_playback_fill_x8(struct data *d, void *dest, unsigned int n_frames, bool *null_frame)
 {
 	sf_count_t rn;
 
-	rn = sf_read_raw(d->file, dest, n_frames * d->stride);
+	rn = sf_read_raw(d->sndfile.file, dest, n_frames * d->stride);
 	return (int)rn / d->stride;
 }
 
@@ -210,7 +279,7 @@ static int sf_playback_fill_s16(struct data *d, void *dest, unsigned int n_frame
 	sf_count_t rn;
 
 	assert(sizeof(short) == sizeof(int16_t));
-	rn = sf_readf_short(d->file, dest, n_frames);
+	rn = sf_readf_short(d->sndfile.file, dest, n_frames);
 	return (int)rn;
 }
 
@@ -219,7 +288,7 @@ static int sf_playback_fill_s32(struct data *d, void *dest, unsigned int n_frame
 	sf_count_t rn;
 
 	assert(sizeof(int) == sizeof(int32_t));
-	rn = sf_readf_int(d->file, dest, n_frames);
+	rn = sf_readf_int(d->sndfile.file, dest, n_frames);
 	return (int)rn;
 }
 
@@ -228,7 +297,7 @@ static int sf_playback_fill_f32(struct data *d, void *dest, unsigned int n_frame
 	sf_count_t rn;
 
 	assert(sizeof(float) == 4);
-	rn = sf_readf_float(d->file, dest, n_frames);
+	rn = sf_readf_float(d->sndfile.file, dest, n_frames);
 	return (int)rn;
 }
 
@@ -237,7 +306,7 @@ static int sf_playback_fill_f64(struct data *d, void *dest, unsigned int n_frame
 	sf_count_t rn;
 
 	assert(sizeof(double) == 8);
-	rn = sf_readf_double(d->file, dest, n_frames);
+	rn = sf_readf_double(d->sndfile.file, dest, n_frames);
 	return (int)rn;
 }
 
@@ -246,8 +315,10 @@ static int encoded_playback_fill(struct data *d, void *dest, unsigned int n_fram
 {
 	AVPacket *packet = d->encoded.packet;
 	int ret;
+	uint8_t *dest_ptr = (uint8_t *)dest;
 	struct pw_time time;
 	int64_t quantum_duration;
+	int64_t accumulated_duration;
 	int64_t excess_playtime;
 	int64_t cycle_length;
 	int64_t av_time_base_num, av_time_base_denom;
@@ -295,32 +366,42 @@ static int encoded_playback_fill(struct data *d, void *dest, unsigned int n_fram
 		return 0;
 	}
 
-	/* Keep reading packets until we get one from the stream we are
-	 * interested in. This is relevant when playing data that contains
-	 * several multiplexed streams. */
-	while (true) {
-		if ((ret = av_read_frame(d->encoded.format_context, packet) < 0))
-			break;
+	accumulated_duration = 0;
 
-		if (packet->stream_index == d->encoded.stream_index)
+	/* Continue filling the buffer until at least a quantum's worth of data
+	 * has been written. Encoded frames may have a playtime that is _shorter_
+	 * than a quantum. In that case, multiple frames must be written into the
+	 * buffer to cover a quantum length. */
+	while (true) {
+		/* Keep reading packets until we get one from the stream we are
+		 * interested in. This is relevant when playing data that contains
+		 * several multiplexed streams. */
+		while (true) {
+			if ((ret = av_read_frame(d->encoded.format_context, packet) < 0))
+				break;
+
+			if (packet->stream_index == d->encoded.stream_index)
+				break;
+		}
+
+		memcpy(dest_ptr, packet->data, packet->size);
+
+		accumulated_duration += packet->duration;
+		dest_ptr += packet->size;
+
+		if (accumulated_duration >= quantum_duration)
+		{
+			excess_playtime = accumulated_duration - quantum_duration;
+			d->encoded.accumulated_excess_playtime += excess_playtime;
 			break;
+		}
 	}
 
-	memcpy(dest, packet->data, packet->size);
-
-	if (packet->duration > quantum_duration)
-		excess_playtime = packet->duration - quantum_duration;
-	else
-		excess_playtime = 0;
-	d->encoded.accumulated_excess_playtime += excess_playtime;
-
-	return packet->size;
+	return (dest_ptr - ((uint8_t*)dest));
 }
 
 static int av_codec_params_to_audio_info(struct data *data, AVCodecParameters *codec_params, struct spa_audio_info *info)
 {
-	int32_t profile;
-
 	switch (codec_params->codec_id) {
 	case AV_CODEC_ID_VORBIS:
 		info->media_subtype = SPA_MEDIA_SUBTYPE_vorbis;
@@ -345,32 +426,50 @@ static int av_codec_params_to_audio_info(struct data *data, AVCodecParameters *c
 	case AV_CODEC_ID_WMAVOICE:
 	case AV_CODEC_ID_WMALOSSLESS:
 		info->media_subtype = SPA_MEDIA_SUBTYPE_wma;
+		info->info.wma.rate = data->rate;
+		info->info.wma.channels = data->channels;
+		info->info.wma.bitrate = data->bitrate;
+		info->info.wma.block_align = codec_params->block_align;
+		/* The codec tag is not decided by FFmpeg; instead, it is
+		 * directly taken from the container. FFmpeg currently has
+		 * no named constants for the WMA versions, so numeric
+		 * constants have to be used here instead. */
 		switch (codec_params->codec_tag) {
-		/* TODO see if these hex constants can be replaced by named constants from FFmpeg */
+		/* This originates from Microsoft's mmreg.h , where
+		 * 0x160 is specified as meaning WMA v1 (which is commonly
+		 * referred to as WMA 7). */
+		case 0x160:
+			info->info.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA7;
+			break;
+		/* This originates from Microsoft's mmreg.h , where
+		 * 0x161 is specified as meaning WMA v2 (which is commonly
+		 * referred to as WMA 8 or 9). */
 		case 0x161:
-			profile = SPA_AUDIO_WMA_PROFILE_WMA9;
+			info->info.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA9;
 			break;
+		/* This originates from Microsoft's mmreg.h , where
+		 * 0x162 is specified as meaning WMA v3 (which is commonly
+		 * referred to as WMA 9 Pro). */
 		case 0x162:
-			profile = SPA_AUDIO_WMA_PROFILE_WMA9_PRO;
+			info->info.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA9_PRO;
 			break;
+		/* This originates from Microsoft's mmreg.h , where
+		 * 0x163 is specified as meaning WMA 9 lossless. */
 		case 0x163:
-			profile = SPA_AUDIO_WMA_PROFILE_WMA9_LOSSLESS;
+			info->info.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA9_LOSSLESS;
 			break;
+		/* WMA 10 is not mentioned in mmreg.h - these were empirically
+		 * determined instead. */
 		case 0x166:
-			profile = SPA_AUDIO_WMA_PROFILE_WMA10;
+			info->info.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA10;
 			break;
 		case 0x167:
-			profile = SPA_AUDIO_WMA_PROFILE_WMA10_LOSSLESS;
+			info->info.wma.profile = SPA_AUDIO_WMA_PROFILE_WMA10_LOSSLESS;
 			break;
 		default:
 			fprintf(stderr, "error: invalid WMA profile\n");
 			return -EINVAL;
 		}
-		info->info.wma.rate = data->rate;
-		info->info.wma.channels = data->channels;
-		info->info.wma.bitrate = data->bitrate;
-		info->info.wma.block_align = codec_params->block_align;
-		info->info.wma.profile = profile;
 		break;
 	case AV_CODEC_ID_FLAC:
 		info->media_subtype = SPA_MEDIA_SUBTYPE_flac;
@@ -404,6 +503,41 @@ static int av_codec_params_to_audio_info(struct data *data, AVCodecParameters *c
 		info->info.amr.rate = data->rate;
 		info->info.amr.channels = data->channels;
 		info->info.amr.band_mode = SPA_AUDIO_AMR_BAND_MODE_WB;
+		break;
+	case AV_CODEC_ID_AC3:
+		info->media_subtype = SPA_MEDIA_SUBTYPE_ac3;
+		info->info.ac3.rate = data->rate;
+		info->info.ac3.channels = data->channels;
+		break;
+	case AV_CODEC_ID_EAC3:
+		info->media_subtype = SPA_MEDIA_SUBTYPE_eac3;
+		info->info.eac3.rate = data->rate;
+		info->info.eac3.channels = data->channels;
+		break;
+	case AV_CODEC_ID_TRUEHD:
+		info->media_subtype = SPA_MEDIA_SUBTYPE_truehd;
+		info->info.truehd.rate = data->rate;
+		info->info.truehd.channels = data->channels;
+		break;
+	case AV_CODEC_ID_DTS:
+		info->media_subtype = SPA_MEDIA_SUBTYPE_dts;
+		info->info.dts.rate = data->rate;
+		info->info.dts.channels = data->channels;
+		switch (codec_params->profile) {
+		case AV_PROFILE_DTS_HD_MA:
+			info->info.dts.ext_type = SPA_AUDIO_DTS_EXT_HD_MA;
+			break;
+		case AV_PROFILE_DTS_HD_HRA:
+			info->info.dts.ext_type = SPA_AUDIO_DTS_EXT_HD_HRA;
+			break;
+		default:
+			info->info.dts.ext_type = SPA_AUDIO_DTS_EXT_NONE;
+			break;
+		}
+		break;
+	case AV_CODEC_ID_MPEGH_3D_AUDIO:
+		info->media_subtype = SPA_MEDIA_SUBTYPE_mpegh;
+		info->info.mpegh.rate = data->rate;
 		break;
 	default:
 		fprintf(stderr, "Unsupported encoded media subtype\n");
@@ -459,7 +593,7 @@ static int sf_record_fill_x8(struct data *d, void *src, unsigned int n_frames, b
 {
 	sf_count_t rn;
 
-	rn = sf_write_raw(d->file, src, n_frames * d->stride);
+	rn = sf_write_raw(d->sndfile.file, src, n_frames * d->stride);
 	return (int)rn / d->stride;
 }
 
@@ -468,7 +602,7 @@ static int sf_record_fill_s16(struct data *d, void *src, unsigned int n_frames, 
 	sf_count_t rn;
 
 	assert(sizeof(short) == sizeof(int16_t));
-	rn = sf_writef_short(d->file, src, n_frames);
+	rn = sf_writef_short(d->sndfile.file, src, n_frames);
 	return (int)rn;
 }
 
@@ -477,7 +611,7 @@ static int sf_record_fill_s32(struct data *d, void *src, unsigned int n_frames, 
 	sf_count_t rn;
 
 	assert(sizeof(int) == sizeof(int32_t));
-	rn = sf_writef_int(d->file, src, n_frames);
+	rn = sf_writef_int(d->sndfile.file, src, n_frames);
 	return (int)rn;
 }
 
@@ -486,7 +620,7 @@ static int sf_record_fill_f32(struct data *d, void *src, unsigned int n_frames, 
 	sf_count_t rn;
 
 	assert(sizeof(float) == 4);
-	rn = sf_writef_float(d->file, src, n_frames);
+	rn = sf_writef_float(d->sndfile.file, src, n_frames);
 	return (int)rn;
 }
 
@@ -495,7 +629,7 @@ static int sf_record_fill_f64(struct data *d, void *src, unsigned int n_frames, 
 	sf_count_t rn;
 
 	assert(sizeof(double) == 8);
-	rn = sf_writef_double(d->file, src, n_frames);
+	rn = sf_writef_double(d->sndfile.file, src, n_frames);
 	return (int)rn;
 }
 
@@ -538,7 +672,7 @@ record_fill_fn(uint32_t fmt)
 	return NULL;
 }
 
-static int channelmap_from_sf(struct channelmap *map)
+static int channelmap_from_sf(struct spa_audio_layout_info *map)
 {
 	static const enum spa_audio_channel table[] = {
 		[SF_CHANNEL_MAP_MONO] =                  SPA_AUDIO_CHANNEL_MONO,
@@ -564,102 +698,106 @@ static int channelmap_from_sf(struct channelmap *map)
 		[SF_CHANNEL_MAP_TOP_REAR_RIGHT] =        SPA_AUDIO_CHANNEL_TRR,
 		[SF_CHANNEL_MAP_TOP_REAR_CENTER] =       SPA_AUDIO_CHANNEL_TRC
 	};
-	int i;
+	uint32_t i;
 
 	for (i = 0; i < map->n_channels; i++) {
-		if (map->channels[i] >= 0 && map->channels[i] < (int) SPA_N_ELEMENTS(table))
-			map->channels[i] = table[map->channels[i]];
+		if (map->position[i] < SPA_N_ELEMENTS(table))
+			map->position[i] = table[map->position[i]];
 		else
-			map->channels[i] = SPA_AUDIO_CHANNEL_UNKNOWN;
+			map->position[i] = SPA_AUDIO_CHANNEL_UNKNOWN;
 	}
 	return 0;
 }
-struct mapping {
+struct mapping_alias {
 	const char *name;
-	unsigned int channels;
-	unsigned int values[32];
+	const char *alias;
 };
 
-static const struct mapping maps[] =
+static const struct mapping_alias maps[] =
 {
-	{ "mono",         SPA_AUDIO_LAYOUT_Mono },
-	{ "stereo",       SPA_AUDIO_LAYOUT_Stereo },
-	{ "surround-21",  SPA_AUDIO_LAYOUT_2_1 },
-	{ "quad",         SPA_AUDIO_LAYOUT_Quad },
-	{ "surround-22",  SPA_AUDIO_LAYOUT_2_2 },
-	{ "surround-40",  SPA_AUDIO_LAYOUT_4_0 },
-	{ "surround-31",  SPA_AUDIO_LAYOUT_3_1 },
-	{ "surround-41",  SPA_AUDIO_LAYOUT_4_1 },
-	{ "surround-50",  SPA_AUDIO_LAYOUT_5_0 },
-	{ "surround-51",  SPA_AUDIO_LAYOUT_5_1 },
-	{ "surround-51r", SPA_AUDIO_LAYOUT_5_1R },
-	{ "surround-70",  SPA_AUDIO_LAYOUT_7_0 },
-	{ "surround-71",  SPA_AUDIO_LAYOUT_7_1 },
+	{ "mono",         "Mono" },
+	{ "stereo",       "Stereo" },
+	{ "surround-21",  "2.1" },
+	{ "quad",         "Quad" },
+	{ "surround-22",  "2.2" },
+	{ "surround-40",  "4.0" },
+	{ "surround-31",  "3.1" },
+	{ "surround-41",  "4.1" },
+	{ "surround-50",  "5.0" },
+	{ "surround-51",  "5.1" },
+	{ "surround-51r", "5.1R" },
+	{ "surround-70",  "7.0" },
+	{ "surround-71",  "7.1" },
 };
 
-static unsigned int find_channel(const char *name)
+static int parse_channelmap(const char *channel_map, struct spa_audio_layout_info *map)
 {
-	int i;
-
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static int parse_channelmap(const char *channel_map, struct channelmap *map)
-{
-	int i, nch;
+	if (spa_audio_layout_info_parse_name(map, sizeof(*map), channel_map) >= 0)
+		return 0;
 
 	SPA_FOR_EACH_ELEMENT_VAR(maps, m) {
-		if (spa_streq(m->name, channel_map)) {
-			map->n_channels = m->channels;
-			spa_memcpy(map->channels, &m->values,
-					map->n_channels * sizeof(unsigned int));
-			return 0;
-		}
+		if (spa_streq(m->name, channel_map))
+			return spa_audio_layout_info_parse_name(map, sizeof(*map), m->alias);
 	}
-
-	spa_auto(pw_strv) ch = pw_split_strv(channel_map, ",", SPA_AUDIO_MAX_CHANNELS, &nch);
-	if (ch == NULL)
-		return -1;
-
-	map->n_channels = nch;
-	for (i = 0; i < map->n_channels; i++) {
-		int c = find_channel(ch[i]);
-		map->channels[i] = c;
-	}
-
+	spa_audio_parse_position_n(channel_map, strlen(channel_map),
+			map->position, SPA_N_ELEMENTS(map->position), &map->n_channels);
 	return 0;
 }
 
-static int channelmap_default(struct channelmap *map, int n_channels)
+static void list_layouts(struct data *d)
+{
+	fprintf(stderr, _("Supported channel layouts:\n"));
+	SPA_FOR_EACH_ELEMENT_VAR(spa_type_audio_layout_info, i) {
+		if (i->name == NULL)
+			break;
+		fprintf(stdout, "    %s: [", i->name);
+		for (uint32_t j = 0; j < i->layout.n_channels; j++)
+			fprintf(stdout, "%s%s", j == 0 ? " " : ", ",
+				spa_type_audio_channel_to_short_name(i->layout.position[j]));
+		fprintf(stdout, " ]\n");
+	}
+	fprintf(stderr, _("Supported channel layout aliases:\n"));
+	SPA_FOR_EACH_ELEMENT_VAR(maps, m)
+		fprintf(stdout, _("    %s -> %s\n"), m->name, m->alias);
+}
+
+static void list_channel_names(struct data *d)
+{
+	fprintf(stderr, _("Supported channel names:\n"));
+	SPA_FOR_EACH_ELEMENT_VAR(spa_type_audio_channel, i) {
+		if (i->name == NULL || SPA_AUDIO_CHANNEL_IS_AUX(i->type))
+			break;
+		fprintf(stdout, "    %s\n", spa_type_short_name(i->name));
+	}
+	fprintf(stderr, "    AUX0 ... AUX4095\n");
+}
+
+static int channelmap_default(struct spa_audio_layout_info *map, int n_channels)
 {
 	switch(n_channels) {
 	case 1:
-		parse_channelmap("mono", map);
+		parse_channelmap("Mono", map);
 		break;
 	case 2:
-		parse_channelmap("stereo", map);
+		parse_channelmap("Stereo", map);
 		break;
 	case 3:
-		parse_channelmap("surround-21", map);
+		parse_channelmap("2.1", map);
 		break;
 	case 4:
-		parse_channelmap("quad", map);
+		parse_channelmap("Quad", map);
 		break;
 	case 5:
-		parse_channelmap("surround-50", map);
+		parse_channelmap("5.0", map);
 		break;
 	case 6:
-		parse_channelmap("surround-51", map);
+		parse_channelmap("5.1", map);
 		break;
 	case 7:
-		parse_channelmap("surround-70", map);
+		parse_channelmap("7.0", map);
 		break;
 	case 8:
-		parse_channelmap("surround-71", map);
+		parse_channelmap("7.1", map);
 		break;
 	default:
 		n_channels = 0;
@@ -669,15 +807,14 @@ static int channelmap_default(struct channelmap *map, int n_channels)
 	return 0;
 }
 
-static void channelmap_print(struct channelmap *map)
+static void channelmap_print(struct spa_audio_layout_info *map)
 {
-	int i;
-
+	uint32_t i;
+	char pos[8];
 	for (i = 0; i < map->n_channels; i++) {
-		const char *name = spa_debug_type_find_name(spa_type_audio_channel, map->channels[i]);
-		if (name == NULL)
-			name = ":UNK";
-		printf("%s%s", spa_debug_type_short_name(name), i + 1 < map->n_channels ? "," : "");
+		fprintf(stderr, "%s%s", i ? "," : "",
+				spa_type_audio_channel_make_short_name(map->position[i],
+					pos, sizeof(pos), "UNK"));
 	}
 }
 
@@ -686,7 +823,7 @@ static void on_core_info(void *userdata, const struct pw_core_info *info)
 	struct data *data = userdata;
 
 	if (data->verbose)
-		printf("remote %"PRIu32" is named \"%s\"\n",
+		fprintf(stderr, "remote %"PRIu32" is named \"%s\"\n",
 				info->id, info->name);
 }
 
@@ -715,7 +852,7 @@ on_state_changed(void *userdata, enum pw_stream_state old,
 	int ret;
 
 	if (data->verbose)
-		printf("stream state changed %s -> %s\n",
+		fprintf(stderr, "stream state changed %s -> %s\n",
 				pw_stream_state_as_string(old),
 				pw_stream_state_as_string(state));
 
@@ -726,7 +863,7 @@ on_state_changed(void *userdata, enum pw_stream_state old,
 					SPA_PROP_volume, 1, &data->volume,
 					0);
 			if (data->verbose)
-				printf("stream set volume to %.3f - %s\n", data->volume,
+				fprintf(stderr, "stream set volume to %.3f - %s\n", data->volume,
 						ret == 0 ? "success" : "FAILED");
 
 			data->volume_is_set = true;
@@ -735,7 +872,7 @@ on_state_changed(void *userdata, enum pw_stream_state old,
 			struct timespec timeout = {0, 1}, interval = {1, 0};
 			struct pw_loop *l = pw_main_loop_get_loop(data->loop);
 			pw_loop_update_timer(l, data->timer, &timeout, &interval, false);
-			printf("stream node %"PRIu32"\n",
+			fprintf(stderr, "stream node %"PRIu32"\n",
 				pw_stream_get_node_id(data->stream));
 		}
 		break;
@@ -747,13 +884,13 @@ on_state_changed(void *userdata, enum pw_stream_state old,
 		}
 		break;
 	case PW_STREAM_STATE_ERROR:
-		printf("stream node %"PRIu32" error: %s\n",
+		fprintf(stderr, "stream node %"PRIu32" error: %s\n",
 				pw_stream_get_node_id(data->stream),
 				error);
 		pw_main_loop_quit(data->loop);
 		break;
 	case PW_STREAM_STATE_UNCONNECTED:
-		printf("stream node %"PRIu32" unconnected\n",
+		fprintf(stderr, "stream node %"PRIu32" unconnected\n",
 				pw_stream_get_node_id(data->stream));
 		pw_main_loop_quit(data->loop);
 		break;
@@ -784,7 +921,7 @@ on_param_changed(void *userdata, uint32_t id, const struct spa_pod *param)
 	int err;
 
 	if (data->verbose)
-		printf("stream param change: %s\n",
+		fprintf(stderr, "stream param change: %s\n",
 			spa_debug_type_find_name(spa_type_param, id));
 
 	if (id != SPA_PARAM_Format || param == NULL)
@@ -808,10 +945,10 @@ on_param_changed(void *userdata, uint32_t id, const struct spa_pod *param)
 	data->dff.layout.channels = info.info.dsd.channels;
 	data->dff.layout.lsb = info.info.dsd.bitorder == SPA_PARAM_BITORDER_lsb;
 
-	data->stride = data->dsf.layout.channels * SPA_ABS(data->dsf.layout.interleave);
+	data->stride = dsf_layout_stride(&data->dsf.layout);
 
 	if (data->verbose) {
-		printf("DSD: channels:%d bitorder:%s interleave:%d stride:%d\n",
+		fprintf(stderr, "DSD: channels:%d bitorder:%s interleave:%d stride:%d\n",
 				data->dsf.layout.channels,
 				data->dsf.layout.lsb ? "lsb" : "msb",
 				data->dsf.layout.interleave,
@@ -852,7 +989,19 @@ static void on_process(void *userdata)
 		 * fill callback actually returns number of bytes, not frames, since
 		 * this is encoded data. However, the calculations below still work
 		 * out because the stride is set to 1 in setup_encodedfile(). */
+		if (data->sample_limit > 0) {
+			uint64_t samples_left = data->sample_limit - data->samples_processed;
+			if (samples_left == 0) {
+				pw_main_loop_quit(data->loop);
+				return;
+			}
+			n_frames = SPA_MIN(n_frames, (int)samples_left);
+		}
+
 		n_fill_frames = data->fill(data, p, n_frames, &null_frame);
+
+		if (data->sample_limit > 0 && n_fill_frames > 0)
+			data->samples_processed += n_fill_frames;
 
 		if (null_frame) {
 			/* A null frame is not to be confused with the drain scenario.
@@ -873,7 +1022,7 @@ static void on_process(void *userdata)
 			fprintf(stderr, "fill error %d\n", n_fill_frames);
 		} else {
 			if (data->verbose)
-				printf("drain start\n");
+				fprintf(stderr, "drain start\n");
 		}
 	} else {
 		bool null_frame = false;
@@ -885,7 +1034,19 @@ static void on_process(void *userdata)
 
 		n_frames = size / data->stride;
 
+		if (data->sample_limit > 0) {
+			uint64_t samples_left = data->sample_limit - data->samples_processed;
+			if (samples_left == 0) {
+				pw_main_loop_quit(data->loop);
+				return;
+			}
+			n_frames = SPA_MIN(n_frames, (int)samples_left);
+		}
+
 		n_fill_frames = data->fill(data, p, n_frames, &null_frame);
+
+		if (data->sample_limit > 0 && n_fill_frames > 0)
+			data->samples_processed += n_fill_frames;
 
 		have_data = true;
 	}
@@ -904,7 +1065,7 @@ static void on_drained(void *userdata)
 	struct data *data = userdata;
 
 	if (data->verbose)
-		printf("stream drained\n");
+		fprintf(stderr, "stream drained\n");
 
 	data->drained = true;
 	pw_main_loop_quit(data->loop);
@@ -930,7 +1091,7 @@ static void do_print_delay(void *userdata, uint64_t expirations)
 	struct data *data = userdata;
 	struct pw_time time;
 	pw_stream_get_time_n(data->stream, &time, sizeof(time));
-	printf("stream time: now:%"PRIi64" rate:%u/%u ticks:%"PRIu64
+	fprintf(stderr, "stream time: now:%"PRIi64" rate:%u/%u ticks:%"PRIu64
 			" delay:%"PRIi64" queued:%"PRIu64
 			" buffered:%"PRIi64" buffers:%u avail:%u size:%"PRIu64"\n",
 		time.now,
@@ -951,16 +1112,32 @@ enum {
 	OPT_CHANNELMAP,
 	OPT_FORMAT,
 	OPT_VOLUME,
+	OPT_CONTAINER,
+	OPT_LISTFORMATS,
+	OPT_LISTCONTAINERS,
+	OPT_LISTLAYOUTS,
+	OPT_LISTCHANNELNAMES,
 };
+
+#ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
+#define OPTIONS "hvprmdosR:P:q:aM:n:c"
+#else
+#define OPTIONS "hvprmdsR:P:q:aM:n:c"
+#endif
 
 static const struct option long_options[] = {
 	{ "help",		no_argument,	   NULL, 'h' },
 	{ "version",		no_argument,	   NULL, OPT_VERSION},
 	{ "verbose",		no_argument,	   NULL, 'v' },
 
-	{ "record",		no_argument,	   NULL, 'r' },
 	{ "playback",		no_argument,	   NULL, 'p' },
+	{ "record",		no_argument,	   NULL, 'r' },
 	{ "midi",		no_argument,	   NULL, 'm' },
+	{ "dsd",		no_argument,	   NULL, 'd' },
+#ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
+	{ "encoded",		no_argument,	   NULL, 'o' },
+#endif
+	{ "sysex",		no_argument,	   NULL, 's' },
 
 	{ "remote",		required_argument, NULL, 'R' },
 
@@ -974,9 +1151,18 @@ static const struct option long_options[] = {
 	{ "rate",		required_argument, NULL, OPT_RATE },
 	{ "channels",		required_argument, NULL, OPT_CHANNELS },
 	{ "channel-map",	required_argument, NULL, OPT_CHANNELMAP },
+	{ "list-layouts",	no_argument,       NULL, OPT_LISTLAYOUTS },
+	{ "list-channel-names",	no_argument,       NULL, OPT_LISTCHANNELNAMES },
 	{ "format",		required_argument, NULL, OPT_FORMAT },
+	{ "list-formats",	no_argument,       NULL, OPT_LISTFORMATS },
+	{ "container",		required_argument, NULL, OPT_CONTAINER },
+	{ "list-containers",	no_argument,       NULL, OPT_LISTCONTAINERS },
 	{ "volume",		required_argument, NULL, OPT_VOLUME },
 	{ "quality",		required_argument, NULL, 'q' },
+	{ "raw",		no_argument,       NULL, 'a' },
+	{ "force-midi",		required_argument, NULL, 'M' },
+	{ "sample-count",	required_argument, NULL, 'n' },
+	{ "midi-clip",		no_argument,       NULL, 'c' },
 
 	{ NULL, 0, NULL, 0 }
 };
@@ -1013,18 +1199,26 @@ static void show_usage(const char *name, bool is_error)
 	     DEFAULT_TARGET, DEFAULT_LATENCY_PLAY);
 
 	fprintf(fp,
-	   _("      --rate                            Sample rate (req. for rec) (default %u)\n"
-	     "      --channels                        Number of channels (req. for rec) (default %u)\n"
+	   _("      --rate                            Sample rate (default %u)\n"
+	     "      --channels                        Number of channels (default %u)\n"
 	     "      --channel-map                     Channel map\n"
-	     "                                            one of: \"stereo\", \"surround-51\",... or\n"
+	     "                                            a channel layout: \"Stereo\", \"5.1\",... or\n"
 	     "                                            comma separated list of channel names: eg. \"FL,FR\"\n"
-	     "      --format                          Sample format %s (req. for rec) (default %s)\n"
+	     "      --list-layouts                    List supported channel layouts\n"
+	     "      --list-channel-names              List supported channel maps\n"
+	     "      --format                          Sample format (default %s)\n"
+	     "      --list-formats                    List supported sample formats\n"
+	     "      --container                       Container format\n"
+	     "      --list-containers                 List supported containers and extensions\n"
 	     "      --volume                          Stream volume 0-1.0 (default %.3f)\n"
 	     "  -q  --quality                         Resampler quality (0 - 15) (default %d)\n"
+	     "  -a, --raw                             RAW mode\n"
+	     "  -M, --force-midi                      Force midi format, one of \"midi\" or \"ump\", (default ump)\n"
+	     "  -n, --sample-count COUNT              Stop after COUNT samples\n"
 	     "\n"),
 	     DEFAULT_RATE,
 	     DEFAULT_CHANNELS,
-	     STR_FMTS, DEFAULT_FORMAT,
+	     DEFAULT_FORMAT,
 	     DEFAULT_VOLUME,
 	     DEFAULT_QUALITY);
 
@@ -1037,6 +1231,8 @@ static void show_usage(const char *name, bool is_error)
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 		     "  -o, --encoded                         Encoded mode\n"
 #endif
+		     "  -s, --sysex                           SysEx mode\n"
+		     "  -c, --midi-clip                       MIDI clip mode\n"
 		     "\n"), fp);
 	}
 }
@@ -1061,6 +1257,8 @@ static int midi_play(struct data *d, void *src, unsigned int n_frames, bool *nul
 	while (1) {
 		uint32_t frame;
 		struct midi_event ev;
+		uint64_t state = 0;
+		size_t size;
 
 		res = midi_file_next_time(d->midi.file, &ev.sec);
 		if (res <= 0) {
@@ -1080,13 +1278,52 @@ static int midi_play(struct data *d, void *src, unsigned int n_frames, bool *nul
 		midi_file_read_event(d->midi.file, &ev);
 
 		if (d->verbose)
-			midi_file_dump_event(stdout, &ev);
+			midi_event_dump(stderr, &ev);
 
-		if (ev.data[0] == 0xff)
+		size = ev.size;
+
+		if (ev.type == MIDI_EVENT_TYPE_MIDI1) {
+
+			if (size < 1 || ev.data[0] == 0xff)
+				continue;
+
+			if (d->midi.force_type == MIDI_FORCE_UMP) {
+				uint8_t *data = ev.data;
+				while (size > 0) {
+					uint32_t ump[4];
+					int ump_size = spa_ump_from_midi(&data, &size,
+							ump, sizeof(ump), 0, &state);
+					if (ump_size <= 0)
+						break;
+
+					spa_pod_builder_control(&b, frame, SPA_CONTROL_UMP);
+					spa_pod_builder_bytes(&b, ump, ump_size);
+				}
+			} else {
+				spa_pod_builder_control(&b, frame, SPA_CONTROL_Midi);
+				spa_pod_builder_bytes(&b, ev.data, ev.size);
+			}
+		} else if (ev.type == MIDI_EVENT_TYPE_UMP) {
+			if (d->midi.force_type == MIDI_FORCE_MIDI1) {
+				const uint32_t *data = (const uint32_t*)ev.data;
+				while (size > 0) {
+					uint8_t ev[16];
+					int ev_size = spa_ump_to_midi(&data, &size,
+							ev, sizeof(ev), &state);
+					if (ev_size <= 0)
+						break;
+
+					spa_pod_builder_control(&b, frame, SPA_CONTROL_Midi);
+					spa_pod_builder_bytes(&b, ev, ev_size);
+				}
+			} else {
+				spa_pod_builder_control(&b, frame, SPA_CONTROL_UMP);
+				spa_pod_builder_bytes(&b, ev.data, ev.size);
+			}
+		}
+		else
 			continue;
 
-		spa_pod_builder_control(&b, frame, SPA_CONTROL_Midi);
-		spa_pod_builder_bytes(&b, ev.data, ev.size);
 		have_data = true;
 	}
 	spa_pod_builder_pop(&b, &f);
@@ -1096,31 +1333,41 @@ static int midi_play(struct data *d, void *src, unsigned int n_frames, bool *nul
 
 static int midi_record(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
 {
-	struct spa_pod *pod;
-	struct spa_pod_control *c;
-	uint32_t frame;
+	struct spa_pod_parser parser;
+	struct spa_pod_frame frame;
+	struct spa_pod_sequence seq;
+	const void *seq_body, *c_body;
+	struct spa_pod_control c;
+	uint32_t offset;
 
-	frame = d->clock_time;
+	offset = d->clock_time;
 	d->clock_time += d->position->clock.duration;
 
-	if ((pod = spa_pod_from_data(src, n_frames, 0, n_frames)) == NULL)
-		return 0;
-	if (!spa_pod_is_sequence(pod))
+	spa_pod_parser_init_from_data(&parser, src, n_frames, 0, n_frames);
+
+	if (spa_pod_parser_push_sequence_body(&parser, &frame, &seq, &seq_body) < 0)
 		return 0;
 
-	SPA_POD_SEQUENCE_FOREACH((struct spa_pod_sequence*)pod, c) {
+	while (spa_pod_parser_get_control_body(&parser, &c, &c_body) >= 0) {
 		struct midi_event ev;
 
-		if (c->type != SPA_CONTROL_Midi)
+		switch (c.type) {
+		case SPA_CONTROL_UMP:
+			ev.type = MIDI_EVENT_TYPE_UMP;
+			break;
+		case SPA_CONTROL_Midi:
+			ev.type = MIDI_EVENT_TYPE_MIDI1;
+			break;
+		default:
 			continue;
-
+		}
 		ev.track = 0;
-		ev.sec = (frame + c->offset) / (float) d->position->clock.rate.denom;
-		ev.data = SPA_POD_BODY(&c->value),
-		ev.size = SPA_POD_BODY_SIZE(&c->value);
+		ev.sec = (offset + c.offset) / (float) d->position->clock.rate.denom;
+		ev.data = (uint8_t*)c_body;
+		ev.size = c.value.size;
 
 		if (d->verbose)
-			midi_file_dump_event(stdout, &ev);
+			midi_event_dump(stderr, &ev);
 
 		midi_file_write_event(d->midi.file, &ev);
 	}
@@ -1145,12 +1392,196 @@ static int setup_midifile(struct data *data)
 	}
 
 	if (data->verbose)
-		printf("midifile: opened file \"%s\" format %08x ntracks:%d div:%d\n",
+		fprintf(stderr, "midifile: opened file \"%s\" format %08x ntracks:%d div:%d\n",
 				data->filename,
 				data->midi.info.format, data->midi.info.ntracks,
 				data->midi.info.division);
 
 	data->fill = data->mode == mode_playback ?  midi_play : midi_record;
+	data->stride = 1;
+
+	return 0;
+}
+
+static int clip_play(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
+{
+	int res;
+	struct spa_pod_builder b;
+	struct spa_pod_frame f;
+	uint32_t first_frame, last_frame;
+	bool have_data = false;
+
+	spa_zero(b);
+	spa_pod_builder_init(&b, src, n_frames);
+
+	spa_pod_builder_push_sequence(&b, &f, 0);
+
+	first_frame = d->clock_time;
+	last_frame = first_frame + d->position->clock.duration;
+	d->clock_time = last_frame;
+
+	while (1) {
+		uint32_t frame;
+		struct midi_event ev;
+		uint64_t state = 0;
+		size_t size;
+
+		res = midi_clip_next_time(d->clip.file, &ev.sec);
+		if (res <= 0) {
+			if (have_data)
+				break;
+			return res;
+		}
+
+		frame = (uint32_t)(ev.sec * d->position->clock.rate.denom);
+		if (frame < first_frame)
+			frame = 0;
+		else if (frame < last_frame)
+			frame -= first_frame;
+		else
+			break;
+
+		midi_clip_read_event(d->clip.file, &ev);
+
+		if (d->verbose)
+			midi_event_dump(stderr, &ev);
+
+		size = ev.size;
+
+		if (d->midi.force_type == MIDI_FORCE_MIDI1) {
+			const uint32_t *data = (const uint32_t*)ev.data;
+			while (size > 0) {
+				uint8_t ev[16];
+				int ev_size = spa_ump_to_midi(&data, &size,
+						ev, sizeof(ev), &state);
+				if (ev_size <= 0)
+					break;
+
+				spa_pod_builder_control(&b, frame, SPA_CONTROL_Midi);
+				spa_pod_builder_bytes(&b, ev, ev_size);
+			}
+		} else {
+			spa_pod_builder_control(&b, frame, SPA_CONTROL_UMP);
+			spa_pod_builder_bytes(&b, ev.data, ev.size);
+		}
+		have_data = true;
+	}
+	spa_pod_builder_pop(&b, &f);
+
+	return b.state.offset;
+}
+
+static int clip_record(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
+{
+	struct spa_pod_parser parser;
+	struct spa_pod_frame frame;
+	struct spa_pod_sequence seq;
+	const void *seq_body, *c_body;
+	struct spa_pod_control c;
+	uint32_t offset;
+
+	offset = d->clock_time;
+	d->clock_time += d->position->clock.duration;
+
+	spa_pod_parser_init_from_data(&parser, src, n_frames, 0, n_frames);
+
+	if (spa_pod_parser_push_sequence_body(&parser, &frame, &seq, &seq_body) < 0)
+		return 0;
+
+	while (spa_pod_parser_get_control_body(&parser, &c, &c_body) >= 0) {
+		struct midi_event ev;
+
+		switch (c.type) {
+		case SPA_CONTROL_UMP:
+			ev.type = MIDI_EVENT_TYPE_UMP;
+			break;
+		case SPA_CONTROL_Midi:
+			ev.type = MIDI_EVENT_TYPE_MIDI1;
+			break;
+		default:
+			continue;
+		}
+		ev.track = 0;
+		ev.sec = (offset + c.offset) / (float) d->position->clock.rate.denom;
+		ev.data = (uint8_t*)c_body;
+		ev.size = c.value.size;
+
+		if (d->verbose)
+			midi_event_dump(stderr, &ev);
+
+		midi_clip_write_event(d->clip.file, &ev);
+	}
+	return 0;
+}
+
+static int setup_midiclip(struct data *data)
+{
+	if (data->mode == mode_record) {
+		spa_zero(data->clip.info);
+		data->clip.info.format = 0;
+	}
+
+	data->clip.file = midi_clip_open(data->filename,
+			data->mode == mode_playback ? "r" : "w",
+			&data->clip.info);
+	if (data->clip.file == NULL) {
+		fprintf(stderr, "midiclip: can't read midi file '%s': %m\n", data->filename);
+		return -errno;
+	}
+
+	if (data->verbose)
+		fprintf(stderr, "midifile: opened file \"%s\" format %08x div:%d\n",
+				data->filename,
+				data->clip.info.format, data->clip.info.division);
+
+	data->fill = data->mode == mode_playback ?  clip_play : clip_record;
+	data->stride = 1;
+
+	return 0;
+}
+
+static int sysex_play(struct data *d, void *dst, unsigned int n_frames, bool *null_frame)
+{
+	struct spa_pod_builder b;
+	struct spa_pod_frame f;
+	size_t size, to_read = n_frames - 64;
+	uint8_t bytes[to_read];
+
+	spa_zero(b);
+	spa_pod_builder_init(&b, dst, n_frames);
+
+	spa_pod_builder_push_sequence(&b, &f, 0);
+	spa_pod_builder_control(&b, 0, SPA_CONTROL_Midi);
+
+	size = fread(bytes, 1, to_read, d->sysex.file);
+
+	spa_pod_builder_bytes(&b, bytes, size);
+	spa_pod_builder_pop(&b, &f);
+
+	return b.state.offset;
+}
+
+static int setup_sysex(struct data *data)
+{
+	if (data->mode == mode_record)
+		return -ENOTSUP;
+
+	if (spa_streq(data->filename, "-")) {
+		data->sysex.file = stdin;
+		data->sysex.close = false;
+	} else {
+		data->sysex.file = fopen(data->filename, "r");
+		if (data->sysex.file == NULL) {
+			fprintf(stderr, "sysex: can't read file '%s': %m\n", data->filename);
+			return -errno;
+		}
+		data->sysex.close = false;
+	}
+
+	if (data->verbose)
+		fprintf(stderr, "sysex: opened file \"%s\"\n", data->filename);
+
+	data->fill = sysex_play;
 	data->stride = 1;
 
 	return 0;
@@ -1196,7 +1627,7 @@ static int setup_dsdfile(struct data *data)
 
 	if (data->dsf.file != NULL) {
 		if (data->verbose)
-			printf("dsffile: opened file \"%s\" channels:%d rate:%d "
+			fprintf(stderr, "dsffile: opened file \"%s\" channels:%d rate:%d "
 					"samples:%"PRIu64" bitorder:%s\n",
 				data->filename,
 				data->dsf.info.channels, data->dsf.info.rate,
@@ -1206,7 +1637,7 @@ static int setup_dsdfile(struct data *data)
 		data->fill = dsf_play;
 	} else {
 		if (data->verbose)
-			printf("dfffile: opened file \"%s\" channels:%d rate:%d "
+			fprintf(stderr, "dfffile: opened file \"%s\" channels:%d rate:%d "
 					"samples:%"PRIu64" bitorder:%s\n",
 				data->filename,
 				data->dff.info.channels, data->dff.info.rate,
@@ -1218,17 +1649,17 @@ static int setup_dsdfile(struct data *data)
 	return 0;
 }
 
-static int stdout_record(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
+static int raw_record(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
 {
-	return fwrite(src, d->stride, n_frames, stdout);
+	return fwrite(src, d->stride, n_frames, d->raw.file);
 }
 
-static int stdin_play(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
+static int raw_play(struct data *d, void *src, unsigned int n_frames, bool *null_frame)
 {
-	return fread(src, d->stride, n_frames, stdin);
+	return fread(src, d->stride, n_frames, d->raw.file);
 }
 
-static int setup_pipe(struct data *data)
+static int setup_raw(struct data *data)
 {
 	const struct format_info *info;
 
@@ -1247,10 +1678,23 @@ static int setup_pipe(struct data *data)
 
 	data->spa_format = info->spa_format;
 	data->stride = info->width * data->channels;
-	data->fill = data->mode == mode_playback ?  stdin_play : stdout_record;
+	data->fill = data->mode == mode_playback ?  raw_play : raw_record;
+
+	if (spa_streq(data->filename, "-")) {
+		data->raw.file = data->mode == mode_playback ?  stdin : stdout;
+		data->raw.close = false;
+	} else {
+		data->raw.file = fopen(data->filename,
+			data->mode == mode_playback ? "r" : "w");
+		if (data->raw.file == NULL) {
+			fprintf(stderr, "raw: can't open file '%s': %m\n", data->filename);
+			return -errno;
+		}
+		data->raw.close = true;
+	}
 
 	if (data->verbose)
-		printf("PIPE: rate=%u channels=%u fmt=%s samplesize=%u stride=%u\n",
+		fprintf(stderr, "raw: rate=%u channels=%u fmt=%s samplesize=%u stride=%u\n",
 				data->rate, data->channels,
 				info->name, info->width, data->stride);
 
@@ -1279,7 +1723,7 @@ static int fill_properties(struct data *data)
 		if (table[c] == NULL)
 			continue;
 
-		if ((s = sf_get_string(data->file, c)) == NULL ||
+		if ((s = sf_get_string(data->sndfile.file, c)) == NULL ||
 		    *s == '\0')
 			continue;
 
@@ -1288,14 +1732,14 @@ static int fill_properties(struct data *data)
 	}
 
 	spa_zero(sfi);
-	if ((res = sf_command(data->file, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)))) {
+	if ((res = sf_command(data->sndfile.file, SFC_GET_CURRENT_SF_INFO, &sfi, sizeof(sfi)))) {
 		pw_log_error("sndfile: %s", sf_error_number(res));
 		return -EIO;
 	}
 
 	spa_zero(fi);
 	fi.format = sfi.format;
-	if (sf_command(data->file, SFC_GET_FORMAT_INFO, &fi, sizeof(fi)) == 0 && fi.name)
+	if (sf_command(data->sndfile.file, SFC_GET_FORMAT_INFO, &fi, sizeof(fi)) == 0 && fi.name)
 		if (pw_properties_get(data->props, PW_KEY_MEDIA_FORMAT) == NULL)
 			pw_properties_set(data->props, PW_KEY_MEDIA_FORMAT, fi.name);
 
@@ -1308,17 +1752,20 @@ static int fill_properties(struct data *data)
 
 	return 0;
 }
-static void format_from_filename(SF_INFO *info, const char *filename)
+static void format_from_filename(SF_INFO *info, const char *filename, const char *container)
 {
 	int i, count = 0;
 	int format = -1;
+	const char *extension;
 
-#if __BYTE_ORDER == __BIG_ENDIAN
-	info->format |= SF_ENDIAN_BIG;
-#else
-	info->format |= SF_ENDIAN_LITTLE;
-#endif
+	if (spa_streq(filename, "-"))
+		extension = container ? container : "au";
+	else if (container)
+		extension = container;
+	else
+		extension = filename;
 
+	fprintf(stderr, "%s\n", filename);
 	if (sf_command(NULL, SFC_GET_FORMAT_MAJOR_COUNT, &count, sizeof(int)) != 0)
 		count = 0;
 
@@ -1330,9 +1777,28 @@ static void format_from_filename(SF_INFO *info, const char *filename)
 		if (sf_command(NULL, SFC_GET_FORMAT_MAJOR, &fi, sizeof(fi)) != 0)
 			continue;
 
-		if (spa_strendswith(filename, fi.extension)) {
+		if (spa_strendswith(extension, fi.extension)) {
 			format = fi.format;
 			break;
+		}
+	}
+	if (format == -1) {
+		if (sf_command(NULL, SFC_GET_SIMPLE_FORMAT_COUNT, &count, sizeof(int)) != 0)
+			count = 0;
+
+		for (i = 0; i < count; i++) {
+			SF_FORMAT_INFO fi;
+
+			spa_zero(fi);
+			fi.format = i;
+			if (sf_command(NULL, SFC_GET_SIMPLE_FORMAT, &fi, sizeof(fi)) != 0)
+				continue;
+
+			if (spa_strendswith(extension, fi.extension)) {
+				format = fi.format;
+				info->format = 0;
+				break;
+			}
 		}
 	}
 	if (format == -1)
@@ -1340,12 +1806,38 @@ static void format_from_filename(SF_INFO *info, const char *filename)
 	if (format == SF_FORMAT_WAV && info->channels > 2)
 		format = SF_FORMAT_WAVEX;
 
+	switch (format & SF_FORMAT_TYPEMASK) {
+	case SF_FORMAT_OGG:
+	case SF_FORMAT_FLAC:
+	case SF_FORMAT_MPEG:
+	case SF_FORMAT_AIFF:
+		info->format |= SF_ENDIAN_FILE;
+		break;
+	default:
+		info->format |= SF_ENDIAN_CPU;
+		break;
+	}
 	info->format |= format;
+}
 
-	if (format == SF_FORMAT_OGG || format == SF_FORMAT_FLAC)
-		info->format = (info->format & ~SF_FORMAT_ENDMASK) | SF_ENDIAN_FILE;
-	if (format == SF_FORMAT_OGG)
-		info->format = (info->format & ~SF_FORMAT_SUBMASK) | SF_FORMAT_VORBIS;
+static void list_containers(struct data *d)
+{
+	int i, count = 0;
+
+	fprintf(stderr, _("Supported containers and extensions:\n"));
+	if (sf_command(NULL, SFC_GET_FORMAT_MAJOR_COUNT, &count, sizeof(int)) != 0)
+		count = 0;
+
+	for (i = 0; i < count; i++) {
+		SF_FORMAT_INFO fi;
+
+		spa_zero(fi);
+		fi.format = i;
+		if (sf_command(NULL, SFC_GET_FORMAT_MAJOR, &fi, sizeof(fi)) != 0)
+			continue;
+
+		fprintf(stderr, "    %s: %s\n", fi.extension, fi.name);
+	}
 }
 
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
@@ -1420,7 +1912,7 @@ static int setup_encodedfile(struct data *data)
 	data->fill = encoded_playback_fill;
 
 	if (data->verbose) {
-		printf("Opened file \"%s\" with encoded audio; channels:%d rate:%d bitrate: %d time units %d/%d\n",
+		fprintf(stderr, "Opened file \"%s\" with encoded audio; channels:%d rate:%d bitrate: %d time units %d/%d\n",
 		       data->filename, data->channels, data->rate, data->bitrate,
 		       data->encoded.audio_stream->time_base.num, data->encoded.audio_stream->time_base.den);
 	}
@@ -1428,6 +1920,21 @@ static int setup_encodedfile(struct data *data)
 	return 0;
 }
 #endif
+
+static const char *endianness_to_name(int format)
+{
+	switch (format & SF_FORMAT_ENDMASK) {
+	case SF_ENDIAN_FILE:
+		return "Default Endian";
+	case SF_ENDIAN_LITTLE:
+		return "Little Endian";
+	case SF_ENDIAN_BIG:
+		return "Big Endian";
+	case SF_ENDIAN_CPU:
+		return "CPU Endian";
+	}
+	return "unknown";
+}
 
 static int setup_sndfile(struct data *data)
 {
@@ -1454,22 +1961,39 @@ static int setup_sndfile(struct data *data)
 		info.samplerate = data->rate;
 		info.channels = data->channels;
 		info.format = fi->sf_format;
-		format_from_filename(&info, data->filename);
+		format_from_filename(&info, data->filename, data->container);
 	}
 
-	data->file = sf_open(data->filename,
+	data->sndfile.file = sf_open(data->filename,
 			data->mode == mode_playback ? SFM_READ : SFM_WRITE,
 			&info);
-	if (!data->file) {
+	if (!data->sndfile.file) {
 		fprintf(stderr, "sndfile: failed to open audio file \"%s\": %s\n",
 				data->filename, sf_strerror(NULL));
+		if (data->verbose) {
+			char loginfo[4096];
+			if (sf_command(NULL, SFC_GET_LOG_INFO, &loginfo, sizeof(loginfo)) > 0)
+				fprintf(stderr, "%s\n", loginfo);
+		}
 		return -EIO;
 	}
 
-	if (data->verbose)
-		printf("sndfile: opened file \"%s\" format %08x channels:%d rate:%d\n",
-				data->filename, info.format, info.channels, info.samplerate);
-	if (data->channels > 0 && info.channels != data->channels) {
+	if (data->verbose) {
+		SF_FORMAT_INFO ti, sti;
+		spa_zero(ti);
+		ti.format = info.format & SF_FORMAT_TYPEMASK;
+		if (sf_command(NULL, SFC_GET_FORMAT_INFO, &ti, sizeof(ti)) != 0)
+			ti.name = "unknown";
+		spa_zero(sti);
+		sti.format = info.format & SF_FORMAT_SUBMASK;
+		if (sf_command(NULL, SFC_GET_FORMAT_INFO, &sti, sizeof(sti)) != 0)
+			sti.name = "unknown";
+
+		fprintf(stderr, "sndfile: opened file \"%s\" format \"%s %s %s\" channels:%d rate:%d\n",
+				data->filename, endianness_to_name(info.format),
+				ti.name, sti.name, info.channels, info.samplerate);
+	}
+	if (data->channels > 0 && info.channels != (int)data->channels) {
 		fprintf(stderr, "sndfile: given channels (%u) don't match file channels (%d)\n",
 				data->channels, info.channels);
 		return -EINVAL;
@@ -1482,9 +2006,9 @@ static int setup_sndfile(struct data *data)
 		if (data->channelmap.n_channels == 0) {
 			bool def = false;
 
-			if (sf_command(data->file, SFC_GET_CHANNEL_MAP_INFO,
-					data->channelmap.channels,
-					sizeof(data->channelmap.channels[0]) * data->channels)) {
+			if (sf_command(data->sndfile.file, SFC_GET_CHANNEL_MAP_INFO,
+					data->channelmap.position,
+					sizeof(data->channelmap.position[0]) * data->channels)) {
 				data->channelmap.n_channels = data->channels;
 				if (channelmap_from_sf(&data->channelmap) < 0)
 					data->channelmap.n_channels = 0;
@@ -1494,9 +2018,9 @@ static int setup_sndfile(struct data *data)
 				def = true;
 			}
 			if (data->verbose) {
-				printf("sndfile: using %s channel map: ", def ? "default" : "file");
+				fprintf(stderr, "sndfile: using %s channel map: ", def ? "default" : "file");
 				channelmap_print(&data->channelmap);
-				printf("\n");
+				fprintf(stderr, "\n");
 			}
 		}
 		fill_properties(data);
@@ -1504,13 +2028,12 @@ static int setup_sndfile(struct data *data)
 		/* try native format first, else decode to float */
 		if ((fi = format_info_by_sf_format(info.format)) == NULL)
 			fi = format_info_by_sf_format(SF_FORMAT_FLOAT);
-
 	}
 	if (fi == NULL)
 		return -EIO;
 
 	if (data->verbose)
-		printf("PCM: fmt:%s rate:%u channels:%u width:%u\n",
+		fprintf(stderr, "PCM: fmt:%s rate:%u channels:%u width:%u\n",
 				fi->name, data->rate, data->channels, fi->width);
 
 	/* we read and write S24 as S32 with sndfile */
@@ -1590,7 +2113,7 @@ static int setup_properties(struct data *data)
 	}
 
 	if (data->verbose)
-		printf("rate:%d latency:%u (%.3fs)\n",
+		fprintf(stderr, "rate:%d latency:%u (%.3fs)\n",
 				data->rate, nom, data->rate ? (double)nom/data->rate : 0.0f);
 	if (nom && pw_properties_get(data->props, PW_KEY_NODE_LATENCY) == NULL)
 		pw_properties_setf(data->props, PW_KEY_NODE_LATENCY, "%u/%u", nom, data->rate);
@@ -1639,6 +2162,15 @@ int main(int argc, char *argv[])
 	} else if (spa_streq(prog, "pw-midirecord")) {
 		data.mode = mode_record;
 		data.data_type = TYPE_MIDI;
+	} else if (spa_streq(prog, "pw-midi2play")) {
+		data.mode = mode_playback;
+		data.data_type = TYPE_MIDI2;
+	} else if (spa_streq(prog, "pw-midi2record")) {
+		data.mode = mode_record;
+		data.data_type = TYPE_MIDI2;
+	} else if (spa_streq(prog, "pw-sysex")) {
+		data.mode = mode_playback;
+		data.data_type = TYPE_SYSEX;
 	} else if (spa_streq(prog, "pw-dsdplay")) {
 		data.mode = mode_playback;
 		data.data_type = TYPE_DSD;
@@ -1653,6 +2185,7 @@ int main(int argc, char *argv[])
 	/* negative means no volume adjustment */
 	data.volume = -1.0;
 	data.quality = -1;
+	data.midi.force_type = MIDI_FORCE_UMP;
 	data.props = pw_properties_new(
 			PW_KEY_APP_NAME, prog,
 			PW_KEY_NODE_NAME, prog,
@@ -1663,12 +2196,7 @@ int main(int argc, char *argv[])
 		goto error_no_props;
 	}
 
-#ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
-	while ((c = getopt_long(argc, argv, "hvprmdoR:q:P:", long_options, NULL)) != -1) {
-#else
-	while ((c = getopt_long(argc, argv, "hvprmdR:q:P:", long_options, NULL)) != -1) {
-#endif
-
+	while ((c = getopt_long(argc, argv, OPTIONS, long_options, NULL)) != -1) {
 		switch (c) {
 
 		case 'h':
@@ -1709,6 +2237,9 @@ int main(int argc, char *argv[])
 			data.data_type = TYPE_ENCODED;
 			break;
 #endif
+		case 's':
+			data.data_type = TYPE_SYSEX;
+			break;
 
 		case 'R':
 			data.remote_name = optarg;
@@ -1716,6 +2247,21 @@ int main(int argc, char *argv[])
 
 		case 'q':
 			data.quality = atoi(optarg);
+			break;
+
+		case 'a':
+			data.rawfile = true;
+			break;
+
+		case 'M':
+			if (spa_streq(optarg, "midi"))
+				data.midi.force_type = MIDI_FORCE_MIDI1;
+			else if (spa_streq(optarg, "ump"))
+				data.midi.force_type = MIDI_FORCE_UMP;
+			else {
+				fprintf(stderr, "error: bad force-midi %s\n", optarg);
+				goto error_usage;
+			}
 			break;
 
 		case OPT_MEDIA_TYPE:
@@ -1776,11 +2322,32 @@ int main(int argc, char *argv[])
 		case OPT_FORMAT:
 			data.format = optarg;
 			break;
+		case OPT_CONTAINER:
+			data.container = optarg;
+			break;
 
 		case OPT_VOLUME:
 			if (!spa_atof(optarg, &data.volume))
 				data.volume = (float)atof(optarg);
 			break;
+		case 'n':
+			data.sample_limit = strtoull(optarg, NULL, 10);
+			break;
+		case 'c':
+			data.data_type = TYPE_MIDI2;
+			break;
+		case OPT_LISTFORMATS:
+			list_formats(&data);
+			return EXIT_SUCCESS;
+		case OPT_LISTCONTAINERS:
+			list_containers(&data);
+			return EXIT_SUCCESS;
+		case OPT_LISTLAYOUTS:
+			list_layouts(&data);
+			return EXIT_SUCCESS;
+		case OPT_LISTCHANNELNAMES:
+			list_channel_names(&data);
+			return EXIT_SUCCESS;
 		default:
 			goto error_usage;
 		}
@@ -1794,6 +2361,8 @@ int main(int argc, char *argv[])
 	if (!data.media_type) {
 		switch (data.data_type) {
 		case TYPE_MIDI:
+		case TYPE_MIDI2:
+		case TYPE_SYSEX:
 			data.media_type = DEFAULT_MIDI_MEDIA_TYPE;
 			break;
 		default:
@@ -1846,11 +2415,7 @@ int main(int argc, char *argv[])
 	pw_loop_add_signal(l, SIGINT, do_quit, &data);
 	pw_loop_add_signal(l, SIGTERM, do_quit, &data);
 
-	data.context = pw_context_new(l,
-			pw_properties_new(
-				PW_KEY_CONFIG_NAME, "client-rt.conf",
-				NULL),
-			0);
+	data.context = pw_context_new(l, NULL, 0);
 	if (!data.context) {
 		fprintf(stderr, "error: pw_context_new() failed: %m\n");
 		goto error_no_context;
@@ -1867,8 +2432,8 @@ int main(int argc, char *argv[])
 	}
 	pw_core_add_listener(data.core, &data.core_listener, &core_events, &data);
 
-	if (spa_streq(data.filename, "-")) {
-		ret = setup_pipe(&data);
+	if (data.rawfile) {
+		ret = setup_raw(&data);
 	} else {
 		switch (data.data_type) {
 		case TYPE_PCM:
@@ -1876,6 +2441,9 @@ int main(int argc, char *argv[])
 			break;
 		case TYPE_MIDI:
 			ret = setup_midifile(&data);
+			break;
+		case TYPE_MIDI2:
+			ret = setup_midiclip(&data);
 			break;
 		case TYPE_DSD:
 			ret = setup_dsdfile(&data);
@@ -1885,6 +2453,9 @@ int main(int argc, char *argv[])
 			ret = setup_encodedfile(&data);
 			break;
 #endif
+		case TYPE_SYSEX:
+			ret = setup_sysex(&data);
+			break;
 		default:
 			ret = -ENOTSUP;
 			break;
@@ -1940,13 +2511,29 @@ int main(int argc, char *argv[])
 			.rate = data.rate,
 			.channels = data.channels);
 
-		if (data.channelmap.n_channels)
-			memcpy(info.position, data.channelmap.channels, data.channels * sizeof(int));
-
+		if (data.channels > MAX_CHANNELS) {
+			fprintf(stderr, "error: too many channels %d > %d\n",
+					data.channels, MAX_CHANNELS);
+			goto error_bad_file;
+		}
+		if (data.channelmap.n_channels) {
+			if (data.channels > MAX_CHANNELS) {
+				fprintf(stderr, "error: too many channels in channelmap %d > %d\n",
+						data.channelmap.n_channels, MAX_CHANNELS);
+				goto error_bad_file;
+			}
+			uint32_t i;
+			for (i = 0; i < data.channelmap.n_channels; i++)
+				info.position[i] = data.channelmap.position[i];
+			for (; i < data.channels; i++)
+				info.position[i] = SPA_AUDIO_CHANNEL_AUX0 + i;
+		}
 		params[n_params++] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 		break;
 	}
 	case TYPE_MIDI:
+	case TYPE_MIDI2:
+	case TYPE_SYSEX:
 		params[n_params++] = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 				SPA_FORMAT_mediaType,		SPA_POD_Id(SPA_MEDIA_TYPE_application),
@@ -1969,13 +2556,30 @@ int main(int argc, char *argv[])
 			info.rate = data.dff.info.rate / 8;
 			channel_type = data.dff.info.channel_type;
 		}
-
-		SPA_FOR_EACH_ELEMENT_VAR(dsd_layouts, i) {
-			if (i->type != channel_type)
-				continue;
-			info.channels = i->info.n_channels;
-			memcpy(info.position, i->info.position,
-					info.channels * sizeof(uint32_t));
+		if (info.channels > MAX_CHANNELS) {
+			fprintf(stderr, "error: too many channels in DSD %d > %d\n",
+					info.channels, MAX_CHANNELS);
+			goto error_bad_file;
+		}
+		if (data.channelmap.n_channels) {
+			if (data.channelmap.n_channels > MAX_CHANNELS) {
+				fprintf(stderr, "error: too many channels in channelmap %d > %d\n",
+						data.channelmap.n_channels, MAX_CHANNELS);
+				goto error_bad_file;
+			}
+			uint32_t i;
+			for (i = 0; i < data.channelmap.n_channels; i++)
+				info.position[i] = data.channelmap.position[i];
+			for (; i < info.channels; i++)
+				info.position[i] = SPA_AUDIO_CHANNEL_AUX0 + i;
+		} else {
+			SPA_FOR_EACH_ELEMENT_VAR(dsd_layouts, i) {
+				if (i->type != channel_type)
+					continue;
+				info.channels = i->info.n_channels;
+				memcpy(info.position, i->info.position,
+						info.channels * sizeof(uint32_t));
+			}
 		}
 		params[n_params++] = spa_format_audio_dsd_build(&b, SPA_PARAM_EnumFormat, &info);
 		break;
@@ -2008,7 +2612,7 @@ int main(int argc, char *argv[])
 	pw_stream_add_listener(data.stream, &data.stream_listener, &stream_events, &data);
 
 	if (data.verbose)
-		printf("connecting %s stream; target=%s\n",
+		fprintf(stderr, "connecting %s stream; target=%s\n",
 				data.mode == mode_playback ? "playback" : "record",
 				data.target);
 
@@ -2032,11 +2636,11 @@ int main(int argc, char *argv[])
 		const char *key, *val;
 
 		if ((props = pw_stream_get_properties(data.stream)) != NULL) {
-			printf("stream properties:\n");
+			fprintf(stderr, "stream properties:\n");
 			pstate = NULL;
 			while ((key = pw_properties_iterate(props, &pstate)) != NULL &&
 				(val = pw_properties_get(props, key)) != NULL) {
-				printf("\t%s = \"%s\"\n", key, val);
+				fprintf(stderr, "\t%s = \"%s\"\n", key, val);
 			}
 		}
 	}
@@ -2064,14 +2668,20 @@ error_no_context:
 error_no_props:
 error_no_main_loop:
 	pw_properties_free(data.props);
-	if (data.file)
-		sf_close(data.file);
+	if (data.sndfile.file)
+		sf_close(data.sndfile.file);
 	if (data.midi.file)
 		midi_file_close(data.midi.file);
+	if (data.clip.file)
+		midi_clip_close(data.clip.file);
 	if (data.dsf.file)
 		dsf_file_close(data.dsf.file);
 	if (data.dff.file)
 		dff_file_close(data.dff.file);
+	if (data.sysex.file && data.sysex.close)
+		fclose(data.sysex.file);
+	if (data.raw.file && data.raw.close)
+		fclose(data.raw.file);
 #ifdef HAVE_PW_CAT_FFMPEG_INTEGRATION
 	if (data.encoded.packet)
 		av_packet_free(&data.encoded.packet);

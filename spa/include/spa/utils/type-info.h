@@ -5,11 +5,19 @@
 #ifndef SPA_TYPE_INFO_H
 #define SPA_TYPE_INFO_H
 
+
+#include <spa/utils/defs.h>
+#include <spa/utils/type.h>
+#include <spa/utils/enum-types.h>
+
+#include <spa/monitor/type-info.h>
+#include <spa/node/type-info.h>
+#include <spa/param/type-info.h>
+#include <spa/control/type-info.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <spa/utils/defs.h>
 
 /**
  * \addtogroup spa_types
@@ -19,19 +27,6 @@ extern "C" {
 #ifndef SPA_TYPE_ROOT
 #define SPA_TYPE_ROOT	spa_types
 #endif
-
-static inline bool spa_type_is_a(const char *type, const char *parent)
-{
-	return type != NULL && parent != NULL && strncmp(type, parent, strlen(parent)) == 0;
-}
-
-#include <spa/utils/type.h>
-#include <spa/utils/enum-types.h>
-
-#include <spa/monitor/type-info.h>
-#include <spa/node/type-info.h>
-#include <spa/param/type-info.h>
-#include <spa/control/type-info.h>
 
 static const struct spa_type_info spa_types[] = {
         /* Basic types */
@@ -84,6 +79,8 @@ static const struct spa_type_info spa_types[] = {
 	{ SPA_TYPE_OBJECT_ParamLatency, SPA_TYPE_Object, SPA_TYPE_INFO_PARAM_Latency, spa_type_param_latency },
 	{ SPA_TYPE_OBJECT_ParamProcessLatency, SPA_TYPE_Object, SPA_TYPE_INFO_PARAM_ProcessLatency, spa_type_param_process_latency },
 	{ SPA_TYPE_OBJECT_ParamTag, SPA_TYPE_Object, SPA_TYPE_INFO_PARAM_Tag, spa_type_param_tag },
+	{ SPA_TYPE_OBJECT_PeerParam, SPA_TYPE_Object, SPA_TYPE_INFO_PeerParam, spa_type_peer_param },
+	{ SPA_TYPE_OBJECT_ParamDict, SPA_TYPE_Object, SPA_TYPE_INFO_PARAM_Dict, spa_type_param_dict },
 
 	{ 0, 0, NULL, NULL }
 };

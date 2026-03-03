@@ -5,10 +5,6 @@
 #ifndef SPA_ALSA_UTILS_H
 #define SPA_ALSA_UTILS_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stddef.h>
 #include <math.h>
 
@@ -30,12 +26,17 @@ extern "C" {
 #include <spa/param/param.h>
 #include <spa/param/latency-utils.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/audio/raw-json.h>
 #include <spa/param/tag-utils.h>
 
 #include "alsa.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define MAX_RATES	16
+#define MAX_CHANNELS SPA_AUDIO_MAX_CHANNELS
 
 #define DEFAULT_PERIOD		1024u
 #define DEFAULT_RATE		48000u
@@ -49,6 +50,7 @@ struct props {
 	char device[64];
 	char device_name[128];
 	char card_name[128];
+	char media_class[128];
 	bool use_chmap;
 };
 
@@ -70,8 +72,8 @@ struct buffer {
 #define BW_PERIOD	(3 * SPA_NSEC_PER_SEC)
 
 struct channel_map {
-	uint32_t channels;
-	uint32_t pos[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t n_pos;
+	uint32_t pos[MAX_CHANNELS];
 };
 
 struct card {
@@ -133,6 +135,7 @@ struct state {
 	unsigned int opened:1;
 	unsigned int prepared:1;
 	unsigned int started:1;
+	unsigned int want_started:1;
 	snd_pcm_t *hndl;
 
 	bool have_format;
@@ -151,6 +154,8 @@ struct state {
 	unsigned int disable_mmap:1;
 	unsigned int disable_batch:1;
 	unsigned int disable_tsched:1;
+	unsigned int is_split_parent:1;
+	unsigned int is_firewire:1;
 	char clock_name[64];
 	uint32_t quantum_limit;
 
@@ -165,6 +170,7 @@ struct state {
 	uint32_t delay;
 	uint32_t read_size;
 	uint32_t max_read;
+	uint32_t duration;
 
 	uint64_t port_info_all;
 	struct spa_port_info port_info;
@@ -198,6 +204,7 @@ struct state {
 	int n_fds;
 	uint32_t threshold;
 	uint32_t last_threshold;
+	snd_pcm_uframes_t period_size_min;
 	uint32_t headroom;
 	uint32_t start_delay;
 	uint32_t min_delay;
@@ -211,7 +218,6 @@ struct state {
 	unsigned int alsa_started:1;
 	unsigned int alsa_sync:1;
 	unsigned int alsa_sync_warning:1;
-	unsigned int alsa_recovering:1;
 	unsigned int following:1;
 	unsigned int matching:1;
 	unsigned int resample:1;
@@ -226,9 +232,11 @@ struct state {
 	unsigned int is_pro:1;
 	unsigned int sources_added:1;
 	unsigned int auto_link:1;
+	unsigned int dsd_lsb:1;
 	unsigned int linked:1;
 	unsigned int is_batch:1;
-	unsigned int force_rate:1;
+	unsigned int force_quantum:1;
+	unsigned int use_period_size_min_as_headroom:1;
 
 	uint64_t iec958_codecs;
 
@@ -241,8 +249,10 @@ struct state {
 	uint64_t underrun;
 
 	struct spa_dll dll;
+	double dll_bw_max;
 	double max_error;
 	double max_resync;
+	double err_avg, err_var, err_wdw;
 
 	struct spa_latency_info latency[2];
 	struct spa_process_latency_info process_latency;
@@ -270,6 +280,8 @@ struct state {
 	struct spa_list driver_link;
 
 	struct rt_state rt;
+
+	snd_pcm_chmap_t *alsa_chmap;
 };
 
 struct spa_pod *spa_alsa_enum_propinfo(struct state *state,
@@ -303,79 +315,31 @@ void spa_alsa_recycle_buffer(struct state *state, uint32_t buffer_id);
 void spa_alsa_emit_node_info(struct state *state, bool full);
 void spa_alsa_emit_port_info(struct state *state, bool full);
 
-static inline uint32_t spa_alsa_format_from_name(const char *name, size_t len)
-{
-	int i;
-	for (i = 0; spa_type_audio_format[i].name; i++) {
-		if (strncmp(name, spa_debug_type_short_name(spa_type_audio_format[i].name), len) == 0)
-			return spa_type_audio_format[i].type;
-	}
-	return SPA_AUDIO_FORMAT_UNKNOWN;
-}
-
-static inline uint32_t spa_alsa_channel_from_name(const char *name)
-{
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (strcmp(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)) == 0)
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
 static inline void spa_alsa_parse_position(struct channel_map *map, const char *val, size_t len)
 {
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	map->channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    map->channels < SPA_AUDIO_MAX_CHANNELS) {
-		map->pos[map->channels++] = spa_alsa_channel_from_name(v);
-	}
+	spa_audio_parse_position_n(val, len, map->pos, SPA_N_ELEMENTS(map->pos), &map->n_pos);
 }
 
 static inline uint32_t spa_alsa_parse_rates(uint32_t *rates, uint32_t max, const char *val, size_t len)
 {
-	struct spa_json it[2];
-	char v[256];
-	uint32_t count;
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	count = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 && count < max)
-		rates[count++] = atoi(v);
-	return count;
+	return spa_json_str_array_uint32(val, len, rates, max);
 }
 
 static inline uint32_t spa_alsa_iec958_codec_from_name(const char *name)
 {
-	int i;
-	for (i = 0; spa_type_audio_iec958_codec[i].name; i++) {
-		if (strcmp(name, spa_debug_type_short_name(spa_type_audio_iec958_codec[i].name)) == 0)
-			return spa_type_audio_iec958_codec[i].type;
-	}
-	return SPA_AUDIO_IEC958_CODEC_UNKNOWN;
+	return spa_type_audio_iec958_codec_from_short_name(name);
 }
 
 static inline void spa_alsa_parse_iec958_codecs(uint64_t *codecs, const char *val, size_t len)
 {
-	struct spa_json it[2];
+	struct spa_json it[1];
 	char v[256];
 
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
+        if (spa_json_begin_array_relax(&it[0], val, len) <= 0)
+		return;
 
 	*codecs = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0)
+	while (spa_json_get_string(&it[0], v, sizeof(v)) > 0)
 		*codecs |= 1ULL << spa_alsa_iec958_codec_from_name(v);
 }
 

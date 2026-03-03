@@ -5,6 +5,8 @@
 #ifndef SPA_PARAM_LATENY_H
 #define SPA_PARAM_LATENY_H
 
+#include <spa/param/param.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -13,8 +15,6 @@ extern "C" {
  * \addtogroup spa_param
  * \{
  */
-
-#include <spa/param/param.h>
 
 /**
  * Properties for SPA_TYPE_OBJECT_ParamLatency
@@ -50,13 +50,17 @@ struct spa_latency_info {
 	enum spa_direction direction;
 	float min_quantum;
 	float max_quantum;
-	uint32_t min_rate;
-	uint32_t max_rate;
-	uint64_t min_ns;
-	uint64_t max_ns;
+	int32_t min_rate;
+	int32_t max_rate;
+	int64_t min_ns;
+	int64_t max_ns;
 };
 
 #define SPA_LATENCY_INFO(dir,...) ((struct spa_latency_info) { .direction = (dir), ## __VA_ARGS__ })
+#define SPA_LATENCY_INFO_UNSET(dir) SPA_LATENCY_INFO(dir, 	\
+		.min_quantum = FLT_MAX, .max_quantum = FLT_MIN,	\
+		.min_rate = INT32_MAX, .max_rate = INT32_MIN,	\
+		.min_ns = INT64_MAX, .max_ns = INT64_MIN)
 
 /**
  * Properties for SPA_TYPE_OBJECT_ParamProcessLatency
@@ -74,8 +78,8 @@ enum spa_param_process_latency {
 /** Helper structure for managing process latency objects */
 struct spa_process_latency_info {
 	float quantum;
-	uint32_t rate;
-	uint64_t ns;
+	int32_t rate;
+	int64_t ns;
 };
 
 #define SPA_PROCESS_LATENCY_INFO_INIT(...)	((struct spa_process_latency_info) { __VA_ARGS__ })

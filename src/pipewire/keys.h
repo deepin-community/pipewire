@@ -5,11 +5,12 @@
 #ifndef PIPEWIRE_KEYS_H
 #define PIPEWIRE_KEYS_H
 
+#include <pipewire/utils.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <pipewire/utils.h>
 /**
  * \defgroup pw_keys Key Names
  *
@@ -104,9 +105,11 @@ extern "C" {
 								  *  default pipewire-0, overwritten by
 								  *  env(PIPEWIRE_REMOTE). May also be
 								  *  a SPA-JSON array of sockets, to be tried
-								  *  in order. */
+								  *  in order. The "internal" remote name and
+								  *  "generic" intention connects to the local
+								  *  PipeWire instance. */
 #define PW_KEY_REMOTE_INTENTION		"remote.intention"	/**< The intention of the remote connection,
-								  *  "generic", "screencast" */
+								  *  "generic", "screencast", "manager" */
 
 /** application keys */
 #define PW_KEY_APP_NAME			"application.name"	/**< application name. Ex: "Totem Music Player" */
@@ -187,7 +190,18 @@ extern "C" {
 #define PW_KEY_NODE_SUSPEND_ON_IDLE	"node.suspend-on-idle"	/**< suspend the node when idle */
 #define PW_KEY_NODE_CACHE_PARAMS	"node.cache-params"	/**< cache the node params */
 #define PW_KEY_NODE_TRANSPORT_SYNC	"node.transport.sync"	/**< the node handles transport sync */
-#define PW_KEY_NODE_DRIVER		"node.driver"		/**< node can drive the graph */
+#define PW_KEY_NODE_DRIVER		"node.driver"		/**< node can drive the graph. When the node is
+								  *  selected as the driver, it needs to start
+								  *  the graph periodically. */
+#define PW_KEY_NODE_SUPPORTS_LAZY	"node.supports-lazy"	/**< the node can be a lazy driver. It will listen
+								  *  to RequestProcess commands and take them into
+								  *  account when deciding to start the graph.
+								  *  A value of 0 disables support, a value of > 0
+								  *  enables with increasing preference. */
+#define PW_KEY_NODE_SUPPORTS_REQUEST	"node.supports-request"	/**< The node supports emiting RequestProcess events
+								  *  when it wants the graph to be scheduled.
+								  *  A value of 0 disables support, a value of > 0
+								  *  enables with increasing preference. */
 #define PW_KEY_NODE_DRIVER_ID		"node.driver-id"	/**< the node id of the node assigned as driver
 								  *   for this node */
 #define PW_KEY_NODE_ASYNC		"node.async"		/**< the node wants async scheduling */
@@ -207,11 +221,18 @@ extern "C" {
 #define PW_KEY_NODE_TRIGGER		"node.trigger"		/**< the node is not scheduled automatically
 								  *   based on the dependencies in the graph
 								  *   but it will be triggered explicitly. */
-#define PW_KEY_NODE_CHANNELNAMES		"node.channel-names"		/**< names of node's
-									*   channels (unrelated to positions) */
-#define PW_KEY_NODE_DEVICE_PORT_NAME_PREFIX			"node.device-port-name-prefix"		/** override
-									*		port name prefix for device ports, like capture and playback
-									*		or disable the prefix completely if an empty string is provided */
+#define PW_KEY_NODE_CHANNELNAMES	"node.channel-names"	/**< names of node's
+								*   channels (unrelated to positions) */
+#define PW_KEY_NODE_DEVICE_PORT_NAME_PREFIX	\
+					"node.device-port-name-prefix"	/**< override port name prefix for
+									  *  device ports, like capture and
+									  *  playback or disable the prefix
+									  *  completely if an empty string
+									  *  is provided */
+#define PW_KEY_NODE_PHYSICAL		"node.physical"		/**< ports from the node are physical */
+#define PW_KEY_NODE_TERMINAL		"node.terminal"		/**< ports from the node are terminal */
+
+#define PW_KEY_NODE_RELIABLE		"node.reliable"		/**< node uses reliable transport 1.6.0 */
 
 /** Port keys */
 #define PW_KEY_PORT_ID			"port.id"		/**< port id */
@@ -229,6 +250,8 @@ extern "C" {
 #define PW_KEY_PORT_PASSIVE		"port.passive"		/**< the ports wants passive links, since 0.3.67 */
 #define PW_KEY_PORT_IGNORE_LATENCY	"port.ignore-latency"	/**< latency ignored by peers, since 0.3.71 */
 #define PW_KEY_PORT_GROUP		"port.group"		/**< the port group of the port 1.2.0 */
+#define PW_KEY_PORT_EXCLUSIVE		"port.exclusive"	/**< link port only once 1.6.0 */
+#define PW_KEY_PORT_RELIABLE		"port.reliable"		/**< port uses reliable transport 1.6.0 */
 
 /** link properties */
 #define PW_KEY_LINK_ID			"link.id"		/**< a link id */

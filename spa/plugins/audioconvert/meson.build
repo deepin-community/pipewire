@@ -72,15 +72,15 @@ if have_sse41
   simd_cargs += ['-DHAVE_SSE41']
   simd_dependencies += audioconvert_sse41
 endif
-if have_avx and have_fma
-  audioconvert_avx = static_library('audioconvert_avx',
-    ['resample-native-avx.c'],
-    c_args : [avx_args, fma_args, '-O3', '-DHAVE_AVX', '-DHAVE_FMA'],
+if have_avx2 and have_fma
+  audioconvert_avx2_fma = static_library('audioconvert_avx2_fma',
+    ['resample-native-avx2.c'],
+    c_args : [avx2_args, fma_args, '-O3', '-DHAVE_AVX2', '-DHAVE_FMA'],
     dependencies : [ spa_dep ],
     install : false
     )
-  simd_cargs += ['-DHAVE_AVX', '-DHAVE_FMA']
-  simd_dependencies += audioconvert_avx
+  simd_cargs += ['-DHAVE_AVX2', '-DHAVE_FMA']
+  simd_dependencies += audioconvert_avx2_fma
 endif
 if have_avx2
   audioconvert_avx2 = static_library('audioconvert_avx2',
@@ -105,10 +105,51 @@ if have_neon
   simd_dependencies += audioconvert_neon
 endif
 
+if have_rvv
+  audioconvert_rvv = static_library('audioconvert_rvv',
+    ['fmt-ops-rvv.c' ],
+    c_args : ['-O3', '-DHAVE_RVV'],
+    dependencies : [ spa_dep ],
+    install : false
+    )
+  simd_cargs += ['-DHAVE_RVV']
+  simd_dependencies += audioconvert_rvv
+endif
+
+sparesampledumpcoeffs_sources = [
+  'resample-native.c',
+  'resample-native-c.c',
+  'spa-resample-dump-coeffs.c',
+]
+
+sparesampledumpcoeffs = executable(
+  'spa-resample-dump-coeffs',
+  sparesampledumpcoeffs_sources,
+  c_args : [ '-DRESAMPLE_DISABLE_PRECOMP' ],
+  dependencies : [ spa_dep, mathlib_native ],
+  install : false,
+  native : true,
+)
+
+precomptuples = []
+foreach tuple : get_option('resampler-precomp-tuples')
+  precomptuples += '-t ' + tuple
+endforeach
+
+resample_native_precomp_h = custom_target(
+  'resample-native-precomp.h',
+  output : 'resample-native-precomp.h',
+  capture : true,
+  command : [
+    sparesampledumpcoeffs,
+  ] + precomptuples
+)
+
 audioconvert_lib = static_library('audioconvert',
   ['fmt-ops.c',
     'channelmix-ops.c',
     'peaks-ops.c',
+    resample_native_precomp_h,
     'resample-native.c',
     'resample-peaks.c',
     'wavfile.c',
@@ -144,6 +185,7 @@ test_apps = [
   'test-fmt-ops',
   'test-peaks',
   'test-resample',
+  'test-resample-delay',
   ]
 
 foreach a : test_apps

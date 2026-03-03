@@ -60,6 +60,15 @@ struct client {
 	struct pw_manager_object *metadata_routes;
 	struct pw_properties *routes;
 
+	struct pw_manager_object *metadata_schema_sm_settings;
+	bool have_force_mono_audio;
+	bool default_force_mono_audio;
+	bool have_bluetooth_headset_autoswitch;
+	bool default_bluetooth_headset_autoswitch;
+	struct pw_manager_object *metadata_sm_settings;
+	bool force_mono_audio;
+	bool bluetooth_headset_autoswitch;
+
 	uint32_t connect_tag;
 
 	uint32_t in_index;
@@ -99,7 +108,7 @@ void client_disconnect(struct client *client);
 void client_free(struct client *client);
 int client_queue_message(struct client *client, struct message *msg);
 int client_flush_messages(struct client *client);
-int client_queue_subscribe_event(struct client *client, uint32_t mask, uint32_t event, uint32_t id);
+int client_queue_subscribe_event(struct client *client, uint32_t facility, uint32_t type, uint32_t index);
 
 void client_update_routes(struct client *client, const char *key, const char *value);
 

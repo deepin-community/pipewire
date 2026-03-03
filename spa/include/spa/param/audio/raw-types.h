@@ -5,6 +5,10 @@
 #ifndef SPA_AUDIO_RAW_TYPES_H
 #define SPA_AUDIO_RAW_TYPES_H
 
+#include <spa/utils/type.h>
+#include <spa/utils/string.h>
+#include <spa/param/audio/raw.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,8 +18,13 @@ extern "C" {
  * \{
  */
 
-#include <spa/utils/type.h>
-#include <spa/param/audio/raw.h>
+#ifndef SPA_API_AUDIO_RAW_TYPES
+ #ifdef SPA_API_IMPL
+  #define SPA_API_AUDIO_RAW_TYPES SPA_API_IMPL
+ #else
+  #define SPA_API_AUDIO_RAW_TYPES static inline
+ #endif
+#endif
 
 #define SPA_TYPE_INFO_AudioFormat		SPA_TYPE_INFO_ENUM_BASE "AudioFormat"
 #define SPA_TYPE_INFO_AUDIO_FORMAT_BASE		SPA_TYPE_INFO_AudioFormat ":"
@@ -128,6 +137,15 @@ static const struct spa_type_info spa_type_audio_format[] = {
 	{ 0, 0, NULL, NULL },
 };
 
+SPA_API_AUDIO_RAW_TYPES uint32_t spa_type_audio_format_from_short_name(const char *name)
+{
+	return spa_type_from_short_name(name, spa_type_audio_format, SPA_AUDIO_FORMAT_UNKNOWN);
+}
+SPA_API_AUDIO_RAW_TYPES const char * spa_type_audio_format_to_short_name(uint32_t type)
+{
+	return spa_type_to_short_name(type, spa_type_audio_format, "UNKNOWN");
+}
+
 #define SPA_TYPE_INFO_AudioFlags	SPA_TYPE_INFO_FLAGS_BASE "AudioFlags"
 #define SPA_TYPE_INFO_AUDIO_FLAGS_BASE	SPA_TYPE_INFO_AudioFlags ":"
 
@@ -174,7 +192,7 @@ static const struct spa_type_info spa_type_audio_channel[] = {
 	{ SPA_AUDIO_CHANNEL_TFRC, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "TFRC", NULL },
 	{ SPA_AUDIO_CHANNEL_TSL, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "TSL", NULL },
 	{ SPA_AUDIO_CHANNEL_TSR, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "TSR", NULL },
-	{ SPA_AUDIO_CHANNEL_LLFE, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "LLFR", NULL },
+	{ SPA_AUDIO_CHANNEL_LLFE, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "LLFE", NULL },
 	{ SPA_AUDIO_CHANNEL_RLFE, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "RLFE", NULL },
 	{ SPA_AUDIO_CHANNEL_BC, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "BC", NULL },
 	{ SPA_AUDIO_CHANNEL_BLC, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_CHANNEL_BASE "BLC", NULL },
@@ -247,6 +265,47 @@ static const struct spa_type_info spa_type_audio_channel[] = {
 	{ 0, 0, NULL, NULL },
 };
 
+SPA_API_AUDIO_RAW_TYPES uint32_t spa_type_audio_channel_from_short_name(const char *name)
+{
+	uint32_t res;
+	if (spa_strstartswith(name, "AUX")) {
+		if (spa_atou32(name+3, &res, 10) && res < 0x1000)
+			res = SPA_AUDIO_CHANNEL_AUX0 + res;
+		else
+			res = SPA_AUDIO_CHANNEL_UNKNOWN;
+	} else {
+		res = spa_type_from_short_name(name, spa_type_audio_channel, SPA_AUDIO_CHANNEL_UNKNOWN);
+	}
+	return res;
+}
+SPA_API_AUDIO_RAW_TYPES const char * spa_type_audio_channel_to_short_name(uint32_t type)
+{
+	return spa_type_to_short_name(type, spa_type_audio_channel, "UNK");
+}
+SPA_API_AUDIO_RAW_TYPES const char * spa_type_audio_channel_make_short_name(uint32_t type,
+		char *buf, size_t size, const char *unknown)
+{
+	if (SPA_AUDIO_CHANNEL_IS_AUX(type)) {
+		snprintf(buf, size, "AUX%u", type - SPA_AUDIO_CHANNEL_AUX0);
+	} else {
+		const char *str = spa_type_to_short_name(type, spa_type_audio_channel, NULL);
+		if (str == NULL)
+			return unknown;
+		snprintf(buf, size, "%.7s", str);
+	}
+	return buf;
+}
+
+#define SPA_TYPE_INFO_AudioVolumeRampScale		SPA_TYPE_INFO_ENUM_BASE "AudioVolumeRampScale"
+#define SPA_TYPE_INFO_AUDIO_VOLUME_RAMP_SCALE_BASE	SPA_TYPE_INFO_AudioVolumeRampScale ":"
+
+static const struct spa_type_info spa_type_audio_volume_ramp_scale[] = {
+	{ SPA_AUDIO_VOLUME_RAMP_INVALID, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_VOLUME_RAMP_SCALE_BASE "INVALID", NULL },
+	{ SPA_AUDIO_VOLUME_RAMP_LINEAR, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_VOLUME_RAMP_SCALE_BASE "LINEAR", NULL },
+	{ SPA_AUDIO_VOLUME_RAMP_CUBIC, SPA_TYPE_Int, SPA_TYPE_INFO_AUDIO_VOLUME_RAMP_SCALE_BASE "CUBIC", NULL },
+	{ 0, 0, NULL, NULL },
+};
+
 /**
  * \}
  */
@@ -255,4 +314,4 @@ static const struct spa_type_info spa_type_audio_channel[] = {
 }  /* extern "C" */
 #endif
 
-#endif /* SPA_AUDIO_RAW_RAW_TYPES_H */
+#endif /* SPA_AUDIO_RAW_TYPES_H */

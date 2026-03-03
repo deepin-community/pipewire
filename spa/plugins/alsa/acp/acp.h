@@ -5,17 +5,17 @@
 #ifndef ACP_H
 #define ACP_H
 
-#ifdef __cplusplus
-extern "C" {
-#else
-#include <stdbool.h>
-#endif
-
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <poll.h>
 #include <string.h>
+
+#ifdef __cplusplus
+extern "C" {
+#else
+#include <stdbool.h>
+#endif
 
 #ifdef __GNUC__
 #define ACP_PRINTF_FUNC(fmt, arg1) __attribute__((format(printf, fmt, arg1)))
@@ -24,7 +24,6 @@ extern "C" {
 #endif
 
 #define ACP_INVALID_INDEX	((uint32_t)-1)
-#define ACP_MAX_CHANNELS	64
 
 struct acp_dict_item {
 	const char *key;
@@ -93,7 +92,7 @@ struct acp_format {
 	uint32_t format_mask;
 	uint32_t rate_mask;
 	uint32_t channels;
-	uint32_t map[ACP_MAX_CHANNELS];
+	uint32_t *map;
 };
 
 #define ACP_DICT_INIT(items,n_items) ((struct acp_dict) { 0, (n_items), (items) })
@@ -147,6 +146,24 @@ const char *acp_available_str(enum acp_available status);
 		 * The group identifier must be treated as an opaque identifier. The string may look
 		 * like an ALSA control name, but applications must not assume any such relationship.
 		 * The group naming scheme can change without a warning.
+		 */
+#define ACP_KEY_IEC958_CODECS_DETECTED "iec958.codecs.detected"
+		/**< A list of IEC958 passthrough formats which have been auto-detected as being
+		 * supported by a given node. This only serves as a hint, as the auto-detected
+		 * values may be incorrect and/or might change, e.g. when external devices such
+		 * as receivers are powered on or off.
+		 */
+#define ACP_KEY_AUDIO_CHANNELS_DETECTED "audio.channels.detected"
+		/**< The number of channels detected detected via EDID-like data read from a device
+		 * connected via HDMI/DisplayPort. This only serves as a hint, as the auto-detected
+		 * values may be incorrect and/or might change, e.g. when external devices such
+		 * as receivers are powered on or off.
+		 */
+#define ACP_KEY_AUDIO_POSITION_DETECTED "audio.position.detected"
+		/**< The channel positions detected detected via EDID-like data read from a device
+		 * connected via HDMI/DisplayPort. This only serves as a hint, as the auto-detected
+		 * values may be incorrect and/or might change, e.g. when external devices such
+		 * as receivers are powered on or off.
 		 */
 
 struct acp_device;
@@ -293,6 +310,9 @@ typedef void (*acp_log_func) (void *data,
 
 void acp_set_log_func(acp_log_func, void *data);
 void acp_set_log_level(int level);
+
+void acp_iec958_codecs_to_json(const uint32_t *codecs, size_t n_codecs, char *buf, size_t maxsize);
+size_t acp_iec958_codecs_from_json(const char *str, uint32_t *codecs, size_t max_codecs);
 
 #ifdef __cplusplus
 }
