@@ -58,10 +58,7 @@ Vcs-Browser: https://salsa.debian.org/utopia-team/pipewire
 Vcs-Git: https://salsa.debian.org/utopia-team/pipewire.git -b debian/experimental
 Homepage: https://pipewire.org/
 
-Package: libpipewire-0.3-0t64
-Provides: ${t64:Provides}
-Replaces: libpipewire-0.3-0
-Breaks: libpipewire-0.3-0 (<< ${source:Version})
+Package: libpipewire-0.3-0
 Architecture: any
 Multi-Arch: same
 Depends: libspa-0.2-modules (= ${binary:Version}),
@@ -99,7 +96,7 @@ Package: libpipewire-0.3-dev
 Section: libdevel
 Architecture: any
 Multi-Arch: same
-Depends: libpipewire-0.3-0t64 (= ${binary:Version}),
+Depends: libpipewire-0.3-0 (= ${binary:Version}),
          libspa-0.2-dev (= ${binary:Version}),
          ${misc:Depends}
 Suggests: pipewire-doc
