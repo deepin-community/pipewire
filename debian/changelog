@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin1) unstable; urgency=medium
+
+  * revert 64-bit time_t transition patch.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Wed, 06 May 2026 11:31:01 +0800
+
 pipewire (1.6.4-1) unstable; urgency=medium
 
   * New upstream release
@@ -32,6 +38,13 @@ pipewire (1.6.1-1) unstable; urgency=medium
   * salsa-ci: allow licenserecon to fail for now
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 09 Mar 2026 13:55:41 +0100
+=======
+pipewire (1.6.0-1deepin1) unstable; urgency=medium
+
+  * revert 64-bit time_t transition patch.
+
+ -- tunaichao <tunaichao@uniontech.com>  Wed, 04 Mar 2026 10:58:12 +0800
+>>>>>>> 1efe8a0... fix: revert 64-bit time_t transition patch.
 
 pipewire (1.6.0-1) experimental; urgency=medium
 
