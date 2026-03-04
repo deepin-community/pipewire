@@ -1,3 +1,9 @@
+pipewire (1.6.0-1deepin1) unstable; urgency=medium
+
+  * revert 64-bit time_t transition patch.
+
+ -- tunaichao <tunaichao@uniontech.com>  Wed, 04 Mar 2026 10:58:12 +0800
+
 pipewire (1.6.0-1) experimental; urgency=medium
 
   [ Dylan Aïssi ]
