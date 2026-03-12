@@ -1,0 +1,334 @@
+From e1db0b42c955b243f637687f83e8bb0b813b4331 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Mon, 10 Feb 2025 20:49:54 +0800
+Subject: [PATCH] fix: Add config to match lenovo m90h g2t
+
+---
+ spa/plugins/alsa/90-pipewire-alsa.rules       |   2 +
+ .../analog-output-g2t-desktop-speaker.conf    | 229 ++++++++++++++++++
+ .../lenovo-m90h-g2t-usb-audio.conf            |  64 +++++
+ 3 files changed, 295 insertions(+)
+ create mode 100644 spa/plugins/alsa/mixer/paths/analog-output-g2t-desktop-speaker.conf
+ create mode 100644 spa/plugins/alsa/mixer/profile-sets/lenovo-m90h-g2t-usb-audio.conf
+
+diff --git a/spa/plugins/alsa/90-pipewire-alsa.rules b/spa/plugins/alsa/90-pipewire-alsa.rules
+index e19a095..98d1d2d 100644
+--- a/spa/plugins/alsa/90-pipewire-alsa.rules
++++ b/spa/plugins/alsa/90-pipewire-alsa.rules
+@@ -188,6 +188,8 @@ ATTRS{idVendor}=="0a12", ATTRS{idProduct}=="4007", ENV{ACP_PROFILE_SET}="analog-
+ # Asus Xonar SE
+ ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="189d", ENV{ACP_PROFILE_SET}="asus-xonar-se.conf"
+ 
++ATTRS{idVendor}=="17aa", ATTRS{idProduct}=="3507", ENV{ACP_PROFILE_SET}="lenovo-m90h-g2t-usb-audio.conf"
++
+ GOTO="pipewire_end"
+ 
+ LABEL="pipewire_check_pci"
+diff --git a/spa/plugins/alsa/mixer/paths/analog-output-g2t-desktop-speaker.conf b/spa/plugins/alsa/mixer/paths/analog-output-g2t-desktop-speaker.conf
+new file mode 100644
+index 0000000..b18a78a
+--- /dev/null
++++ b/spa/plugins/alsa/mixer/paths/analog-output-g2t-desktop-speaker.conf
+@@ -0,0 +1,229 @@
++# This file is part of PulseAudio.
++#
++# PulseAudio is free software; you can redistribute it and/or modify
++# it under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2.1 of the
++# License, or (at your option) any later version.
++#
++# PulseAudio is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public License
++# along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
++
++; Path for mixers that don't have a 'Speaker' control, but where we
++; force enable the speaker paths nonetheless.
++; Needed for some older Dell laptops.
++; See analog-output.conf.common for an explanation on the directives
++
++[General]
++priority = 100
++description-key = analog-output-speaker
++
++[Properties]
++device.icon_name = audio-speakers
++
++[Jack Headphone - Output]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Dock Headphone]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Front Headphone]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Line Out]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Line Out Front]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Front Line Out]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Rear Line Out]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Dock Line Out]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Speaker - Output]
++state.plugged = no
++state.unplugged = unknown
++
++[Jack Speaker Phantom]
++required-any = any
++state.plugged = unknown
++state.unplugged = unknown
++
++[Jack Speaker Front Phantom]
++required-any = any
++state.plugged = unknown
++state.unplugged = unknown
++
++[Element Hardware Master]
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
++
++[Element Master]
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
++
++[Element Master Mono]
++switch = off
++volume = off
++
++; This profile path is intended to control the speaker, not the
++; headphones. But it should not hurt if we leave the headphone jack
++; enabled nonetheless.
++[Element Headphone]
++switch = mute
++volume = zero
++
++[Element Headphone2]
++switch = mute
++volume = zero
++
++[Element Headphone+LO]
++switch = off
++volume = off
++
++[Element Speaker+LO]
++required-any = any
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
++
++[Element Speaker]
++required-any = any
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
++
++[Element Desktop Speaker]
++required-any = any
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
++
++[Element Front]
++switch = mute
++volume = merge
++override-map.1 = all-front
++override-map.2 = front-left,front-right
++
++[Element Front Speaker]
++switch = mute
++volume = merge
++override-map.1 = all-front
++override-map.2 = front-left,front-right
++required-any = any
++
++[Element Speaker Front]
++switch = mute
++volume = merge
++override-map.1 = all-front
++override-map.2 = front-left,front-right
++required-any = any
++
++[Element Rear]
++switch = mute
++volume = merge
++override-map.1 = all-rear
++override-map.2 = rear-left,rear-right
++
++[Element Surround]
++switch = mute
++volume = merge
++override-map.1 = all-rear
++override-map.2 = rear-left,rear-right
++
++[Element Surround Speaker]
++switch = mute
++volume = merge
++override-map.1 = all-rear
++override-map.2 = rear-left,rear-right
++required-any = any
++
++[Element Speaker Surround]
++switch = mute
++volume = merge
++override-map.1 = all-rear
++override-map.2 = rear-left,rear-right
++required-any = any
++
++[Element Side]
++switch = mute
++volume = merge
++override-map.1 = all-side
++override-map.2 = side-left,side-right
++
++[Element Speaker Side]
++switch = mute
++volume = merge
++override-map.1 = all-side
++override-map.2 = side-left,side-right
++
++[Element Center]
++switch = mute
++volume = merge
++override-map.1 = all-center
++override-map.2 = all-center,all-center
++
++[Element Center Speaker]
++switch = mute
++volume = merge
++override-map.1 = all-center
++override-map.2 = all-center,all-center
++required-any = any
++
++[Element LFE]
++switch = mute
++volume = merge
++override-map.1 = lfe
++override-map.2 = lfe,lfe
++
++[Element LFE Speaker]
++switch = mute
++volume = merge
++override-map.1 = lfe
++override-map.2 = lfe,lfe
++required-any = any
++
++[Element Bass Speaker]
++switch = mute
++volume = merge
++override-map.1 = lfe
++override-map.2 = lfe,lfe
++required-any = any
++
++[Element CLFE]
++switch = mute
++volume = merge
++override-map.1 = all-center
++override-map.2 = all-center,lfe
++
++[Element Speaker CLFE]
++switch = mute
++volume = merge
++override-map.1 = all-center
++override-map.2 = all-center,lfe
++
++.include analog-output.conf.common
+diff --git a/spa/plugins/alsa/mixer/profile-sets/lenovo-m90h-g2t-usb-audio.conf b/spa/plugins/alsa/mixer/profile-sets/lenovo-m90h-g2t-usb-audio.conf
+new file mode 100644
+index 0000000..1ec772c
+--- /dev/null
++++ b/spa/plugins/alsa/mixer/profile-sets/lenovo-m90h-g2t-usb-audio.conf
+@@ -0,0 +1,64 @@
++# This file is part of PulseAudio.
++#
++# PulseAudio is free software; you can redistribute it and/or modify
++# it under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2.1 of the
++# License, or (at your option) any later version.
++#
++# PulseAudio is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public License
++# along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
++
++;
++;
++; See default.conf for an explanation on the directives used here.
++
++[General]
++auto-profiles = yes
++
++[Mapping analog-stereo-speaker]
++description = Analog Stereo Speaker
++device-strings = hw:%f,0,0
++channel-map = left,right
++direction = output
++paths-output = analog-output-speaker
++
++[Mapping analog-stereo-headphone]
++description = Analog Stereo Headphones
++device-strings = hw:%f,1,0
++channel-map = left,right
++direction = output
++paths-output = analog-output-headphones
++
++[Mapping analog-stereo-desktop-speaker]
++description = Analog Stereo Desktop speaker
++device-strings = hw:%f,2,0
++channel-map = left,right
++direction = output
++paths-output = analog-output-g2t-desktop-speaker
++
++[Mapping analog-rear-mic]
++description = Analog Rear Microphone
++device-strings = hw:%f,2,0
++channel-map = left,right
++direction = input
++paths-input = analog-input-rear-mic
++
++[Mapping analog-line-in]
++description = Analog Line-In
++device-strings = hw:%f,1,0
++channel-map = left,right
++direction = input
++paths-input = analog-input-linein
++
++[Mapping analog-mic]
++description = Analog Microphone
++device-strings = hw:%f,0,0
++channel-map = left,right
++direction = input
++paths-input = analog-input-mic
++
+-- 
+2.20.1
+

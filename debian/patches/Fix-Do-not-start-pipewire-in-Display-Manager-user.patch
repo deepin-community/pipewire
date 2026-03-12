@@ -1,0 +1,67 @@
+From 1af0561452da4866e4c74e659aabe920b78bf66b Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Thu, 12 Mar 2026 15:08:53 +0800
+Subject: [PATCH] fix: Do not start pipewire in Display Manager user
+
+---
+ src/daemon/systemd/user/pipewire-pulse.service.in | 2 ++
+ src/daemon/systemd/user/pipewire-pulse.socket     | 2 ++
+ src/daemon/systemd/user/pipewire.service.in       | 2 ++
+ src/daemon/systemd/user/pipewire.socket           | 2 ++
+ 4 files changed, 8 insertions(+)
+
+diff --git a/src/daemon/systemd/user/pipewire-pulse.service.in b/src/daemon/systemd/user/pipewire-pulse.service.in
+index 1b84102..920adb4 100644
+--- a/src/daemon/systemd/user/pipewire-pulse.service.in
++++ b/src/daemon/systemd/user/pipewire-pulse.service.in
+@@ -15,6 +15,8 @@ Description=PipeWire PulseAudio
+ # socket-service relationship, see systemd.socket(5).
+ Requires=pipewire-pulse.socket
+ ConditionUser=!root
++ConditionUser=!lightdm
++ConditionUser=!dde
+ Wants=pipewire.service pipewire-session-manager.service
+ After=pipewire.service pipewire-session-manager.service
+ BindsTo=pipewire.service
+diff --git a/src/daemon/systemd/user/pipewire-pulse.socket b/src/daemon/systemd/user/pipewire-pulse.socket
+index 1ae5eda..0064542 100644
+--- a/src/daemon/systemd/user/pipewire-pulse.socket
++++ b/src/daemon/systemd/user/pipewire-pulse.socket
+@@ -1,6 +1,8 @@
+ [Unit]
+ Description=PipeWire PulseAudio
+ ConditionUser=!root
++ConditionUser=!lightdm
++ConditionUser=!dde
+ Conflicts=pulseaudio.socket
+ 
+ [Socket]
+diff --git a/src/daemon/systemd/user/pipewire.service.in b/src/daemon/systemd/user/pipewire.service.in
+index c2621e4..8bc59e1 100644
+--- a/src/daemon/systemd/user/pipewire.service.in
++++ b/src/daemon/systemd/user/pipewire.service.in
+@@ -15,6 +15,8 @@ Description=PipeWire Multimedia Service
+ # socket-service relationship, see systemd.socket(5).
+ Requires=pipewire.socket @PW_SERVICE_REQS@
+ ConditionUser=!root
++ConditionUser=!lightdm
++ConditionUser=!dde
+ 
+ [Service]
+ LockPersonality=yes
+diff --git a/src/daemon/systemd/user/pipewire.socket b/src/daemon/systemd/user/pipewire.socket
+index 890342a..a3bb012 100644
+--- a/src/daemon/systemd/user/pipewire.socket
++++ b/src/daemon/systemd/user/pipewire.socket
+@@ -1,6 +1,8 @@
+ [Unit]
+ Description=PipeWire Multimedia System Sockets
+ ConditionUser=!root
++ConditionUser=!lightdm
++ConditionUser=!dde
+ 
+ [Socket]
+ Priority=6
+-- 
+2.20.1
+
