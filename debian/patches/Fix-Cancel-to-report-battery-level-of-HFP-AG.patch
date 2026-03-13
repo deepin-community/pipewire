@@ -1,0 +1,47 @@
+From d2fb8dce322fa62245e70f3fc666cf27b34d70ec Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Fri, 13 Mar 2026 17:37:35 +0800
+Subject: [PATCH] fix: Cancel to report battery level of HFP AG
+
+---
+ spa/plugins/bluez5/backend-native.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+index 4d14183..7cb2342 100644
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -2063,7 +2063,13 @@ static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* token)
+ 			spa_log_info(backend->log, "AG indicator state: %s = %i", rfcomm->hf_indicators[i], atoi(token));
+ 
+ 			if (spa_streq(rfcomm->hf_indicators[i], "battchg")) {
+-				spa_bt_device_report_battery_level(rfcomm->device, atoi(token) * 100 / 5);
++				/* spa_bt_device_report_battery_level(rfcomm->device, atoi(token) * 100 / 5); */
++
++				/*
++				 * The token ranges from 0 to 5, it is too rough for a battery level indicator,
++				 * so we cancel to report battchg.
++				 */
++				spa_log_info(backend->log, "Cancel spa_bt_device_report_battery_level");
+ 			}
+ 
+ 			token += strcspn(token, "\0") + 1;
+@@ -2096,7 +2102,14 @@ static bool rfcomm_hfp_hf(struct rfcomm *rfcomm, char* token)
+ 			spa_log_info(backend->log, "AG indicator update: %s = %u", rfcomm->hf_indicators[indicator], value);
+ 
+ 			if (spa_streq(rfcomm->hf_indicators[indicator], "battchg")) {
+-				spa_bt_device_report_battery_level(rfcomm->device, value * 100 / 5);
++				/* spa_bt_device_report_battery_level(rfcomm->device, value * 100 / 5); */
++
++				/*
++				 * The token ranges from 0 to 5, it is too rough for a battery level indicator,
++				 * so we cancel to report battchg.
++				 */
++				spa_log_info(backend->log, "Cancel spa_bt_device_report_battery_level");
++
+ 			} else if (spa_streq(rfcomm->hf_indicators[indicator], "callsetup")) {
+ 				if (rfcomm->hfp_hf_clcc) {
+ 					rfcomm_send_cmd(rfcomm, hfp_hf_clcc_update, NULL, "AT+CLCC");
+-- 
+2.20.1
+
