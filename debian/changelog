@@ -1,3 +1,9 @@
+pipewire (1.6.0-1deepin4) unstable; urgency=medium
+
+  * Optimize the volume algorithm
+
+ -- zhaochengyi <zcy@zcy-PC>  Mon, 16 Mar 2026 13:23:53 +0800
+
 pipewire (1.6.0-1deepin3) unstable; urgency=medium
 
   * Cancel to report battery level of HFP AG.
