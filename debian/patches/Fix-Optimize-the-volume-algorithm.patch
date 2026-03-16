@@ -1,0 +1,229 @@
+From 97a939bcbd5f835965b7f05b6390f0d799b471d7 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Mon, 16 Mar 2026 11:03:07 +0800
+Subject: [PATCH] fix: Optimize the volume algorithm
+
+---
+ pipewire-alsa/alsa-plugins/ctl_pipewire.c   | 13 +++++++++++++
+ spa/plugins/alsa/acp/volume.h               |  6 ++++--
+ spa/plugins/bluez5/defs.h                   |  6 ++++--
+ spa/plugins/filter-graph/filter-graph.c     | 10 +++++++++-
+ src/modules/module-protocol-pulse/message.c |  6 ++++--
+ src/modules/module-raop-sink.c              |  4 +++-
+ 6 files changed, 37 insertions(+), 8 deletions(-)
+
+diff --git a/pipewire-alsa/alsa-plugins/ctl_pipewire.c b/pipewire-alsa/alsa-plugins/ctl_pipewire.c
+index 36bc4be..5e02ffb 100644
+--- a/pipewire-alsa/alsa-plugins/ctl_pipewire.c
++++ b/pipewire-alsa/alsa-plugins/ctl_pipewire.c
+@@ -19,6 +19,8 @@ PW_LOG_TOPIC_STATIC(alsa_log_topic, "alsa.ctl");
+ 
+ #define DEFAULT_VOLUME_METHOD	"cubic"
+ 
++#define POW_VALUE18F 1.8f
++
+ #define VOLUME_MIN ((uint32_t) 0U)
+ #define VOLUME_MAX ((uint32_t) 0x10000U)
+ 
+@@ -63,6 +65,9 @@ typedef struct {
+ 	int subscribed;
+ #define VOLUME_METHOD_LINEAR	(0)
+ #define VOLUME_METHOD_CUBIC	(1)
++#define VOLUME_METHOD_POWER	(2)
++
++
+ 	int volume_method;
+ 
+ #define UPDATE_SINK_VOL     (1<<0)
+@@ -80,6 +85,9 @@ static inline uint32_t volume_from_linear(float vol, int method)
+ 		vol = 0.0f;
+ 
+ 	switch (method) {
++	case VOLUME_METHOD_POWER:
++		vol = powf(vol, 1.0f / POW_VALUE18F);
++		break;
+ 	case VOLUME_METHOD_CUBIC:
+ 		vol = cbrtf(vol);
+ 		break;
+@@ -93,6 +101,9 @@ static inline float volume_to_linear(uint32_t vol, int method)
+ 	float v = ((float)vol) / VOLUME_MAX;
+ 
+ 	switch (method) {
++	case VOLUME_METHOD_POWER:
++		v = powf(v, POW_VALUE18F);
++		break;
+ 	case VOLUME_METHOD_CUBIC:
+ 		v = v * v * v;
+ 		break;
+@@ -1381,6 +1392,8 @@ SND_CTL_PLUGIN_DEFINE_FUNC(pipewire)
+ 
+ 	if (spa_streq(str, "cubic"))
+ 		ctl->volume_method = VOLUME_METHOD_CUBIC;
++	else if (spa_streq(str, "power"))
++		ctl->volume_method = VOLUME_METHOD_POWER;
+ 	else if (spa_streq(str, "linear"))
+ 		ctl->volume_method = VOLUME_METHOD_LINEAR;
+ 	else {
+diff --git a/spa/plugins/alsa/acp/volume.h b/spa/plugins/alsa/acp/volume.h
+index 5b55859..22dabcb 100644
+--- a/spa/plugins/alsa/acp/volume.h
++++ b/spa/plugins/alsa/acp/volume.h
+@@ -41,6 +41,8 @@ typedef uint32_t pa_volume_t;
+ 
+ #define PA_CLAMP_VOLUME(v) (PA_CLAMP_UNLIKELY((v), PA_VOLUME_MUTED, PA_VOLUME_MAX))
+ 
++#define POW_VALUE18 1.8
++
+ typedef struct pa_cvolume {
+ 	uint32_t channels;                     /**< Number of channels */
+ 	pa_volume_t values[PA_CHANNELS_MAX];  /**< Per-channel volume */
+@@ -59,7 +61,7 @@ static inline double pa_sw_volume_to_linear(pa_volume_t v)
+ 	if (v == PA_VOLUME_NORM)
+ 		return 1.0;
+ 	f = ((double) v / PA_VOLUME_NORM);
+-	return f*f*f;
++	return pow(f, POW_VALUE18);
+ }
+ 
+ static inline double pa_sw_volume_to_dB(pa_volume_t v)
+@@ -78,7 +80,7 @@ static inline pa_volume_t pa_sw_volume_from_linear(double v)
+ {
+     if (v <= 0.0)
+         return PA_VOLUME_MUTED;
+-    return (pa_volume_t) PA_CLAMP_VOLUME((uint64_t) lround(cbrt(v) * PA_VOLUME_NORM));
++    return (pa_volume_t) PA_CLAMP_VOLUME((uint64_t) lround(pow(v, 1/POW_VALUE18) * PA_VOLUME_NORM));
+ }
+ 
+ static inline pa_volume_t pa_sw_volume_from_dB(double dB)
+diff --git a/spa/plugins/bluez5/defs.h b/spa/plugins/bluez5/defs.h
+index 24a85a5..0fae18f 100644
+--- a/spa/plugins/bluez5/defs.h
++++ b/spa/plugins/bluez5/defs.h
+@@ -780,6 +780,8 @@ static inline enum spa_bt_transport_state spa_bt_transport_state_from_string(con
+ #define DEFAULT_RX_VOLUME	1.0f
+ #define DEFAULT_TX_VOLUME	0.064f /* spa_bt_volume_hw_to_linear(40, 100) */
+ 
++#define POW_VALUE18 1.8
++
+ /* AVRCP/HSP volume is considered as percentage, so map it to pulseaudio (cubic) volume. */
+ static inline uint32_t spa_bt_volume_linear_to_hw(double v, uint32_t hw_volume_max)
+ {
+@@ -787,7 +789,7 @@ static inline uint32_t spa_bt_volume_linear_to_hw(double v, uint32_t hw_volume_m
+ 		return 0;
+ 	if (v >= 1.0)
+ 		return hw_volume_max;
+-	return SPA_CLAMP((uint64_t) lround(cbrt(v) * hw_volume_max),
++	return SPA_CLAMP((uint64_t) lround(pow(v, 1/POW_VALUE18) * hw_volume_max),
+ 			 0u, hw_volume_max);
+ }
+ 
+@@ -799,7 +801,7 @@ static inline double spa_bt_volume_hw_to_linear(uint32_t v, uint32_t hw_volume_m
+ 	if (v >= hw_volume_max)
+ 		return 1.0;
+ 	f = ((double) v / hw_volume_max);
+-	return f * f * f;
++	return pow(f, POW_VALUE18);
+ }
+ 
+ enum spa_bt_feature {
+diff --git a/spa/plugins/filter-graph/filter-graph.c b/spa/plugins/filter-graph/filter-graph.c
+index 52609f2..87fa63c 100644
+--- a/spa/plugins/filter-graph/filter-graph.c
++++ b/spa/plugins/filter-graph/filter-graph.c
+@@ -15,6 +15,8 @@
+ #include <limits.h>
+ #include <math.h>
+ 
++#define POW_VALUE18F 1.8f
++
+ #include <spa/utils/result.h>
+ #include <spa/utils/string.h>
+ #include <spa/utils/json.h>
+@@ -165,6 +167,7 @@ struct volume {
+ 	float max[MAX_CHANNELS];
+ #define SCALE_LINEAR	0
+ #define SCALE_CUBIC	1
++#define SCALE_POWER	2
+ 	int scale[MAX_CHANNELS];
+ };
+ 
+@@ -727,6 +730,9 @@ static int sync_volume(struct graph *graph, struct volume *vol)
+ 		struct port *p = vol->ports[n_port];
+ 		float v = vol->mute ? 0.0f : vol->volumes[i];
+ 		switch (vol->scale[n_port]) {
++		case SCALE_POWER:
++			v = powf(v, 1.0f / POW_VALUE18F);
++			break;
+ 		case SCALE_CUBIC:
+ 			v = cbrtf(v);
+ 			break;
+@@ -1288,10 +1294,12 @@ static int parse_volume(struct graph *graph, struct spa_json *json, enum spa_dir
+ 	}
+ 	if (spa_streq(scale, "linear")) {
+ 		vol->scale[vol->n_ports] = SCALE_LINEAR;
++	} else if (spa_streq(scale, "power")) {
++		vol->scale[vol->n_ports] = SCALE_POWER;
+ 	} else if (spa_streq(scale, "cubic")) {
+ 		vol->scale[vol->n_ports] = SCALE_CUBIC;
+ 	} else {
+-		spa_log_error(impl->log, "Invalid scale value '%s', use one of linear or cubic", scale);
++		spa_log_error(impl->log, "Invalid scale value '%s', use one of linear, power or cubic", scale);
+ 		return -EINVAL;
+ 	}
+ 	spa_log_info(impl->log, "volume %d: \"%s:%s\" min:%f max:%f scale:%s", vol->n_ports, port->node->name,
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index 19b4f82..38aa668 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -28,6 +28,8 @@
+ 
+ #define PA_CHANNELS_MAX	(32u)
+ 
++#define POW_VALUE18F 1.8f
++
+ PW_LOG_TOPIC_EXTERN(pulse_conn);
+ #define PW_LOG_TOPIC_DEFAULT pulse_conn
+ 
+@@ -37,7 +39,7 @@ static inline uint32_t volume_from_linear(float vol)
+ 	if (vol <= 0.0f)
+ 		v = VOLUME_MUTED;
+ 	else
+-		v = SPA_CLAMP((uint64_t) lround(cbrt(vol) * VOLUME_NORM),
++		v = SPA_CLAMP((uint64_t) lround(powf(vol, 1.0f / POW_VALUE18F) * VOLUME_NORM),
+ 				VOLUME_MUTED, VOLUME_MAX);
+ 	return v;
+ }
+@@ -45,7 +47,7 @@ static inline uint32_t volume_from_linear(float vol)
+ static inline float volume_to_linear(uint32_t vol)
+ {
+ 	float v = ((float)vol) / VOLUME_NORM;
+-	return v * v * v;
++	return powf(v, POW_VALUE18F);
+ }
+ 
+ static int read_u8(struct message *m, uint8_t *val)
+diff --git a/src/modules/module-raop-sink.c b/src/modules/module-raop-sink.c
+index e217ff5..7d94773 100644
+--- a/src/modules/module-raop-sink.c
++++ b/src/modules/module-raop-sink.c
+@@ -164,6 +164,8 @@ PW_LOG_TOPIC(mod_topic, "mod." NAME);
+ #define VOLUME_MIN		-30.0
+ #define VOLUME_MUTE		-144.0
+ 
++#define POW_VALUE18F 1.8f
++
+ #define MODULE_USAGE	"( raop.ip=<ip address of host> ) "					\
+ 			"( raop.port=<remote port> ) "						\
+ 			"( raop.name=<name of host> ) "						\
+@@ -1625,7 +1627,7 @@ static void stream_props_changed(struct impl *impl, uint32_t id, const struct sp
+ 					soft_vols[i] = 1.0f;
+ 				}
+ 				volume /= n_vols;
+-				volume = SPA_CLAMPF(cbrtf(volume) * 30 - 30, VOLUME_MIN, VOLUME_MAX);
++				volume = SPA_CLAMPF(powf(volume, 1.0f / POW_VALUE18F) * 30 - 30, VOLUME_MIN, VOLUME_MAX);
+ 				impl->volume = volume;
+ 
+ 				rtsp_send_volume(impl);
+-- 
+2.20.1
+
