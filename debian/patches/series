@@ -4,4 +4,4 @@ Fix-Adapted-for-Unis-D3830-G3-sound-card.patch
 Fix-Modify-rtkit-log-from-warn-to-debug.patch
 Fix-Cancel-to-report-battery-level-of-HFP-AG.patch
 Fix-Optimize-the-volume-algorithm.patch
-
+Fix-add-config-to-hikvisionXC-P514P-B.patch
