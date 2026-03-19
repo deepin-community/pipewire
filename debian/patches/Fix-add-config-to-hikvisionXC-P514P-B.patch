@@ -1,0 +1,192 @@
+Index: pipewire/spa/plugins/alsa/90-pipewire-alsa.rules
+===================================================================
+--- pipewire.orig/spa/plugins/alsa/90-pipewire-alsa.rules
++++ pipewire/spa/plugins/alsa/90-pipewire-alsa.rules
+@@ -204,6 +204,9 @@ ATTRS{idVendor}=="17aa", ATTRS{idProduct
+ # UNIS Unis D3830 G3
+ ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="4f18", ENV{ACP_PROFILE_SET}="unis-4f18-usb-audio.conf"
+ 
++# hikvision
++ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="4f36", ENV{ACP_PROFILE_SET}="hikvision-usb-audio.conf"
++
+ GOTO="pipewire_end"
+ 
+ LABEL="pipewire_check_pci"
+Index: pipewire/spa/plugins/alsa/mixer/paths/analog-input-front-mic-hikvision.conf
+===================================================================
+--- /dev/null
++++ pipewire/spa/plugins/alsa/mixer/paths/analog-input-front-mic-hikvision.conf
+@@ -0,0 +1,32 @@
++ This file is part of PulseAudio.
++#
++# PulseAudio is free software; you can redistribute it and/or modify
++# it under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2.1 of the
++# License, or (at your option) any later version.
++#
++# PulseAudio is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public License
++# along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
++
++; For devices where a 'Mic' or 'Mic Boost' element exists
++;
++; See analog-output.conf.common for an explanation on the directives
++
++[General]
++priority = 85
++description-key = analog-input-microphone-front
++
++[Jack Mic - Input,1]
++required-any = any
++
++[Element Mic,1]
++required-any = any
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
+Index: pipewire/spa/plugins/alsa/mixer/paths/analog-input-rear-mic-hikvision.conf
+===================================================================
+--- /dev/null
++++ pipewire/spa/plugins/alsa/mixer/paths/analog-input-rear-mic-hikvision.conf
+@@ -0,0 +1,36 @@
++# This file is part of PulseAudio.
++#
++# PulseAudio is free software; you can redistribute it and/or modify
++# it under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2.1 of the
++# License, or (at your option) any later version.
++#
++# PulseAudio is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public License
++# along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
++
++; For devices where a 'Mic' or 'Mic Boost' element exists
++;
++; See analog-output.conf.common for an explanation on the directives
++
++[General]
++priority = 87
++description-key = analog-input-microphone-rear
++
++[Jack Mic - Input]
++required-any = any
++
++[Jack Mic - Input,1]
++state.plugged = no
++state.unplugged = unknown
++
++[Element Mic]
++required-any = any
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
+Index: pipewire/spa/plugins/alsa/mixer/paths/analog-output-headphones-hikvision.conf
+===================================================================
+--- /dev/null
++++ pipewire/spa/plugins/alsa/mixer/paths/analog-output-headphones-hikvision.conf
+@@ -0,0 +1,38 @@
++# This file is part of PulseAudio.
++#
++# PulseAudio is free software; you can redistribute it and/or modify
++# it under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2.1 of the
++# License, or (at your option) any later version.
++#
++# PulseAudio is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public License
++# along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
++
++; Path for mixers that have a 'Headphone' control
++;
++; See analog-output.conf.common for an explanation on the directives
++
++[General]
++priority = 99
++description-key = analog-output-headphones
++
++[Properties]
++device.icon_name = audio-headphones
++
++[Jack Headphone - Output]
++required-any = any
++
++[Element PCM,1]
++switch = mute
++volume = merge
++override-map.1 = all
++override-map.2 = all-left,all-right
++
++[Element PCM]
++switch = off
++volume = off
+Index: pipewire/spa/plugins/alsa/mixer/profile-sets/hikvision-usb-audio.conf
+===================================================================
+--- /dev/null
++++ pipewire/spa/plugins/alsa/mixer/profile-sets/hikvision-usb-audio.conf
+@@ -0,0 +1,52 @@
++# This file is part of PulseAudio.
++#
++# PulseAudio is free software; you can redistribute it and/or modify
++# it under the terms of the GNU Lesser General Public License as
++# published by the Free Software Foundation; either version 2.1 of the
++# License, or (at your option) any later version.
++#
++# PulseAudio is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public License
++# along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
++
++[General]
++auto-profiles = yes
++
++[Mapping analog-stereo-headphone]
++description = Front Headphone
++paths-output = analog-output-headphones-hikvision
++device-strings = hw:%f,1
++channel-map = left,right
++direction = output
++
++[Mapping analog-stereo-speaker]
++description = Rear Speaker
++paths-output = analog-output-speaker
++device-strings = hw:%f,0
++channel-map = left,right
++direction = output
++
++[Mapping analog-front-mic]
++description = Front Microphone
++paths-input = analog-input-front-mic-hikvision
++device-strings = hw:%f,2
++channel-map = left,right
++direction = input
++
++[Mapping analog-rear-mic]
++description = Rear Microphone
++paths-input = analog-input-rear-mic-hikvision
++device-strings = hw:%f,0
++channel-map = left,right
++direction = input
++
++[Mapping analog-linein]
++description = Linein
++paths-input = analog-input-linein
++device-strings = hw:%f,1
++channel-map = left,right
++direction = input

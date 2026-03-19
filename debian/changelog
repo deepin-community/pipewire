@@ -1,3 +1,9 @@
+pipewire (1.6.0-1deepin5) unstable; urgency=medium
+
+  * Add config to match hikvision
+
+ -- liujiahe <liujiahe@uniontech.com>  Thu, 19 Mar 2026 20:13:59 +0800
+
 pipewire (1.6.0-1deepin4) unstable; urgency=medium
 
   * Optimize the volume algorithm
