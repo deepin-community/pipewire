@@ -5,3 +5,4 @@ Fix-Modify-rtkit-log-from-warn-to-debug.patch
 Fix-Cancel-to-report-battery-level-of-HFP-AG.patch
 Fix-Optimize-the-volume-algorithm.patch
 Fix-add-config-to-hikvisionXC-P514P-B.patch
+Tmp-Add-Lenovo-M90H-G1S.patch
