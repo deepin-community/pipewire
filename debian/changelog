@@ -1,3 +1,9 @@
+pipewire (1.6.0-1deepin7) unstable; urgency=medium
+
+  * Disable onnxruntime on unsupported architectures
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 20 Mar 2026 15:27:29 +0800
+
 pipewire (1.6.0-1deepin6) unstable; urgency=medium
 
   * Temporary Support for Lenovo M90H G1S
