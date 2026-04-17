@@ -1,3 +1,24 @@
+pipewire (1.6.0-1deepin8) unstable; urgency=medium
+
+  * Backport critical security and stability fixes to 1.6.0
+
+  * This backports 8 essential fixes from upstream (1.6.x/1.7.0) addressing
+  * memory safety, resource management, and systemd integration:
+
+      - Memory mapping overflow protection (pw_map_range_init)
+      - Socket activation reliability for systemd resume/hibernation
+      - Channel mix matrix bounds checking (preventing OOB read)
+      - Filter-chain memory corruption fix (POD builder relocation)
+      - Client-node resource leak prevention (fd/mem cleanup)
+      - Shared memory negotiation logic for cross-process links
+      - Protocol-native fd validation hardening
+      - pw-cat buffer overflow fix (strcat -> scnprintf)
+
+  * All patches apply cleanly without ABI/API changes.
+  * Fixes: #5159, #5176, #5202, #5140 and related stability issues.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 17 Apr 2026 14:37:13 +0800
+
 pipewire (1.6.0-1deepin7) unstable; urgency=medium
 
   * Disable onnxruntime on unsupported architectures

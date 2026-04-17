@@ -1,0 +1,41 @@
+From d7be4353ad2f89159ffb1f8a0099ffdd8eb7a365 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 7 Apr 2026 18:44:43 +0200
+Subject: [PATCH] tools: avoid strcat in pw-cat
+
+We might overflow the path buffer when we strcat the provided filename
+into it, which might crash or cause unexpected behaviour.
+
+Instead use spa_scnprintf which avoids overflow and properly truncates
+and null-terminates the string.
+
+Found by Claude Code.
+---
+ src/tools/pw-cat.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/tools/pw-cat.c b/src/tools/pw-cat.c
+index c8ee6a195..b87fc2ba8 100644
+--- a/src/tools/pw-cat.c
++++ b/src/tools/pw-cat.c
+@@ -1860,15 +1860,14 @@ static int setup_encodedfile(struct data *data)
+ 	int num_channels;
+ 	unsigned int stream_index;
+ 	const AVCodecParameters *codecpar;
+-	char path[256] = { 0 };
++	char path[PATH_MAX];
+ 
+ 	/* We do not support record with encoded media */
+ 	if (data->mode == mode_record) {
+ 		return -EINVAL;
+ 	}
+ 
+-	strcpy(path, "file:");
+-	strcat(path, data->filename);
++	spa_scnprintf(path, sizeof(path), "file:%s", data->filename);
+ 
+ 	data->encoded.format_context = NULL;
+ 	if ((ret = avformat_open_input(&data->encoded.format_context, path, NULL, NULL)) < 0) {
+-- 
+2.20.1
+
