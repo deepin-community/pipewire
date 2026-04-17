@@ -1,0 +1,69 @@
+From 20d648aaad11163b13bdba2f6538c72480c254f9 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 8 Apr 2026 17:49:41 +0200
+Subject: [PATCH] filter-chain: don't corrupt the enumerated properties
+
+When we add a Format property after we dereffed all the other params in
+the builder, we might relocate the builder memory and invalidate all
+previously dereffed params, causing corruption.
+
+Instead, first add all the params to the builder and then deref the
+params.
+
+There is a special case when we have both a capture and playback
+stream. The capture stream will receive all filter params and the
+playback stream will just receive its Format param.
+
+Fixes #5202
+---
+ src/modules/module-filter-chain.c | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/src/modules/module-filter-chain.c b/src/modules/module-filter-chain.c
+index b4e123985..c9f798fd4 100644
+--- a/src/modules/module-filter-chain.c
++++ b/src/modules/module-filter-chain.c
+@@ -1702,6 +1702,19 @@ static int setup_streams(struct impl *impl)
+ 	spa_process_latency_build(&b.b,
+ 			SPA_PARAM_ProcessLatency, &impl->process_latency);
+ 
++
++	if (impl->capture || impl->playback) {
++		if ((offs = pw_array_add(&offsets, sizeof(uint32_t))) != NULL)
++			*offs = b.b.state.offset;
++
++		if (impl->capture)
++			spa_format_audio_raw_build(&b.b,
++					SPA_PARAM_EnumFormat, &impl->capture_info);
++		else
++			spa_format_audio_raw_build(&b.b,
++					SPA_PARAM_EnumFormat, &impl->playback_info);
++	}
++
+ 	n_params = pw_array_get_len(&offsets, uint32_t);
+ 	if (n_params == 0) {
+ 		res = -ENOMEM;
+@@ -1717,8 +1730,6 @@ static int setup_streams(struct impl *impl)
+ 		params[i] = spa_pod_builder_deref(&b.b, offs[i]);
+ 
+ 	if (impl->capture) {
+-		params[n_params++] = spa_format_audio_raw_build(&b.b,
+-				SPA_PARAM_EnumFormat, &impl->capture_info);
+ 		flags = PW_STREAM_FLAG_AUTOCONNECT |
+ 			PW_STREAM_FLAG_MAP_BUFFERS |
+ 			PW_STREAM_FLAG_RT_PROCESS;
+@@ -1739,8 +1750,9 @@ static int setup_streams(struct impl *impl)
+ 		spa_pod_dynamic_builder_init(&b, NULL, 0, 4096);
+ 	}
+ 	if (impl->playback) {
+-		params[n_params++] = spa_format_audio_raw_build(&b.b,
+-				SPA_PARAM_EnumFormat, &impl->playback_info);
++		if (n_params == 0)
++			params[n_params++] = spa_format_audio_raw_build(&b.b,
++					SPA_PARAM_EnumFormat, &impl->playback_info);
+ 
+ 		flags = PW_STREAM_FLAG_AUTOCONNECT |
+ 			PW_STREAM_FLAG_MAP_BUFFERS |
+-- 
+2.20.1
+

@@ -6,3 +6,11 @@ Fix-Cancel-to-report-battery-level-of-HFP-AG.patch
 Fix-Optimize-the-volume-algorithm.patch
 Fix-add-config-to-hikvisionXC-P514P-B.patch
 Tmp-Add-Lenovo-M90H-G1S.patch
+0001-mem-overflow-fix.patch
+0002-socket-activation-fix.patch
+0003-channelmix-oob-fix.patch
+0004-filter-chain-memcorrupt.patch
+0005-client-node-resource-cleanup.patch
+0006-impl-link-sharedmem-test.patch
+0007-protocol-native-fd-validation.patch
+0008-pwcat-buffer-overflow.patch

@@ -1,0 +1,46 @@
+From e4693ebc8348fa40e867346501dd9d607c62a160 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 17 Mar 2026 14:13:01 +0100
+Subject: [PATCH] audioconvert: avoid OOB mix matrix read
+
+Patch by David Nowotny
+
+In make_matrix (channelmix-ops.c), the matrix-filling loop at the done:
+label allows the index i (and j in the inner loop) to grow beyond MAX_CHANNELS
+when dst_paired/src_paired has sparse bits set. In that case the continue
+fires for most values of i < CHANNEL_BITS, so i advances much faster than ic,
+and matrix[i][j] reads off the end of the stack-allocated array.
+
+Add bounds guards to both loop conditions so i and j cannot exceed
+MAX_CHANNELS.
+
+Fixes #5176
+---
+ spa/plugins/audioconvert/channelmix-ops.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/spa/plugins/audioconvert/channelmix-ops.c b/spa/plugins/audioconvert/channelmix-ops.c
+index 12edb4b5a..7bf046cf0 100644
+--- a/spa/plugins/audioconvert/channelmix-ops.c
++++ b/spa/plugins/audioconvert/channelmix-ops.c
+@@ -720,7 +720,7 @@ done:
+ 	if (src_paired == 0)
+ 		src_paired = ~0LU;
+ 
+-	for (jc = 0, ic = 0, i = 0; ic < dst_chan; i++) {
++	for (jc = 0, ic = 0, i = 0; ic < dst_chan && i < MAX_CHANNELS; i++) {
+ 		float sum = 0.0f;
+ 		char str1[1024], str2[1024];
+ 		struct spa_strbuf sb1, sb2;
+@@ -730,7 +730,7 @@ done:
+ 
+ 		if (i < CHANNEL_BITS && (dst_paired & (1UL << i)) == 0)
+ 			continue;
+-		for (jc = 0, j = 0; jc < src_chan; j++) {
++		for (jc = 0, j = 0; jc < src_chan && j < MAX_CHANNELS; j++) {
+ 			if (j < CHANNEL_BITS && (src_paired & (1UL << j)) == 0)
+ 				continue;
+ 
+-- 
+2.20.1
+
