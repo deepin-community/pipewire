@@ -1,7 +1,12 @@
+pipewire (1.6.0-1deepin9) unstable; urgency=medium
+
+  * Remove the conflict between pipewire-alsa and pulseaudio
+
+ -- lichenggang <lichenggang@deepin.org>  Tue, 21 Apr 2026 17:35:25 +0800
+
 pipewire (1.6.0-1deepin8) unstable; urgency=medium
 
   * Backport critical security and stability fixes to 1.6.0
-
   * This backports 8 essential fixes from upstream (1.6.x/1.7.0) addressing
   * memory safety, resource management, and systemd integration:
 
@@ -18,6 +23,7 @@ pipewire (1.6.0-1deepin8) unstable; urgency=medium
   * Fixes: #5159, #5176, #5202, #5140 and related stability issues.
 
  -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 17 Apr 2026 14:37:13 +0800
+
 
 pipewire (1.6.0-1deepin7) unstable; urgency=medium
 
