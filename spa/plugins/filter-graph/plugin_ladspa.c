@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <math.h>
 #include <limits.h>
+#include <float.h>
 
 #include <spa/utils/result.h>
 #include <spa/utils/defs.h>
@@ -113,8 +114,14 @@ static void ladspa_port_update_ranges(struct descriptor *dd, struct spa_fga_port
 	LADSPA_PortRangeHintDescriptor hint = d->PortRangeHints[p].HintDescriptor;
 	LADSPA_Data lower, upper;
 
-	lower = d->PortRangeHints[p].LowerBound;
-	upper = d->PortRangeHints[p].UpperBound;
+	if (hint & LADSPA_HINT_BOUNDED_BELOW)
+		lower = d->PortRangeHints[p].LowerBound;
+	else
+		lower = -FLT_MAX;
+	if (hint & LADSPA_HINT_BOUNDED_ABOVE)
+		upper = d->PortRangeHints[p].UpperBound;
+	else
+		upper = FLT_MAX;
 
 	port->hint = 0;
 	if (hint & LADSPA_HINT_TOGGLED)
@@ -226,43 +233,49 @@ static inline const char *split_walk(const char *str, const char *delimiter, siz
 	return s;
 }
 
-static int load_ladspa_plugin(struct plugin *impl, const char *path)
+static void make_search_paths(const char **path, const char **search_dirs)
+{
+	const char *p;
+
+	while ((p = strstr(*path, "../")) != NULL)
+		*path = p + 3;
+
+	*search_dirs = getenv("LADSPA_PATH");
+	if (!*search_dirs)
+		*search_dirs = "/usr/lib64/ladspa:/usr/lib/ladspa:" LIBDIR;
+}
+
+static int load_ladspa_plugin(struct plugin *impl, const char *path, const char *search_dirs)
 {
 	int res = -ENOENT;
+	const char *p, *state = NULL;
+	char filename[PATH_MAX];
+	size_t len;
 
-	if (path[0] != '/') {
-		const char *search_dirs, *p, *state = NULL;
-		char filename[PATH_MAX];
-		size_t len;
+	/*
+	 * set the errno for the case when `ladspa_handle_load_by_path()`
+	 * is never called, which can only happen if the supplied
+	 * LADSPA_PATH contains too long paths
+	 */
+	res = -ENAMETOOLONG;
 
-		search_dirs = getenv("LADSPA_PATH");
-		if (!search_dirs)
-			search_dirs = "/usr/lib64/ladspa:/usr/lib/ladspa:" LIBDIR;
+	while ((p = split_walk(search_dirs, ":", &len, &state))) {
+		int namelen;
 
-		/*
-		 * set the errno for the case when `ladspa_handle_load_by_path()`
-		 * is never called, which can only happen if the supplied
-		 * LADSPA_PATH contains too long paths
-		 */
-		res = -ENAMETOOLONG;
+		if (len == 0 || len >= sizeof(filename))
+			continue;
 
-		while ((p = split_walk(search_dirs, ":", &len, &state))) {
-			int namelen;
-
-			if (len >= sizeof(filename))
-				continue;
-
+		if (strncmp(path, p, len) == 0 && (path[len-1] == '/' || path[len] == '/'))
+			namelen = snprintf(filename, sizeof(filename), "%s", path);
+		else
 			namelen = snprintf(filename, sizeof(filename), "%.*s/%s.so", (int) len, p, path);
-			if (namelen < 0 || (size_t) namelen >= sizeof(filename))
-				continue;
 
-			res = ladspa_handle_load_by_path(impl, filename);
-			if (res >= 0)
-				break;
-		}
-	}
-	else {
-		res = ladspa_handle_load_by_path(impl, path);
+		if (namelen < 0 || (size_t) namelen >= sizeof(filename))
+			continue;
+
+		res = ladspa_handle_load_by_path(impl, filename);
+		if (res >= 0)
+			break;
 	}
 	return res;
 }
@@ -310,7 +323,7 @@ impl_init(const struct spa_handle_factory *factory,
 	struct plugin *impl;
 	uint32_t i;
 	int res;
-	const char *path = NULL;
+	const char *path = NULL, *search_dirs;
 
 	handle->get_interface = impl_get_interface;
 	handle->clear = impl_clear;
@@ -328,9 +341,11 @@ impl_init(const struct spa_handle_factory *factory,
 	if (path == NULL)
 		return -EINVAL;
 
-	if ((res = load_ladspa_plugin(impl, path)) < 0) {
-		spa_log_error(impl->log, "failed to load plugin '%s': %s",
-				path, spa_strerror(res));
+	make_search_paths(&path, &search_dirs);
+
+	if ((res = load_ladspa_plugin(impl, path, search_dirs)) < 0) {
+		spa_log_error(impl->log, "failed to load plugin '%s' in '%s': %s",
+				path, search_dirs, spa_strerror(res));
 		return res;
 	}
 

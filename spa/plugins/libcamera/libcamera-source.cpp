@@ -184,15 +184,15 @@ struct impl {
 			0, nullptr, 0, this
 		);
 
-		if (source.fd >= 0)
-			spa_system_close(system, std::exchange(source.fd, -1));
-
 		camera->requestCompleted.disconnect(this, &impl::requestComplete);
 
 		if (int res = camera->stop(); res < 0) {
 			spa_log_warn(log, "failed to stop camera %s: %s",
 					 camera->id().c_str(), spa_strerror(res));
 		}
+
+		if (source.fd >= 0)
+			spa_system_close(system, std::exchange(source.fd, -1));
 
 		completed_requests_rb = SPA_RINGBUFFER_INIT();
 		active = false;
@@ -2163,7 +2163,7 @@ impl::impl(spa_log *log, spa_loop *data_loop, spa_system *system,
 			&impl_node, this);
 
 	params[NODE_PropInfo] = SPA_PARAM_INFO(SPA_PARAM_PropInfo, SPA_PARAM_INFO_READ);
-	params[NODE_Props] = SPA_PARAM_INFO(SPA_PARAM_Props, SPA_PARAM_INFO_READWRITE);
+	params[NODE_Props] = SPA_PARAM_INFO(SPA_PARAM_Props, SPA_PARAM_INFO_WRITE);
 	params[NODE_EnumFormat] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
 	params[NODE_Format] = SPA_PARAM_INFO(SPA_PARAM_Format, SPA_PARAM_INFO_WRITE);
 

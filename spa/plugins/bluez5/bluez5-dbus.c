@@ -188,9 +188,16 @@ struct spa_bt_metadata {
 	uint8_t value[METADATA_MAX_LEN - 1];
 };
 
+#define RTN_MAX				0x1E
+#define MAX_TRANSPORT_LATENCY_MIN	0x5
+#define MAX_TRANSPORT_LATENCY_MAX	0x0FA0
+
 struct spa_bt_bis {
 	struct spa_list link;
 	char qos_preset[255];
+	int retransmissions;
+	int rtn_manual_set;
+	int max_transport_latency;
 	int channel_allocation;
 	struct spa_list metadata_list;
 };
@@ -587,18 +594,35 @@ static enum spa_bt_profile get_codec_profile(const struct media_codec *codec,
 {
 	switch (direction) {
 	case SPA_BT_MEDIA_SOURCE:
-		return codec->kind == MEDIA_CODEC_BAP ? SPA_BT_PROFILE_BAP_SOURCE : SPA_BT_PROFILE_A2DP_SOURCE;
+		if (codec->kind == MEDIA_CODEC_A2DP)
+			return SPA_BT_PROFILE_A2DP_SOURCE;
+		else if (codec->kind == MEDIA_CODEC_BAP)
+			return SPA_BT_PROFILE_BAP_SOURCE;
+		else if (codec->kind == MEDIA_CODEC_HFP)
+			return SPA_BT_PROFILE_HEADSET_AUDIO;
+		else
+			return SPA_BT_PROFILE_NULL;
 	case SPA_BT_MEDIA_SINK:
-		if (codec->kind == MEDIA_CODEC_ASHA)
+		if (codec->kind == MEDIA_CODEC_A2DP)
+			return SPA_BT_PROFILE_A2DP_SINK;
+		else if (codec->kind == MEDIA_CODEC_ASHA)
 			return SPA_BT_PROFILE_ASHA_SINK;
 		else if (codec->kind == MEDIA_CODEC_BAP)
 			return SPA_BT_PROFILE_BAP_SINK;
+		else if (codec->kind == MEDIA_CODEC_HFP)
+			return SPA_BT_PROFILE_HEADSET_AUDIO;
 		else
-			return SPA_BT_PROFILE_A2DP_SINK;
+			return SPA_BT_PROFILE_NULL;
 	case SPA_BT_MEDIA_SOURCE_BROADCAST:
-		return SPA_BT_PROFILE_BAP_BROADCAST_SOURCE;
+		if (codec->kind == MEDIA_CODEC_BAP)
+			return SPA_BT_PROFILE_BAP_BROADCAST_SOURCE;
+		else
+			return SPA_BT_PROFILE_NULL;
 	case SPA_BT_MEDIA_SINK_BROADCAST:
-		return SPA_BT_PROFILE_BAP_BROADCAST_SINK;
+		if (codec->kind == MEDIA_CODEC_BAP)
+			return SPA_BT_PROFILE_BAP_BROADCAST_SINK;
+		else
+			return SPA_BT_PROFILE_NULL;
 	default:
 		spa_assert_not_reached();
 	}
@@ -720,14 +744,12 @@ static const char *bap_features_get_uuid(struct bap_features *feat, size_t i)
 /** Get feature name at \a i, or NULL if uuid doesn't match */
 static const char *bap_features_get_name(struct bap_features *feat, size_t i, const char *uuid)
 {
-	char *pos;
-
 	if (i >= feat->dict.n_items)
 		return NULL;
 	if (!spa_streq(feat->dict.items[i].value, uuid))
 		return NULL;
 
-	pos = strchr(feat->dict.items[i].key, ':');
+	const char *pos = strchr(feat->dict.items[i].key, ':');
 	if (!pos)
 		return NULL;
 	return pos + 1;
@@ -1336,7 +1358,6 @@ static struct spa_bt_adapter *adapter_find(struct spa_bt_monitor *monitor, const
 static int parse_modalias(const char *modalias, uint16_t *source, uint16_t *vendor,
 		uint16_t *product, uint16_t *version)
 {
-	char *pos;
 	unsigned int src, i, j, k;
 
 	if (spa_strstartswith(modalias, "bluetooth:"))
@@ -1346,7 +1367,7 @@ static int parse_modalias(const char *modalias, uint16_t *source, uint16_t *vend
 	else
 		return -EINVAL;
 
-	pos = strchr(modalias, ':');
+	const char *pos = strchr(modalias, ':');
 	if (pos == NULL)
 		return -EINVAL;
 
@@ -2780,15 +2801,17 @@ bool spa_bt_device_supports_media_codec(struct spa_bt_device *device, const stru
 	bool is_bap = codec->kind == MEDIA_CODEC_BAP;
 	size_t i;
 
-	codec_target_profile = get_codec_target_profile(monitor, codec);
-	if (!codec_target_profile)
-		return false;
-
 	if (codec->kind == MEDIA_CODEC_HFP) {
 		if (!(profile & SPA_BT_PROFILE_HEADSET_AUDIO))
 			return false;
+		if (!is_media_codec_enabled(monitor, codec))
+			return false;
 		return spa_bt_backend_supports_codec(monitor->backend, device, codec->codec_id) == 1;
 	}
+
+	codec_target_profile = get_codec_target_profile(monitor, codec);
+	if (!codec_target_profile)
+		return false;
 
 	if (!device->adapter->a2dp_application_registered && is_a2dp) {
 		/* Codec switching not supported: only plain SBC allowed */
@@ -6176,8 +6199,11 @@ static void configure_bis(struct spa_bt_monitor *monitor,
 	struct bap_codec_qos qos;
 	struct spa_bt_metadata *metadata_entry;
 	struct spa_dict settings;
-	struct spa_dict_item setting_items[2];
+	struct spa_dict_item setting_items[4];
+	uint32_t n_items = 0;
 	char channel_allocation[64] = {0};
+	char retransmissions[3] = {0};
+	char max_transport_latency[5] = {0};
 
 	int mse = 0;
 	int options = 0;
@@ -6202,12 +6228,27 @@ static void configure_bis(struct spa_bt_monitor *monitor,
 		metadata_size += metadata_entry->length - 1;
 	}
 
+
 	spa_log_debug(monitor->log, "bis->channel_allocation %d", bis->channel_allocation);
-	if (bis->channel_allocation)
+	if (bis->channel_allocation) {
 		spa_scnprintf(channel_allocation, sizeof(channel_allocation), "%"PRIu32, bis->channel_allocation);
-	setting_items[0] = SPA_DICT_ITEM_INIT("channel_allocation", channel_allocation);
-	setting_items[1] = SPA_DICT_ITEM_INIT("preset", bis->qos_preset);
-	settings = SPA_DICT_INIT(setting_items, 2);
+	}
+	spa_log_debug(monitor->log, "bis->rtn_manual_set %d", bis->rtn_manual_set);
+	spa_log_debug(monitor->log, "bis->retransmissions %d", bis->retransmissions);
+	if (bis->rtn_manual_set) {
+		spa_scnprintf(retransmissions, sizeof(retransmissions), "%"PRIu8, bis->retransmissions);
+		setting_items[n_items++] = SPA_DICT_ITEM_INIT("retransmissions", retransmissions);
+	}
+	spa_log_debug(monitor->log, "bis->max_transport_latency %d", bis->max_transport_latency);
+	if (bis->max_transport_latency) {
+		spa_scnprintf(max_transport_latency, sizeof(max_transport_latency), "%"PRIu32, bis->max_transport_latency);
+		setting_items[n_items++] = SPA_DICT_ITEM_INIT("max_transport_latency", max_transport_latency);
+	}
+
+	setting_items[n_items++] = SPA_DICT_ITEM_INIT("preset", bis->qos_preset);
+	setting_items[n_items++] = SPA_DICT_ITEM_INIT("channel_allocation", channel_allocation);
+
+	settings = SPA_DICT_INIT(setting_items, n_items);
 
 	caps_size = sizeof(caps);
 	ret = codec->get_bis_config(codec, caps, &caps_size, &settings, &qos);
@@ -7081,7 +7122,7 @@ static void parse_broadcast_source_config(struct spa_bt_monitor *monitor, const 
 				memcpy(big_entry->broadcast_code, bcode, strlen(bcode));
 				spa_log_debug(monitor->log, "big_entry->broadcast_code %s", big_entry->broadcast_code);
 			} else if (spa_streq(key, "adapter")) {
-				if (spa_json_get_string(&it[1], big_entry->adapter, sizeof(big_entry->adapter)) <= 0)
+				if (spa_json_get_string(&it[0], big_entry->adapter, sizeof(big_entry->adapter)) <= 0)
 					goto parse_failed;
 				spa_log_debug(monitor->log, "big_entry->adapter %s", big_entry->adapter);
 			} else if (spa_streq(key, "encryption")) {
@@ -7110,6 +7151,20 @@ static void parse_broadcast_source_config(struct spa_bt_monitor *monitor, const 
 							if (spa_json_get_string(&it[1], bis_entry->qos_preset, sizeof(bis_entry->qos_preset)) <= 0)
 								goto parse_failed;
 							spa_log_debug(monitor->log, "bis_entry->qos_preset %s", bis_entry->qos_preset);
+						} else if (spa_streq(bis_key, "retransmissions")) {
+							if (spa_json_get_int(&it[2], &bis_entry->retransmissions) <= 0)
+								goto parse_failed;
+							if (bis_entry->retransmissions > RTN_MAX)
+								goto parse_failed;
+							bis_entry->rtn_manual_set = 1;
+							spa_log_debug(monitor->log, "bis_entry->retransmissions %d", bis_entry->retransmissions);
+						} else if (spa_streq(bis_key, "max_transport_latency")) {
+							if (spa_json_get_int(&it[2], &bis_entry->max_transport_latency) <= 0)
+								goto parse_failed;
+							if (bis_entry->max_transport_latency < MAX_TRANSPORT_LATENCY_MIN &&
+								bis_entry->max_transport_latency > MAX_TRANSPORT_LATENCY_MAX)
+								goto parse_failed;
+							spa_log_debug(monitor->log, "bis_entry->max_transport_latency %d", bis_entry->max_transport_latency);
 						} else if (spa_streq(bis_key, "audio_channel_allocation")) {
 							if (spa_json_get_int(&it[1], &bis_entry->channel_allocation) <= 0)
 								goto parse_failed;

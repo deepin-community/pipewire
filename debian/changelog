@@ -1,75 +1,37 @@
-pipewire (1.6.0-1deepin9) unstable; urgency=medium
+pipewire (1.6.4-1) unstable; urgency=medium
 
-  * Remove the conflict between pipewire-alsa and pulseaudio
+  * New upstream release
+  * Drop unused LGPL-2+ paragraph in debian/copyright
 
- -- lichenggang <lichenggang@deepin.org>  Tue, 21 Apr 2026 17:35:25 +0800
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 23 Apr 2026 08:22:23 +0200
 
-pipewire (1.6.0-1deepin8) unstable; urgency=medium
+pipewire (1.6.3-1) unstable; urgency=medium
 
-  * Backport critical security and stability fixes to 1.6.0
-  * This backports 8 essential fixes from upstream (1.6.x/1.7.0) addressing
-  * memory safety, resource management, and systemd integration:
+  * New upstream release
+  * Add lintian-overrides for pkg-config-bad-directive
+  * Standards-Version: 4.7.4 (no changes required)
+  * Update debian/copyright
+  * salsa-ci: don't allow licenserecon to fail
 
-      - Memory mapping overflow protection (pw_map_range_init)
-      - Socket activation reliability for systemd resume/hibernation
-      - Channel mix matrix bounds checking (preventing OOB read)
-      - Filter-chain memory corruption fix (POD builder relocation)
-      - Client-node resource leak prevention (fd/mem cleanup)
-      - Shared memory negotiation logic for cross-process links
-      - Protocol-native fd validation hardening
-      - pw-cat buffer overflow fix (strcat -> scnprintf)
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 09 Apr 2026 18:13:29 +0200
 
-  * All patches apply cleanly without ABI/API changes.
-  * Fixes: #5159, #5176, #5202, #5140 and related stability issues.
+pipewire (1.6.2-1) unstable; urgency=medium
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 17 Apr 2026 14:37:13 +0800
+  * New upstream release
 
+ -- Dylan Aïssi <daissi@debian.org>  Tue, 17 Mar 2026 13:38:48 +0100
 
-pipewire (1.6.0-1deepin7) unstable; urgency=medium
+pipewire (1.6.1-1) unstable; urgency=medium
 
-  * Disable onnxruntime on unsupported architectures
+  * New upstream release
+  * Upload to unstable
+  * Remove redundant 'Priority: optional'
+  * Standards-Version: 4.7.3 (no changes required)
+  * Switch to pkgconf (from pkg-config) in testsuite Depends
+  * salsa-ci: enable licenserecon and drop reprotest
+  * salsa-ci: allow licenserecon to fail for now
 
- -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 20 Mar 2026 15:27:29 +0800
-
-pipewire (1.6.0-1deepin6) unstable; urgency=medium
-
-  * Temporary Support for Lenovo M90H G1S
-
- -- qaqland <anguoli@uniontech.com>  Fri, 20 Mar 2026 14:14:04 +0800
-
-pipewire (1.6.0-1deepin5) unstable; urgency=medium
-
-  * Add config to match hikvision
-
- -- liujiahe <liujiahe@uniontech.com>  Thu, 19 Mar 2026 20:13:59 +0800
-
-pipewire (1.6.0-1deepin4) unstable; urgency=medium
-
-  * Optimize the volume algorithm
-
- -- zhaochengyi <zcy@zcy-PC>  Mon, 16 Mar 2026 13:23:53 +0800
-
-pipewire (1.6.0-1deepin3) unstable; urgency=medium
-
-  * Cancel to report battery level of HFP AG.
-
- -- zhaochengyi <zhaochengyi@uniontech.com>  Fri, 13 Mar 2026 18:18:19 +0800
-
-pipewire (1.6.0-1deepin2) unstable; urgency=medium
-
-  * Cherry-pick the patches from the older version.
-      - Fix-Do-not-start-pipewire-in-Display-Manager-user.patch
-      - Fix-Add-config-to-match-lenovo-m90h-g2t.patch
-      - Fix-Adapted-for-Unis-D3830-G3-sound-card.patch
-      - Fix-Modify-rtkit-log-from-warn-to-debug.patch
-
- -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 12 Mar 2026 16:14:49 +0800
-
-pipewire (1.6.0-1deepin1) unstable; urgency=medium
-
-  * revert 64-bit time_t transition patch.
-
- -- tunaichao <tunaichao@uniontech.com>  Wed, 04 Mar 2026 10:58:12 +0800
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 09 Mar 2026 13:55:41 +0100
 
 pipewire (1.6.0-1) experimental; urgency=medium
 
@@ -126,6 +88,14 @@ pipewire (1.5.81-1) experimental; urgency=medium
       it requires sample files.
 
  -- Dylan Aïssi <daissi@debian.org>  Thu, 16 Oct 2025 12:34:32 +0200
+
+pipewire (1.4.10-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update symbols file: add 5 new symbols
+  * Update debian/watch to only track the series 1.4.*
+
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 19 Jan 2026 10:08:49 +0100
 
 pipewire (1.4.9-1) unstable; urgency=medium
 
