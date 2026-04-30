@@ -227,7 +227,7 @@ static void emit_port_info(struct seq_state *this, struct seq_port *port, bool f
 	if (full)
 		port->info.change_mask = port->info_all;
 	if (port->info.change_mask) {
-		struct spa_dict_item items[6];
+		struct spa_dict_item items[7];
 		uint32_t n_items = 0;
 		int card_id;
 		snd_seq_port_info_t *info;
@@ -261,7 +261,7 @@ static void emit_port_info(struct seq_state *this, struct seq_port *port, bool f
 		if (spa_strstartswith(pn, client_name))
 			pn += strlen(client_name);
 
-		snprintf(name, sizeof(name), "%s%s%s (%s)", prefix,
+		snprintf(name, sizeof(name), "%s%s:%s (%s)", prefix,
 				client_name, pn, dir);
 		clean_name(name);
 
@@ -284,6 +284,9 @@ static void emit_port_info(struct seq_state *this, struct seq_port *port, bool f
 			snprintf(card, sizeof(card), "%d", card_id);
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_API_ALSA_CARD, card);
 		}
+		if (this->ump)
+			items[n_items++] = SPA_DICT_ITEM_INIT("control.ump", "true");
+
 		port->info.props = &SPA_DICT_INIT(items, n_items);
 
 		spa_node_emit_port_info(&this->hooks,
@@ -385,13 +388,29 @@ static struct seq_port *alloc_port(struct seq_state *state, struct seq_stream *s
 	return port;
 }
 
+static int do_port_clear(struct spa_loop *loop, bool async, uint32_t seq,
+		const void *data, size_t size, void *user_data)
+{
+	struct seq_port *port = user_data;
+	port->io = NULL;
+	if (port->mixing) {
+		spa_list_remove(&port->mix_link);
+		port->mixing = false;
+	}
+	return 0;
+}
+
 static void free_port(struct seq_state *state, struct seq_stream *stream, struct seq_port *port)
 {
 	stream->ports[port->id] = NULL;
 	spa_list_remove(&port->link);
 
+	spa_loop_locked(state->data_loop,
+			do_port_clear, SPA_ID_INVALID, NULL, 0, port);
+
 	spa_node_emit_port_info(&state->hooks,
 			port->direction, port->id, NULL);
+
 	spa_zero(*port);
 	spa_list_append(&state->free_list, &port->link);
 }
@@ -438,7 +457,7 @@ static void update_stream_port(struct seq_state *state, struct seq_stream *strea
 	struct seq_port *port = find_port(state, stream, addr);
 
 	if (info == NULL) {
-		spa_log_debug(state->log, "free port %d.%d", addr->client, addr->port);
+		spa_log_debug(state->log, "free port %d.%d %p", addr->client, addr->port, port);
 		if (port)
 			free_port(state, stream, port);
 	} else {
@@ -450,7 +469,7 @@ static void update_stream_port(struct seq_state *state, struct seq_stream *strea
 			init_port(state, port, addr, snd_seq_port_info_get_type(info));
 		} else if (port != NULL) {
 			if ((caps & stream->caps) != stream->caps) {
-				spa_log_debug(state->log, "free port %d.%d", addr->client, addr->port);
+				spa_log_debug(state->log, "free port %d.%d %p", addr->client, addr->port, port);
 				free_port(state, stream, port);
 			}
 			else {
@@ -467,8 +486,8 @@ static int on_port_info(void *data, const snd_seq_addr_t *addr, const snd_seq_po
 	struct seq_state *state = data;
 
 	if (info == NULL) {
-		update_stream_port(state, &state->streams[SPA_DIRECTION_INPUT], addr, 0, info);
-		update_stream_port(state, &state->streams[SPA_DIRECTION_OUTPUT], addr, 0, info);
+		update_stream_port(state, &state->streams[SPA_DIRECTION_INPUT], addr, 0, NULL);
+		update_stream_port(state, &state->streams[SPA_DIRECTION_OUTPUT], addr, 0, NULL);
 	} else {
 		unsigned int caps = snd_seq_port_info_get_capability(info);
 
@@ -501,6 +520,7 @@ impl_node_port_enum_params(void *object, int seq,
 	struct seq_state *this = object;
 	struct seq_port *port;
 	struct spa_pod *param;
+	struct spa_pod_frame f[1];
 	struct spa_pod_builder b = { 0 };
 	uint8_t buffer[1024];
 	struct spa_result_node_params result;
@@ -524,10 +544,18 @@ impl_node_port_enum_params(void *object, int seq,
 	case SPA_PARAM_EnumFormat:
 		if (result.index > 0)
 			return 0;
-		param = spa_pod_builder_add_object(&b,
-			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+		spa_pod_builder_push_object(&b, &f[0],
+			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
+		spa_pod_builder_add(&b,
 			SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
-			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
+			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
+			0);
+		if (port->control_types != 0) {
+			spa_pod_builder_add(&b,
+				SPA_FORMAT_CONTROL_types,  SPA_POD_Int(port->control_types),
+				0);
+		}
+		param = spa_pod_builder_pop(&b, &f[0]);
 		break;
 
 	case SPA_PARAM_Format:
@@ -535,10 +563,18 @@ impl_node_port_enum_params(void *object, int seq,
 			return -EIO;
 		if (result.index > 0)
 			return 0;
-		param = spa_pod_builder_add_object(&b,
-			SPA_TYPE_OBJECT_Format, SPA_PARAM_Format,
+		spa_pod_builder_push_object(&b, &f[0],
+			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
+		spa_pod_builder_add(&b,
 			SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
-			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
+			SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
+			0);
+		if (port->control_types != 0) {
+			spa_pod_builder_add(&b,
+				SPA_FORMAT_CONTROL_types,  SPA_POD_Int(port->control_types),
+				0);
+		}
+		param = spa_pod_builder_pop(&b, &f[0]);
 		break;
 
 	case SPA_PARAM_Buffers:
@@ -800,7 +836,7 @@ impl_node_port_set_io(void *object,
 	info.data = data;
 	info.size = size;
 
-	spa_log_debug(this->log, "%p: io %d.%d %d %p %zd", this,
+	spa_log_debug(this->log, "%p: %p: io %d.%d %d %p %zd", this, port,
 			direction, port_id, id, data, size);
 
 	switch (id) {
@@ -821,7 +857,7 @@ static int impl_node_port_reuse_buffer(void *object, uint32_t port_id, uint32_t 
 
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 
-	spa_return_val_if_fail(!CHECK_PORT(this, SPA_DIRECTION_OUTPUT, port_id), -EINVAL);
+	spa_return_val_if_fail(CHECK_PORT(this, SPA_DIRECTION_OUTPUT, port_id), -EINVAL);
 
 	port = GET_PORT(this, SPA_DIRECTION_OUTPUT, port_id);
 
@@ -955,7 +991,7 @@ impl_init(const struct spa_handle_factory *factory,
 	this->quantum_limit = 8192;
 	this->min_pool_size = 500;
 	this->max_pool_size = 2000;
-	this->ump = true;
+	this->ump = false;
 
 	for (i = 0; info && i < info->n_items; i++) {
 		const char *k = info->items[i].key;

@@ -552,19 +552,25 @@ static int impl_get_props(void *object, struct spa_pod_builder *b, struct spa_po
 		struct descriptor *desc = node->desc;
 		const struct spa_fga_descriptor *d = desc->desc;
 		struct spa_fga_port *p = &d->ports[port->p];
+		float v, min, max;
 
 		if (node->name[0] != '\0')
 			snprintf(name, sizeof(name), "%s:%s", node->name, p->name);
 		else
 			snprintf(name, sizeof(name), "%s", p->name);
 
+		if (port->control_initialized)
+			v = port->control_current;
+		else
+			get_ranges(impl, p, &v, &min, &max);
+
 		spa_pod_builder_string(b, name);
 		if (p->hint & SPA_FGA_HINT_BOOLEAN) {
-			spa_pod_builder_bool(b, port->control_data[0] <= 0.0f ? false : true);
+			spa_pod_builder_bool(b, v <= 0.0f ? false : true);
 		} else if (p->hint & SPA_FGA_HINT_INTEGER) {
-			spa_pod_builder_int(b, (int32_t)port->control_data[0]);
+			spa_pod_builder_int(b, (int32_t)v);
 		} else {
-			spa_pod_builder_float(b, port->control_data[0]);
+			spa_pod_builder_float(b, v);
 		}
 	}
 	spa_pod_builder_pop(b, &f[1]);
@@ -1035,8 +1041,8 @@ static struct descriptor *descriptor_load(struct impl *impl, const char *type,
 			}
 		} else if (SPA_FGA_IS_PORT_CONTROL(fp->flags)) {
 			if (SPA_FGA_IS_PORT_INPUT(fp->flags)) {
-				spa_log_info(impl->log, "using port %lu ('%s') as control %d", p,
-						fp->name, desc->n_control);
+				spa_log_info(impl->log, "using port %lu ('%s') as control %d %f/%f/%f", p,
+						fp->name, desc->n_control, fp->def, fp->min, fp->max);
 				desc->control[desc->n_control++] = p;
 			}
 			else if (SPA_FGA_IS_PORT_OUTPUT(fp->flags)) {
@@ -1622,6 +1628,7 @@ static int impl_activate(void *object, const struct spa_dict *props)
 				goto error;
 			}
 		}
+		node->control_changed = true;
 	}
 
 	/* then link ports */

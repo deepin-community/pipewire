@@ -73,7 +73,6 @@ PW_LOG_TOPIC_STATIC(jack_log_topic, "jack");
 
 #define TYPE_ID_IS_EVENT(t)	((t) >= TYPE_ID_MIDI && (t) <= TYPE_ID_UMP)
 #define TYPE_ID_CAN_OSC(t)	((t) == TYPE_ID_MIDI || (t) == TYPE_ID_OSC)
-#define TYPE_ID_IS_HIDDEN(t)	((t) >= TYPE_ID_OTHER)
 #define TYPE_ID_IS_COMPATIBLE(a,b)(((a) == (b)) || (TYPE_ID_IS_EVENT(a) && TYPE_ID_IS_EVENT(b)))
 
 #define SELF_CONNECT_ALLOW	0
@@ -86,7 +85,7 @@ PW_LOG_TOPIC_STATIC(jack_log_topic, "jack");
 #define OTHER_CONNECT_FAIL	-1
 #define OTHER_CONNECT_IGNORE	0
 
-#define NOTIFY_BUFFER_SIZE	(1u<<13)
+#define NOTIFY_BUFFER_SIZE	(1u<<16)
 #define NOTIFY_BUFFER_MASK	(NOTIFY_BUFFER_SIZE-1)
 
 struct notify {
@@ -104,8 +103,8 @@ struct notify {
 #define NOTIFY_TYPE_TOTAL_LATENCY	((9<<4)|NOTIFY_ACTIVE_FLAG)
 #define NOTIFY_TYPE_PORT_RENAME		((10<<4)|NOTIFY_ACTIVE_FLAG)
 	int type;
-	struct object *object;
 	int arg1;
+	struct object *object;
 	const char *msg;
 };
 
@@ -492,6 +491,8 @@ struct client {
 	jack_position_t jack_position;
 	jack_transport_state_t jack_state;
 	struct frame_times jack_times;
+
+	struct object dummy_port;
 };
 
 #define return_val_if_fail(expr, val)				\
@@ -1446,8 +1447,9 @@ static size_t convert_from_event(void *midi, void *buffer, size_t size, uint32_t
 
 	switch (type) {
 	case TYPE_ID_MIDI:
+		event_type = SPA_CONTROL_Midi;
+		break;
 	case TYPE_ID_OSC:
-		/* we handle MIDI as OSC, check below */
 		event_type = SPA_CONTROL_OSC;
 		break;
 	case TYPE_ID_UMP:
@@ -1464,27 +1466,15 @@ static size_t convert_from_event(void *midi, void *buffer, size_t size, uint32_t
 	for (i = 0; i < count; i++) {
 		jack_midi_event_t ev;
 		jack_midi_event_get(&ev, midi, i);
+		uint32_t ev_type;
 
-		if (type != TYPE_ID_MIDI || is_osc(&ev)) {
-			/* no midi port or it's OSC */
-			spa_pod_builder_control(&b, ev.time, event_type);
-			spa_pod_builder_bytes(&b, ev.buffer, ev.size);
-		} else {
-			/* midi port and it's not OSC, convert to UMP */
-			uint8_t *data = ev.buffer;
-			size_t size = ev.size;
-			uint64_t state = 0;
+		if (type == TYPE_ID_MIDI && is_osc(&ev))
+			ev_type = SPA_CONTROL_OSC;
+		else
+			ev_type = event_type;
 
-			while (size > 0) {
-				uint32_t ump[4];
-				int ump_size = spa_ump_from_midi(&data, &size,
-						ump, sizeof(ump), 0, &state);
-				if (ump_size <= 0)
-					break;
-				spa_pod_builder_control(&b, ev.time, SPA_CONTROL_UMP);
-				spa_pod_builder_bytes(&b, ump, ump_size);
-			}
-		}
+		spa_pod_builder_control(&b, ev.time, ev_type);
+		spa_pod_builder_bytes(&b, ev.buffer, ev.size);
 	}
 	spa_pod_builder_pop(&b, &f);
 	return b.state.offset;
@@ -2208,7 +2198,7 @@ on_rtsocket_condition(void *data, int fd, uint32_t mask)
 		}
 	} else if (SPA_LIKELY(mask & SPA_IO_IN)) {
 		uint32_t buffer_frames;
-		int status = 0;
+		int status = -EBUSY;
 
 		buffer_frames = cycle_run(c);
 
@@ -3903,8 +3893,9 @@ static void registry_event_global(void *data, uint32_t id,
 		const char *name;
 
 		if ((str = spa_dict_lookup(props, PW_KEY_FORMAT_DSP)) == NULL)
-			str = "other";
-		if ((type_id = string_to_type(str)) == SPA_ID_INVALID)
+			goto exit;
+		if ((type_id = string_to_type(str)) == SPA_ID_INVALID ||
+		    !type_is_dsp(type_id))
 			goto exit;
 
 		if ((str = spa_dict_lookup(props, PW_KEY_NODE_ID)) == NULL)
@@ -4468,6 +4459,11 @@ jack_client_t * jack_client_open (const char *client_name,
 			0, NULL, &client->info);
 	client->info.change_mask = 0;
 
+	client->dummy_port.type = INTERFACE_Port;
+	snprintf(client->dummy_port.port.name, sizeof(client->dummy_port.port.name), "%s:dummy", client_name);
+	snprintf(client->dummy_port.port.alias1, sizeof(client->dummy_port.port.alias1), "%s:dummy", client_name);
+	snprintf(client->dummy_port.port.alias2, sizeof(client->dummy_port.port.alias2), "%s:dummy", client_name);
+
 	client->show_monitor = pw_properties_get_bool(client->props, "jack.show-monitor", true);
 	client->show_midi = pw_properties_get_bool(client->props, "jack.show-midi", true);
 	client->merge_monitor = pw_properties_get_bool(client->props, "jack.merge-monitor", true);
@@ -4868,7 +4864,7 @@ int jack_activate (jack_client_t *client)
 	freeze_callbacks(c);
 
 	/* reemit buffer_frames */
-	c->buffer_frames = 0;
+	c->buffer_frames = (uint32_t)-1;
 
 	pw_data_loop_start(c->loop);
 	c->active = true;
@@ -4880,9 +4876,21 @@ int jack_activate (jack_client_t *client)
 	c->activation->pending_sync = true;
 
 	spa_list_for_each(o, &c->context.objects, link) {
+#if !defined(LIBJACKSERVER)
 		if (o->type != INTERFACE_Port || o->port.port == NULL ||
 		    o->port.port->client != c || !o->port.port->valid)
 			continue;
+#else
+		/* emits all foreign active ports, skips own (already announced via jack_port_register) */
+		if (o->type != INTERFACE_Port || o->removed)
+			continue;
+		/* own ports are handled by jack_port_register */
+		if (o->port.port != NULL && o->port.port->client == c)
+			continue;
+		/* only announce ports whose node is active */
+		if (o->port.node != NULL && !node_is_active(c, o->port.node))
+			continue;
+#endif
 		o->registered = 0;
 		queue_notify(c, NOTIFY_TYPE_PORTREGISTRATION, o, 1, NULL);
 	}
@@ -5318,7 +5326,7 @@ int jack_set_freewheel(jack_client_t* client, int onoff)
 	pw_thread_loop_lock(c->context.loop);
 	str = pw_properties_get(c->props, PW_KEY_NODE_GROUP);
 	if (str != NULL) {
-		char *p = strstr(str, ",pipewire.freewheel");
+		const char *p = strstr(str, ",pipewire.freewheel");
 		if (p == NULL)
 			p = strstr(str, "pipewire.freewheel");
 		if (p == NULL && onoff)
@@ -5437,7 +5445,7 @@ SPA_EXPORT
 jack_nframes_t jack_get_buffer_size (jack_client_t *client)
 {
 	struct client *c = (struct client *) client;
-	jack_nframes_t res = -1;
+	uint32_t res = -1;
 
 	return_val_if_fail(c != NULL, 0);
 
@@ -5454,7 +5462,7 @@ jack_nframes_t jack_get_buffer_size (jack_client_t *client)
 	}
 	c->buffer_frames = res;
 	pw_log_debug("buffer_frames: %u", res);
-	return res;
+	return (jack_nframes_t)res;
 }
 
 SPA_EXPORT
@@ -5523,7 +5531,8 @@ jack_port_t * jack_port_register (jack_client_t *client,
 		return NULL;
 	}
 
-	if ((type_id = string_to_type(port_type)) == SPA_ID_INVALID) {
+	if ((type_id = string_to_type(port_type)) == SPA_ID_INVALID ||
+	    !type_is_dsp(type_id)) {
 		pw_log_warn("unknown port type %s", port_type);
 		return NULL;
 	}
@@ -5951,9 +5960,7 @@ static const char *port_name(struct object *o)
 {
 	const char *name;
 	struct client *c = o->client;
-	if (c == NULL)
-		return NULL;
-	if (c->default_as_system && is_port_default(c, o))
+	if (c != NULL && c->default_as_system && is_port_default(c, o))
 		name = o->port.system;
 	else
 		name = o->port.name;
@@ -6007,7 +6014,16 @@ jack_port_type_id_t jack_port_type_id (const jack_port_t *port)
 	return_val_if_fail(o != NULL, 0);
 	if (o->type != INTERFACE_Port)
 		return TYPE_ID_OTHER;
-	return o->port.type_id;
+
+	/* map internal type IDs to jack1/jack2 compatible public values */
+	switch (o->port.type_id) {
+	case TYPE_ID_AUDIO: return 0;
+	case TYPE_ID_MIDI:
+	case TYPE_ID_OSC:
+	case TYPE_ID_UMP:   return 1;  /* all MIDI variants map to 1 */
+	case TYPE_ID_VIDEO: return 3;  /* video maps to 3 */
+	default:            return o->port.type_id;
+	}
 }
 
 SPA_EXPORT
@@ -6920,8 +6936,6 @@ const char ** jack_get_ports (jack_client_t *client,
 			continue;
 		pw_log_debug("%p: check port type:%d flags:%08lx name:\"%s\"", c,
 				o->port.type_id, o->port.flags, o->port.name);
-		if (TYPE_ID_IS_HIDDEN(o->port.type_id))
-			continue;
 		if (!SPA_FLAG_IS_SET(o->port.flags, flags))
 			continue;
 		if (str != NULL && o->port.node != NULL) {
@@ -6999,13 +7013,11 @@ jack_port_t * jack_port_by_id (jack_client_t *client,
 
 	pthread_mutex_lock(&c->context.lock);
 	res = find_by_serial(c, port_id);
-	if (res && res->type != INTERFACE_Port)
-		res = NULL;
-	pw_log_debug("%p: port %d -> %p", c, port_id, res);
 	pthread_mutex_unlock(&c->context.lock);
+	if (res == NULL || res->type != INTERFACE_Port)
+		res = &c->dummy_port;
 
-	if (res == NULL)
-		pw_log_info("%p: port %d not found", c, port_id);
+	pw_log_debug("%p: port %d -> %p", c, port_id, res);
 
 	return object_to_port(res);
 }
