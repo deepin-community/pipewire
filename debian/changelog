@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin10) unstable; urgency=medium
+
+  * Skip audio formats before S16 via api.alsa.skip-formats-before-s16 property
+
+ -- qaqland <anguoli@uniontech.com>  Thu, 28 May 2026 15:36:41 +0800
+
 pipewire (1.6.4-1deepin9) unstable; urgency=medium
 
   * Set profile to off when connecting to peer Bluetooth PC device

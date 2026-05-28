@@ -1,0 +1,55 @@
+--- a/spa/plugins/alsa/alsa-pcm.h
++++ b/spa/plugins/alsa/alsa-pcm.h
+@@ -237,6 +237,7 @@
+ 	unsigned int is_batch:1;
+ 	unsigned int force_quantum:1;
+ 	unsigned int use_period_size_min_as_headroom:1;
++	unsigned int skip_formats_before_s16:1;
+ 
+ 	uint64_t iec958_codecs;
+ 
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -228,6 +228,9 @@
+ 		spa_scnprintf(state->props.media_class, sizeof(state->props.media_class), "%s", s);
+ 	} else if (spa_streq(k, "api.alsa.split.parent")) {
+ 		state->is_split_parent = true;
++	} else if (spa_streq(k, "api.alsa.skip-formats-before-s16")) {
++		state->skip_formats_before_s16 = spa_atob(s);
++		fmt_change++;
+ 	} else
+ 		return 0;
+ 
+@@ -1751,6 +1754,9 @@
+ 	struct spa_pod_choice *choice;
+ 
+ 	hndl = state->hndl;
++	bool skip_before_s16 = state->skip_formats_before_s16;
++	if (skip_before_s16)
++		spa_log_info(state->log, "%s: skip audio formats before S16", state->name);
+ 	snd_pcm_hw_params_alloca(&params);
+ 	CHECK(snd_pcm_hw_params_any(hndl, params), "Broken configuration: no configurations available");
+ 
+@@ -1797,6 +1803,22 @@
+ 		if (fi->format == SND_PCM_FORMAT_UNKNOWN)
+ 			continue;
+ 
++		if (skip_before_s16) {
++			if (fi->spa_format != SPA_AUDIO_FORMAT_S16_LE &&
++			    fi->spa_format != SPA_AUDIO_FORMAT_S16_BE) {
++				spa_log_info(state->log, "%s: skip format %s",
++						state->name,
++						spa_debug_type_find_short_name(
++							spa_type_audio_format, fi->spa_format));
++				continue;
++			}
++			spa_log_info(state->log, "%s: reached %s, stop skipping",
++					state->name,
++					spa_debug_type_find_short_name(
++						spa_type_audio_format, fi->spa_format));
++			skip_before_s16 = false;
++		}
++
+ 		if (snd_pcm_format_mask_test(fmask, fi->format)) {
+ 			if ((snd_pcm_access_mask_test(amask, SND_PCM_ACCESS_MMAP_NONINTERLEAVED) ||
+ 			    snd_pcm_access_mask_test(amask, SND_PCM_ACCESS_RW_NONINTERLEAVED)) &&

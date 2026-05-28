@@ -7,3 +7,4 @@ Fix-Optimize-the-volume-algorithm.patch
 Fix-add-config-to-hikvisionXC-P514P-B.patch
 Tmp-Add-Lenovo-M90H-G1S.patch
 Fix-Set-profile-to-off-when-connecting-to-peer-BT-PC.patch
+Fix-Skip-audio-formats-before-S16.patch
