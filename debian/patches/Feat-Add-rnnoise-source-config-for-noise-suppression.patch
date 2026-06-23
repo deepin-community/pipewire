@@ -1,0 +1,96 @@
+From c3c136ca73328e37c0dda9381e0adff4173b9b9d Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Tue, 23 Jun 2026 14:51:53 +0800
+Subject: [PATCH] feat: Add rnnoise source config for
+ noise-suppression-for-voice
+
+---
+ src/daemon/filter-chain.conf.d/meson.build    | 11 +++++
+ .../filter-chain.conf.d/source-rnnoise.conf   | 46 +++++++++++++++++++
+ src/daemon/meson.build                        |  1 +
+ 3 files changed, 58 insertions(+)
+ create mode 100644 src/daemon/filter-chain.conf.d/meson.build
+ create mode 100644 src/daemon/filter-chain.conf.d/source-rnnoise.conf
+
+diff --git a/src/daemon/filter-chain.conf.d/meson.build b/src/daemon/filter-chain.conf.d/meson.build
+new file mode 100644
+index 0000000..036e9b2
+--- /dev/null
++++ b/src/daemon/filter-chain.conf.d/meson.build
+@@ -0,0 +1,11 @@
++conf_files = [
++  'source-rnnoise.conf',
++]
++
++foreach c : conf_files
++  res = configure_file(input : c,
++                 output : c,
++                 configuration : conf_config,
++                 install_dir : pipewire_confdatadir / 'filter-chain.conf.d')
++  test('validate-json-filter-chain-confd-' + c, spa_json_dump_exe, args : res)
++endforeach
+diff --git a/src/daemon/filter-chain.conf.d/source-rnnoise.conf b/src/daemon/filter-chain.conf.d/source-rnnoise.conf
+new file mode 100644
+index 0000000..ec864f0
+--- /dev/null
++++ b/src/daemon/filter-chain.conf.d/source-rnnoise.conf
+@@ -0,0 +1,46 @@
++# Noise canceling source
++#
++# Copy this file into a conf.d/ directory such as
++# ~/.config/pipewire/filter-chain.conf.d/
++#
++# Adjust the paths to the rnnoise plugin to match your system
++#
++context.modules = [
++    { name = libpipewire-module-filter-chain
++        flags = [ nofail ]
++        args = {
++            node.description = "Noise Canceling source"
++            media.name       = "Noise Canceling source"
++            filter.graph = {
++                nodes = [
++                    {
++                        type   = ladspa
++                        name   = rnnoise
++			# The path to the plugin. The suffix .so is appended to
++			# this string and then the file is then located in the directories
++			# listed in the environment variable LADSPA_PATH or
++			# /usr/lib64/ladspa, /usr/lib/ladspa or the system library directory
++			# as a fallback.
++			# You might want to use an absolute path here to avoid problems.
++                        plugin = "librnnoise_ladspa"
++                        label  = noise_suppressor_stereo
++                        control = {
++			    "VAD Threshold (%)"       = 60.0   # Increase to 60–80 to reduce false triggers and prevent repeated toggling of noise segments
++			    "VAD Grace Period (ms)"   = 300    # Extend to 300–500 for smoother noise decay and less abrupt silence insertion
++			    "Retroactive VAD Grace (ms)" = 30  # Set to 20–60 to preserve consonant onsets without introducing excessive noise
++                        }
++                    }
++                ]
++            }
++            audio.position = [ MONO ]
++            capture.props = {
++                node.name = "effect_input.rnnoise"
++                node.passive = true
++            }
++            playback.props = {
++                node.name = "effect_output.rnnoise"
++                media.class = Audio/Source
++            }
++        }
++    }
++]
+diff --git a/src/daemon/meson.build b/src/daemon/meson.build
+index e7e482f..76527ce 100644
+--- a/src/daemon/meson.build
++++ b/src/daemon/meson.build
+@@ -161,4 +161,5 @@ custom_target('pipewire-uninstalled',
+ #endif
+ 
+ subdir('filter-chain')
++subdir('filter-chain.conf.d')
+ subdir('systemd')
+-- 
+2.20.1
+

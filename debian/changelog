@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin11) unstable; urgency=medium
+
+  *  Add rnnoise source config for noise-suppression-for-voice.
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Tue, 23 Jun 2026 15:33:23 +0800
+
 pipewire (1.6.4-1deepin10) unstable; urgency=medium
 
   * Skip audio formats before S16 via api.alsa.skip-formats-before-s16 property
