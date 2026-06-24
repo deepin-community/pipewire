@@ -1,0 +1,385 @@
+From c684e576e1e73e90e5d7ca40ac4fe879a96942a0 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Wed, 24 Jun 2026 17:28:35 +0800
+Subject: [PATCH] feat: Add rnnoise-toggle script in src/tools for noise
+ suppression
+
+---
+ debian/pipewire-bin.install          |   1 +
+ debian/pipewire-bin.manpages         |   1 +
+ doc/dox/programs/index.md            |   1 +
+ doc/dox/programs/rnnoise-toggle.1.md | 107 ++++++++++++++++++
+ doc/meson.build                      |   1 +
+ meson_options.txt                    |   4 +
+ src/tools/meson.build                |  10 ++
+ src/tools/rnnoise-toggle             | 163 +++++++++++++++++++++++++++
+ 8 files changed, 288 insertions(+)
+ create mode 100644 doc/dox/programs/rnnoise-toggle.1.md
+ create mode 100755 src/tools/rnnoise-toggle
+
+diff --git a/debian/pipewire-bin.install b/debian/pipewire-bin.install
+index ea13a8a..76cd696 100644
+--- a/debian/pipewire-bin.install
++++ b/debian/pipewire-bin.install
+@@ -28,6 +28,7 @@ usr/bin/pw-reserve
+ usr/bin/pw-sysex
+ usr/bin/pw-top
+ usr/bin/spa-*
++usr/bin/rnnoise-toggle
+ usr/share/alsa-card-profile
+ usr/share/pipewire/client.conf
+ usr/share/pipewire/client.conf.avail
+diff --git a/debian/pipewire-bin.manpages b/debian/pipewire-bin.manpages
+index ca0fc74..9cabf97 100644
+--- a/debian/pipewire-bin.manpages
++++ b/debian/pipewire-bin.manpages
+@@ -13,6 +13,7 @@ usr/share/man/man1/pw-mon.*
+ usr/share/man/man1/pw-profiler.*
+ usr/share/man/man1/pw-reserve.*
+ usr/share/man/man1/pw-top.*
++usr/share/man/man1/rnnoise-toggle.*
+ usr/share/man/man1/spa-acp-tool.*
+ usr/share/man/man1/spa-inspect.*
+ usr/share/man/man1/spa-json-dump.*
+diff --git a/doc/dox/programs/index.md b/doc/dox/programs/index.md
+index 991ec72..1ac5fec 100644
+--- a/doc/dox/programs/index.md
++++ b/doc/dox/programs/index.md
+@@ -20,6 +20,7 @@ Manual pages:
+ - \subpage page_man_pw-reserve_1
+ - \subpage page_man_pw-top_1
+ - \subpage page_man_pw-v4l2_1
++- \subpage page_man_rnnoise-toggle_1
+ - \subpage page_man_spa-acp-tool_1
+ - \subpage page_man_spa-inspect_1
+ - \subpage page_man_spa-json-dump_1
+diff --git a/doc/dox/programs/rnnoise-toggle.1.md b/doc/dox/programs/rnnoise-toggle.1.md
+new file mode 100644
+index 0000000..0fb0012
+--- /dev/null
++++ b/doc/dox/programs/rnnoise-toggle.1.md
+@@ -0,0 +1,107 @@
++\page page_man_rnnoise-toggle_1 rnnoise-toggle
++
++Toggle the rnnoise noise suppression source
++
++# SYNOPSIS
++
++**rnnoise-toggle** \[*-q*] *on*
++
++**rnnoise-toggle** \[*-q*] *off* \[\fIsource\fR]
++
++**rnnoise-toggle** \[*-q*] *status*
++
++**rnnoise-toggle** *-h*
++
++# DESCRIPTION
++
++**rnnoise-toggle** switches the default PipeWire capture source to or from the
++rnnoise noise-suppression source (`effect_output.rnnoise`).
++
++It is a convenience wrapper around `pactl set-default-source` that complements
++the rnnoise filter-chain configuration
++(see `source-rnnoise.conf`).
++
++When enabling noise suppression with the *on* command, the current default
++source is saved to a per-user runtime state file
++(`$XDG_RUNTIME_DIR/rnnoise-toggle-original-source`) so that it can be restored
++later. When disabling with *off*, the saved source is restored automatically
++unless an explicit source name is given. The state file is cleared on
++logout/reboot, which is the desired behaviour since the saved source name may
++not be valid after reinitialisation.
++
++# OPTIONS
++
++\par -q, --quiet
++Suppress informational messages. Errors are still printed to standard error.
++
++\par -h, --help
++Show help and exit.
++
++# COMMANDS
++
++\par on
++Enable noise suppression by setting the default source to
++`effect_output.rnnoise`. The current default source is saved to the state
++file. Fails if the rnnoise source node is not present, indicating that the
++filter-chain configuration is not loaded.
++
++\par off [\fIsource\fR]
++Disable noise suppression. If the optional *source* argument is given, it is
++set as the new default source. Otherwise, the previously saved original source
++(from the *on* command) is restored. If no saved source exists and no explicit
++source is given, an error is returned.
++
++\par status
++Print the current state to standard output: `on` when the default source is
++`effect_output.rnnoise`, `off` otherwise.
++
++# EXIT STATUS
++
++\par 0
++Success.
++
++\par 1
++Usage error: unknown command, missing argument, or no saved source to restore.
++
++\par 2
++Missing dependency: `pactl` was not found in `PATH`.
++
++\par 3
++`pactl` command failed: the rnnoise source is not available, or setting the
++default source failed.
++
++# EXAMPLES
++
++\par Enable noise suppression:
++\verbatim
++rnnoise-toggle on
++\endverbatim
++
++\par Disable, restoring the saved original source:
++\verbatim
++rnnoise-toggle off
++\endverbatim
++
++\par Disable and explicitly set a hardware source:
++\verbatim
++rnnoise-toggle off alsa_input.pci-0000_00_1f.3.HiFi__Mic__source
++\endverbatim
++
++\par Capture the current state into a shell variable:
++\verbatim
++state=$(rnnoise-toggle status)
++\endverbatim
++
++# AUTHORS
++
++The PipeWire Developers <https://github.com/deepin-community/pipewire/issues>;
++PipeWire is available from <https://github.com/deepin-community/pipewire>
++
++# SEE ALSO
++
++\ref page_man_pipewire_1 "pipewire(1)",
++\ref page_man_pw-cli_1 "pw-cli(1)",
++**pactl(1)**
++
++The rnnoise filter-chain configuration is typically located at:
++*$(PIPEWIRE_CONFDATADIR)/filter-chain.conf.d/source-rnnoise.conf*
+diff --git a/doc/meson.build b/doc/meson.build
+index f4aa4ba..7fb1a57 100644
+--- a/doc/meson.build
++++ b/doc/meson.build
+@@ -115,6 +115,7 @@ manpage_docs = [
+   'dox/programs/pw-reserve.1.md',
+   'dox/programs/pw-top.1.md',
+   'dox/programs/pw-v4l2.1.md',
++  'dox/programs/rnnoise-toggle.1.md',
+   'dox/programs/spa-acp-tool.1.md',
+   'dox/programs/spa-inspect.1.md',
+   'dox/programs/spa-json-dump.1.md',
+diff --git a/meson_options.txt b/meson_options.txt
+index 206d686..8994e74 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -221,6 +221,10 @@ option('pw-cat-ffmpeg',
+        description: 'Enable FFmpeg integration in pw-cat/pw-play/pw-record',
+        type: 'feature',
+        value: 'disabled')
++option('rnnoise-tools',
++       description: 'Install rnnoise toggle script (rnnoise-toggle)',
++       type: 'feature',
++       value: 'auto')
+ option('udev',
+        description: 'Enable Udev integration',
+        type: 'feature',
+diff --git a/src/tools/meson.build b/src/tools/meson.build
+index 8147906..eee2404 100644
+--- a/src/tools/meson.build
++++ b/src/tools/meson.build
+@@ -104,3 +104,13 @@ if dbus_dep.found()
+     dependencies : [dbus_dep, pipewire_dep],
+   )
+ endif
++
++# rnnoise noise suppression toggle script.
++# Complements src/daemon/filter-chain/source-rnnoise.conf by switching
++# the default source to effect_output.rnnoise (on) or a saved/caller-specified
++# source (off).
++if get_option('rnnoise-tools').allowed()
++  install_data('rnnoise-toggle',
++    install_dir : pipewire_bindir,
++    install_mode : 'rwxr-xr-x')
++endif
+diff --git a/src/tools/rnnoise-toggle b/src/tools/rnnoise-toggle
+new file mode 100755
+index 0000000..9e9514e
+--- /dev/null
++++ b/src/tools/rnnoise-toggle
+@@ -0,0 +1,163 @@
++#!/bin/bash
++#
++# This file is part of PipeWire.
++# SPDX-FileCopyrightText: Copyright © 2026 Chengyi Zhao <zhaochengyi@uniontech.com>
++# SPDX-License-Identifier: MIT
++#
++# rnnoise-toggle — toggle the rnnoise noise-suppression source as the default.
++#
++# Functionally equivalent to echoCancelEnable.sh.
++#
++# USAGE
++#   rnnoise-toggle [-q|--quiet] on
++#   rnnoise-toggle [-q|--quiet] off [<original-source>]
++#   rnnoise-toggle [-q|--quiet] status
++#   rnnoise-toggle -h|--help
++#
++# The caller may omit the <original-source> argument to "off"; the source
++# saved by a prior "on" (in $XDG_RUNTIME_DIR) is then restored automatically.
++# An explicit argument, if given, always takes precedence.
++#
++set -euo pipefail
++
++readonly RNNOISE_SOURCE="effect_output.rnnoise"
++readonly STATE_FILE="${XDG_RUNTIME_DIR:-/run/user/${UID:-$(id -u)}}/rnnoise-toggle-original-source"
++
++quiet=0
++
++# --- output helpers: info -> stderr (silenced by -q), errors always stderr ---
++info() { [[ "$quiet" -eq 0 ]] && printf '%s\n' "$*" >&2; }
++err()  { printf '%s\n' "$*" >&2; }
++
++show_usage() {
++    cat <<'EOF'
++Usage: rnnoise-toggle [-q|--quiet] <command> [args]
++       rnnoise-toggle -h|--help
++
++Commands:
++  on               Enable noise suppression (save original source, set default
++                   to effect_output.rnnoise)
++  off [<source>]   Disable; restore <source>, or the saved original source
++                   if <source> is omitted
++  status           Print current state to stdout ("on" or "off")
++
++Options:
++  -q, --quiet      Suppress informational messages (errors still printed)
++  -h, --help       Show this help
++
++Exit codes:
++  0  success
++  1  usage error (bad/missing arguments)
++  2  dependency missing (pactl not in PATH)
++  3  pactl command failed (rnnoise source not available, or set-default failed)
++EOF
++}
++
++# --- dependency check -------------------------------------------------------
++if ! command -v pactl >/dev/null 2>&1; then
++    err "error: 'pactl' not found in PATH (is pipewire-pulse installed?)"
++    exit 2
++fi
++
++# --- helpers ----------------------------------------------------------------
++check_rnnoise_source() {
++    if ! pactl list sources short 2>/dev/null | grep -qw "$RNNOISE_SOURCE"; then
++        err "error: rnnoise source '$RNNOISE_SOURCE' not found."
++        err "       Is the filter-chain configuration loaded?"
++        exit 3
++    fi
++}
++
++save_original_source() {
++    local current
++    current="$(pactl get-default-source 2>/dev/null)" || true
++    if [[ -n "$current" ]]; then
++        printf '%s\n' "$current" > "$STATE_FILE"
++    fi
++}
++
++read_original_source() {
++    [[ -f "$STATE_FILE" ]] && cat "$STATE_FILE"
++}
++
++# --- argument parsing -------------------------------------------------------
++cmd=""
++src=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        -q|--quiet)
++            quiet=1; shift ;;
++        -h|--help)
++            show_usage; exit 0 ;;
++        --)
++            shift; break ;;
++        on|enable|start)
++            [[ -n "$cmd" ]] && { err "error: multiple commands given"; show_usage >&2; exit 1; }
++            cmd="on"; shift ;;
++        off|disable|stop)
++            [[ -n "$cmd" ]] && { err "error: multiple commands given"; show_usage >&2; exit 1; }
++            cmd="off"; shift
++            if [[ $# -gt 0 && "$1" != -* ]]; then
++                src="$1"; shift
++            fi ;;
++        status)
++            [[ -n "$cmd" ]] && { err "error: multiple commands given"; show_usage >&2; exit 1; }
++            cmd="status"; shift ;;
++        *)
++            err "error: unknown argument '$1'"
++            show_usage >&2; exit 1 ;;
++    esac
++done
++
++if [[ -z "$cmd" ]]; then
++    err "error: no command given"
++    show_usage >&2; exit 1
++fi
++
++# --- commands ---------------------------------------------------------------
++do_on() {
++    check_rnnoise_source
++    save_original_source
++    if ! pactl set-default-source "$RNNOISE_SOURCE"; then
++        err "error: failed to set default source to '$RNNOISE_SOURCE'"
++        exit 3
++    fi
++    info "rnnoise ON (default source: $RNNOISE_SOURCE)"
++}
++
++do_off() {
++    local target="$src"
++    # If no explicit source given, restore the saved original source
++    if [[ -z "$target" ]]; then
++        target="$(read_original_source)" || true
++        if [[ -z "$target" ]]; then
++            err "error: no original source saved and no source specified."
++            err "       Usage: rnnoise-toggle off <original-source-name>"
++            exit 1
++        fi
++    fi
++    if ! pactl set-default-source "$target"; then
++        err "error: failed to set default source to '$target'"
++        exit 3
++    fi
++    info "rnnoise OFF (restored source: $target)"
++}
++
++do_status() {
++    local current
++    current="$(pactl get-default-source 2>/dev/null)" || current=""
++    if [[ "$current" = "$RNNOISE_SOURCE" ]]; then
++        printf 'on\n'
++    else
++        printf 'off\n'
++    fi
++}
++
++case "$cmd" in
++    on)      do_on ;;
++    off)     do_off ;;
++    status)  do_status ;;
++esac
++
++exit 0
+-- 
+2.20.1
+
