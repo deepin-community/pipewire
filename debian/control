@@ -252,6 +252,7 @@ Section: video
 Architecture: any
 Multi-Arch: foreign
 Depends: libpipewire-0.3-modules (= ${binary:Version}),
+	 rnnoise-plugin-ladspa (>= 1.10-0deepin1),
          ${misc:Depends},
          ${shlibs:Depends}
 Recommends: dbus-user-session,

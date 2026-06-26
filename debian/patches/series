@@ -9,3 +9,4 @@ Tmp-Add-Lenovo-M90H-G1S.patch
 Fix-Set-profile-to-off-when-connecting-to-peer-BT-PC.patch
 Fix-Skip-audio-formats-before-S16.patch
 Feat-Add-rnnoise-source-config-for-noise-suppression.patch
+Fix-Use-absolute-LADSPA-plugin-path.patch

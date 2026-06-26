@@ -1,0 +1,35 @@
+From 17e6e6285cd008e22144f8f75b6676b9a0567160 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Fri, 26 Jun 2026 14:24:59 +0800
+Subject: [PATCH] fix: Use absolute LADSPA plugin path to prevent LADSPA_PATH
+ hijacking
+
+---
+ src/daemon/filter-chain.conf.d/source-rnnoise.conf | 11 +++--------
+ 1 file changed, 3 insertions(+), 8 deletions(-)
+
+diff --git a/src/daemon/filter-chain.conf.d/source-rnnoise.conf b/src/daemon/filter-chain.conf.d/source-rnnoise.conf
+index ec864f0..f299075 100644
+--- a/src/daemon/filter-chain.conf.d/source-rnnoise.conf
++++ b/src/daemon/filter-chain.conf.d/source-rnnoise.conf
+@@ -16,14 +16,9 @@ context.modules = [
+                     {
+                         type   = ladspa
+                         name   = rnnoise
+-			# The path to the plugin. The suffix .so is appended to
+-			# this string and then the file is then located in the directories
+-			# listed in the environment variable LADSPA_PATH or
+-			# /usr/lib64/ladspa, /usr/lib/ladspa or the system library directory
+-			# as a fallback.
+-			# You might want to use an absolute path here to avoid problems.
+-                        plugin = "librnnoise_ladspa"
+-                        label  = noise_suppressor_stereo
++			# Absolute path prevents shared library hijacking via LADSPA_PATH
++                        plugin = "/usr/lib/ladspa/librnnoise_ladspa.so"
++                        label  = noise_suppressor_mono
+                         control = {
+ 			    "VAD Threshold (%)"       = 60.0   # Increase to 60–80 to reduce false triggers and prevent repeated toggling of noise segments
+ 			    "VAD Grace Period (ms)"   = 300    # Extend to 300–500 for smoother noise decay and less abrupt silence insertion
+-- 
+2.20.1
+
