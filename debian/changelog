@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin13) unstable; urgency=medium
+
+  * Add rnnoise-toggle script in src/tools for noise suppression
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Mon, 29 Jun 2026 15:16:35 +0800
+
 pipewire (1.6.4-1deepin12) unstable; urgency=medium
 
   * Use absolute LADSPA plugin path to prevent LADSPA_PATH hijacking.

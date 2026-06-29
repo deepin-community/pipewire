@@ -1,0 +1,494 @@
+From 23d03253719d0c9719c0fd88f3293df83bf7c0e3 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Mon, 29 Jun 2026 15:01:34 +0800
+Subject: [PATCH] feat: Add rnnoise-toggle script in src/tools for noise
+ suppression
+
+---
+ doc/dox/programs/index.md            |   1 +
+ doc/dox/programs/rnnoise-toggle.1.md | 120 +++++++++++
+ doc/meson.build                      |   1 +
+ meson_options.txt                    |   4 +
+ src/tools/meson.build                |  10 +
+ src/tools/rnnoise-toggle             | 285 +++++++++++++++++++++++++++
+ 6 files changed, 421 insertions(+)
+ create mode 100644 doc/dox/programs/rnnoise-toggle.1.md
+ create mode 100755 src/tools/rnnoise-toggle
+
+diff --git a/doc/dox/programs/index.md b/doc/dox/programs/index.md
+index 991ec72..1ac5fec 100644
+--- a/doc/dox/programs/index.md
++++ b/doc/dox/programs/index.md
+@@ -20,6 +20,7 @@ Manual pages:
+ - \subpage page_man_pw-reserve_1
+ - \subpage page_man_pw-top_1
+ - \subpage page_man_pw-v4l2_1
++- \subpage page_man_rnnoise-toggle_1
+ - \subpage page_man_spa-acp-tool_1
+ - \subpage page_man_spa-inspect_1
+ - \subpage page_man_spa-json-dump_1
+diff --git a/doc/dox/programs/rnnoise-toggle.1.md b/doc/dox/programs/rnnoise-toggle.1.md
+new file mode 100644
+index 0000000..f17d475
+--- /dev/null
++++ b/doc/dox/programs/rnnoise-toggle.1.md
+@@ -0,0 +1,120 @@
++\page page_man_rnnoise-toggle_1 rnnoise-toggle
++
++Toggle the rnnoise noise suppression source
++
++# SYNOPSIS
++
++**rnnoise-toggle** \[*-q*] *on*
++
++**rnnoise-toggle** \[*-q*] *off* \[\fIsource\fR]
++
++**rnnoise-toggle** \[*-q*] *status*
++
++**rnnoise-toggle** *-h*
++
++# DESCRIPTION
++
++**rnnoise-toggle** switches the default PipeWire capture source to or from the
++rnnoise noise-suppression source (`effect_output.rnnoise`).
++
++It is a convenience wrapper around `pactl set-default-source` that complements
++the rnnoise filter-chain configuration
++(see `source-rnnoise.conf`).
++
++When enabling noise suppression with the *on* command, the current default
++source is saved to a per-user runtime state file
++(`$XDG_RUNTIME_DIR/rnnoise-toggle-original-source`) so that it can be restored
++later. When disabling with *off*, the saved source is restored automatically
++unless an explicit source name is given. The state file is cleared on
++logout/reboot, which is the desired behaviour since the saved source name may
++not be valid after reinitialisation.
++
++The state file is written atomically and with access mode 0600 to prevent
++tampering or race conditions. Source names passed to *off* or read from the
++state file are validated to contain only safe characters
++(`a-z A-Z 0-9 . _ -`). All toggle actions (on, off, success, failure) are
++logged to the system journal via `logger -t rnnoise-toggle` for audit
++purposes.
++
++# OPTIONS
++
++\par -q, --quiet
++Suppress informational messages. Errors are still printed to standard error.
++
++\par -h, --help
++Show help and exit.
++
++# COMMANDS
++
++\par on
++Enable noise suppression by setting the default source to
++`effect_output.rnnoise`. The current default source is saved to the state
++file. Fails if the rnnoise source node is not present, indicating that the
++filter-chain configuration is not loaded.
++
++\par off [\fIsource\fR]
++Disable noise suppression. If the optional *source* argument is given, it is
++set as the new default source. Otherwise, the previously saved original source
++(from the *on* command) is restored. If no saved source exists and no explicit
++source is given, the available sources are listed on standard error and an
++error is returned (see EXIT STATUS).
++
++\par status
++Print the current state to standard output: `on` when the default source is
++`effect_output.rnnoise`, `off` otherwise. If `pactl` fails to query the
++default source (e.g. pipewire-pulse is not running), the command prints an
++error to standard error and exits with code 3 instead of printing a
++potentially misleading `off`.
++
++# EXIT STATUS
++
++\par 0
++Success.
++
++\par 1
++Usage error: unknown command, missing argument, or no saved source to restore.
++Available source names are listed on standard error in this case.
++
++\par 2
++Missing dependency: `pactl` was not found in `PATH`.
++
++\par 3
++`pactl` command failed: the rnnoise source is not available, setting the
++default source failed, or querying the default source failed (in *status*
++mode).
++
++# EXAMPLES
++
++\par Enable noise suppression:
++\verbatim
++rnnoise-toggle on
++\endverbatim
++
++\par Disable, restoring the saved original source:
++\verbatim
++rnnoise-toggle off
++\endverbatim
++
++\par Disable and explicitly set a hardware source:
++\verbatim
++rnnoise-toggle off alsa_input.pci-0000_00_1f.3.HiFi__Mic__source
++\endverbatim
++
++\par Capture the current state into a shell variable:
++\verbatim
++state=$(rnnoise-toggle status)
++\endverbatim
++
++# AUTHORS
++
++The PipeWire Developers <https://github.com/deepin-community/pipewire/issues>;
++PipeWire is available from <https://github.com/deepin-community/pipewire>
++
++# SEE ALSO
++
++\ref page_man_pipewire_1 "pipewire(1)",
++\ref page_man_pw-cli_1 "pw-cli(1)",
++**pactl(1)**
++
++The rnnoise filter-chain configuration is typically located at:
++*$(PIPEWIRE_CONFDATADIR)/filter-chain.conf.d/source-rnnoise.conf*
+diff --git a/doc/meson.build b/doc/meson.build
+index f4aa4ba..7fb1a57 100644
+--- a/doc/meson.build
++++ b/doc/meson.build
+@@ -115,6 +115,7 @@ manpage_docs = [
+   'dox/programs/pw-reserve.1.md',
+   'dox/programs/pw-top.1.md',
+   'dox/programs/pw-v4l2.1.md',
++  'dox/programs/rnnoise-toggle.1.md',
+   'dox/programs/spa-acp-tool.1.md',
+   'dox/programs/spa-inspect.1.md',
+   'dox/programs/spa-json-dump.1.md',
+diff --git a/meson_options.txt b/meson_options.txt
+index 206d686..8994e74 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -221,6 +221,10 @@ option('pw-cat-ffmpeg',
+        description: 'Enable FFmpeg integration in pw-cat/pw-play/pw-record',
+        type: 'feature',
+        value: 'disabled')
++option('rnnoise-tools',
++       description: 'Install rnnoise toggle script (rnnoise-toggle)',
++       type: 'feature',
++       value: 'auto')
+ option('udev',
+        description: 'Enable Udev integration',
+        type: 'feature',
+diff --git a/src/tools/meson.build b/src/tools/meson.build
+index 8147906..6b2ea9c 100644
+--- a/src/tools/meson.build
++++ b/src/tools/meson.build
+@@ -104,3 +104,13 @@ if dbus_dep.found()
+     dependencies : [dbus_dep, pipewire_dep],
+   )
+ endif
++
++# rnnoise noise suppression toggle script.
++# Complements src/daemon/filter-chain.conf.d/source-rnnoise.conf by switching
++# the default source to effect_output.rnnoise (on) or a saved/caller-specified
++# source (off).
++if get_option('rnnoise-tools').allowed()
++  install_data('rnnoise-toggle',
++    install_dir : pipewire_bindir,
++    install_mode : 'rwxr-xr-x')
++endif
+diff --git a/src/tools/rnnoise-toggle b/src/tools/rnnoise-toggle
+new file mode 100755
+index 0000000..3fdbdb8
+--- /dev/null
++++ b/src/tools/rnnoise-toggle
+@@ -0,0 +1,285 @@
++#!/bin/bash
++#
++# This file is part of PipeWire.
++# SPDX-FileCopyrightText: Copyright © 2026 Chengyi Zhao <zhaochengyi@uniontech.com>
++# SPDX-License-Identifier: MIT
++#
++# rnnoise-toggle — toggle the rnnoise noise-suppression source as the default.
++#
++# USAGE
++#   rnnoise-toggle [-q|--quiet] on
++#   rnnoise-toggle [-q|--quiet] off [<original-source>]
++#   rnnoise-toggle [-q|--quiet] status
++#   rnnoise-toggle -h|--help
++#
++# The caller may omit the <original-source> argument to "off"; the source
++# saved by a prior "on" (in $XDG_RUNTIME_DIR) is then restored automatically.
++# An explicit argument, if given, always takes precedence.
++#
++set -euo pipefail
++
++readonly RNNOISE_SOURCE="effect_output.rnnoise"
++readonly STATE_FILE="${XDG_RUNTIME_DIR:-/run/user/${UID:-$(id -u)}}/rnnoise-toggle-original-source"
++
++quiet=0
++
++# --- output helpers: info -> stderr (silenced by -q), errors always stderr ---
++info() { [[ "$quiet" -eq 0 ]] && printf '%s\n' "$*" >&2; }
++err()  { printf '%s\n' "$*" >&2; }
++
++# --- audit logging (always logged to syslog, regardless of -q) --------------
++# Logs every toggle action (on/off) with result (success/failure) and details.
++audit_log() {
++    local action="$1" result="$2" detail="${3:-}"
++    logger -t rnnoise-toggle "user=${USER:-unknown} action=${action} result=${result} ${detail}" 2>/dev/null || true
++}
++
++# --- security helpers -------------------------------------------------------
++
++# Validate that a source name contains only safe characters and is not the
++# rnnoise source itself (prevents injection and self-referential restore).
++validate_source_name() {
++    local name="$1"
++    if [[ -z "$name" ]]; then
++        err "error: empty source name"
++        return 1
++    fi
++    if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
++        err "error: invalid source name '$name' (only a-z A-Z 0-9 . _ - allowed)"
++        return 1
++    fi
++    if [[ "$name" == "$RNNOISE_SOURCE" ]]; then
++        err "error: cannot restore to the rnnoise source itself"
++        return 1
++    fi
++    return 0
++}
++
++# Validate the runtime directory: must exist, be a directory, and be owned
++# by the current user (prevents XDG_RUNTIME_DIR manipulation attacks).
++validate_runtime_dir() {
++    local dir
++    dir="$(dirname "$STATE_FILE")"
++    if [[ ! -d "$dir" ]]; then
++        err "error: runtime directory '$dir' does not exist"
++        exit 1
++    fi
++    local owner
++    owner="$(stat -c '%u' "$dir" 2>/dev/null)" || {
++        err "error: cannot stat runtime directory '$dir'"
++        exit 1
++    }
++    if [[ "$owner" != "$(id -u)" ]]; then
++        err "error: runtime directory '$dir' not owned by current user"
++        exit 1
++    fi
++}
++
++show_usage() {
++    cat <<'EOF'
++Usage: rnnoise-toggle [-q|--quiet] <command> [args]
++       rnnoise-toggle -h|--help
++
++Commands:
++  on               Enable noise suppression (save original source, set default
++                   to effect_output.rnnoise)
++  off [<source>]   Disable; restore <source>, or the saved original source
++                   if <source> is omitted
++  status           Print current state to stdout ("on" or "off")
++
++Options:
++  -q, --quiet      Suppress informational messages (errors still printed)
++  -h, --help       Show this help
++
++Exit codes:
++  0  success
++  1  usage error (bad/missing arguments)
++  2  dependency missing (pactl not in PATH)
++  3  pactl command failed (rnnoise source not available, or set-default failed)
++EOF
++}
++
++# --- dependency check -------------------------------------------------------
++if ! command -v pactl >/dev/null 2>&1; then
++    err "error: 'pactl' not found in PATH (is pulseaudio-utils installed?)"
++    exit 2
++fi
++
++# Validate runtime directory before any file operations
++validate_runtime_dir
++
++# --- helpers ----------------------------------------------------------------
++check_rnnoise_source() {
++    if ! pactl list sources short 2>/dev/null | grep -qw "$RNNOISE_SOURCE"; then
++        err "error: rnnoise source '$RNNOISE_SOURCE' not found."
++        err "       Is the filter-chain configuration loaded?"
++        exit 3
++    fi
++}
++
++# Save the current default source to the state file.
++# Returns 0 on success, 1 on failure (does not exit).
++save_original_source() {
++    local current
++    current="$(pactl get-default-source 2>/dev/null)" || true
++    # If no default source exists, there is nothing to save (this is rare).
++    [[ -z "$current" ]] && return 0
++    validate_source_name "$current" || return 1
++
++    # Security: refuse to write through a symlink (prevents symlink attack)
++    if [[ -L "$STATE_FILE" ]]; then
++        err "error: state file '$STATE_FILE' is a symlink, refusing to write"
++        audit_log "on" "failure" "state_file_symlink"
++        return 1
++    fi
++
++    # Security: atomic write via temp file + rename (prevents partial write)
++    local tmp="${STATE_FILE}.$$"
++    printf '%s\n' "$current" > "$tmp" || {
++        err "error: failed to write state file"
++        rm -f "$tmp"
++        return 1
++    }
++    chmod 600 "$tmp"
++    mv -f "$tmp" "$STATE_FILE"
++    return 0
++}
++
++# Read the saved original source from the state file.
++# Returns:
++#   0 and prints the source name if file exists and content is valid.
++#   0 (empty) if file does not exist (no saved source).
++#   1 and prints an error if file exists but content is invalid or symlink.
++read_original_source() {
++    [[ -f "$STATE_FILE" ]] || return 0
++    # Security: refuse to read through a symlink
++    if [[ -L "$STATE_FILE" ]]; then
++        err "error: state file '$STATE_FILE' is a symlink, refusing to read"
++        return 1
++    fi
++    local content
++    content="$(cat "$STATE_FILE" 2>/dev/null)" || return 0
++    # Security: validate content before use
++    if ! validate_source_name "$content" 2>/dev/null; then
++        err "error: state file content is invalid, ignoring saved source"
++        return 1
++    fi
++    printf '%s\n' "$content"
++}
++
++# List available sources (excluding the rnnoise source) to stderr.
++list_available_sources() {
++    local name
++    pactl list sources short 2>/dev/null | awk '{print $2}' | while read -r name; do
++        if [[ "$name" != "$RNNOISE_SOURCE" ]]; then
++            err "  $name"
++        fi
++    done || true
++}
++
++# --- argument parsing -------------------------------------------------------
++cmd=""
++src=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        -q|--quiet)
++            quiet=1; shift ;;
++        -h|--help)
++            show_usage; exit 0 ;;
++        --)
++            shift; break ;;
++        on|enable|start)
++            [[ -n "$cmd" ]] && { err "error: multiple commands given"; show_usage >&2; exit 1; }
++            cmd="on"; shift ;;
++        off|disable|stop)
++            [[ -n "$cmd" ]] && { err "error: multiple commands given"; show_usage >&2; exit 1; }
++            cmd="off"; shift
++            if [[ $# -gt 0 && "$1" != -* ]]; then
++                src="$1"; shift
++            fi ;;
++        status)
++            [[ -n "$cmd" ]] && { err "error: multiple commands given"; show_usage >&2; exit 1; }
++            cmd="status"; shift ;;
++        *)
++            err "error: unknown argument '$1'"
++            show_usage >&2; exit 1 ;;
++    esac
++done
++
++if [[ -z "$cmd" ]]; then
++    err "error: no command given"
++    show_usage >&2; exit 1
++fi
++
++# --- commands ---------------------------------------------------------------
++do_on() {
++    check_rnnoise_source
++    if ! save_original_source; then
++        audit_log "on" "failure" "save_source_failed"
++        exit 1
++    fi
++    if ! pactl set-default-source "$RNNOISE_SOURCE"; then
++        err "error: failed to set default source to '$RNNOISE_SOURCE'"
++        audit_log "on" "failure" "set_default_failed"
++        exit 3
++    fi
++    info "rnnoise ON (default source: $RNNOISE_SOURCE)"
++    audit_log "on" "success" "source=$RNNOISE_SOURCE"
++}
++
++do_off() {
++    local target="$src"
++    if [[ -z "$target" ]]; then
++        # Try to read saved source; if read fails (invalid content), exit.
++        if ! target="$(read_original_source)"; then
++            err "Failed to read saved source. Available sources:"
++            list_available_sources
++            exit 1
++        fi
++        if [[ -z "$target" ]]; then
++            err "error: no original source saved and no source specified."
++            err ""
++            err "Available sources (use with: rnnoise-toggle off <name>):"
++            list_available_sources
++            err ""
++            err "Usage: rnnoise-toggle off <source-name>"
++            exit 1
++        fi
++    fi
++    # Security: validate user-supplied or file-read source name
++    if ! validate_source_name "$target"; then
++        audit_log "off" "failure" "invalid_source_name"
++        exit 1
++    fi
++    if ! pactl set-default-source "$target"; then
++        err "error: failed to set default source to '$target'"
++        audit_log "off" "failure" "set_default_failed target=$target"
++        exit 3
++    fi
++    info "rnnoise OFF (restored source: $target)"
++    audit_log "off" "success" "source=$target"
++}
++
++do_status() {
++    local current
++    current="$(pactl get-default-source 2>/dev/null)" || current=""
++    if [[ -z "$current" ]]; then
++        # pactl failed — do not print "off" (which would be misleading)
++        err "error: cannot query default source (is pipewire-pulse running?)"
++        exit 3
++    fi
++    if [[ "$current" = "$RNNOISE_SOURCE" ]]; then
++        printf 'on\n'
++    else
++        printf 'off\n'
++    fi
++}
++
++case "$cmd" in
++    on)      do_on ;;
++    off)     do_off ;;
++    status)  do_status ;;
++esac
++
++exit 0
+-- 
+2.20.1
+
