@@ -1,3 +1,10 @@
+pipewire (1.6.4-1deepin13+cvefix1) unstable; urgency=high
+
+  * Fix CVE-2026-14324: fix unbounded Content-Length in RAOP module
+    (Closes: CVE-2026-14324)
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 10 Jul 2026 02:53:38 +0800
+
 pipewire (1.6.4-1deepin13) unstable; urgency=medium
 
   * Add rnnoise-toggle script in src/tools for noise suppression
