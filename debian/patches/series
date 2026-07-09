@@ -1,3 +1,4 @@
+CVE-2026-14324.patch
 Fix-Do-not-start-pipewire-in-Display-Manager-user.patch
 Fix-Add-config-to-match-lenovo-m90h-g2t.patch
 Fix-Adapted-for-Unis-D3830-G3-sound-card.patch
