@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin14) unstable; urgency=medium
+
+  * Fix input source drift and -q abort in rnnoise-toggle
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Fri, 17 Jul 2026 17:13:40 +0800
+
 pipewire (1.6.4-1deepin13) unstable; urgency=medium
 
   * Add rnnoise-toggle script in src/tools for noise suppression

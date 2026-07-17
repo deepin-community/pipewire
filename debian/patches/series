@@ -11,3 +11,4 @@ Fix-Skip-audio-formats-before-S16.patch
 Feat-Add-rnnoise-source-config-for-noise-suppression.patch
 Fix-Use-absolute-LADSPA-plugin-path.patch
 Feat-Add-rnnoise-toggle-script-in-src-tools.patch
+Fix-input-source-drift-and-q-abort-in-rnnoise-toggle.patch
