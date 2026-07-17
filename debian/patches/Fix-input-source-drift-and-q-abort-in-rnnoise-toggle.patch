@@ -1,0 +1,170 @@
+From 16c579d07443f792b90c67d0ec08ecedfc6062b4 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Fri, 17 Jul 2026 17:09:06 +0800
+Subject: [PATCH] fix: Fix input source drift and -q abort in rnnoise-toggle
+
+Pin effect_input.rnnoise to the current default source via
+pw-metadata target.object before switching the default, preventing
+WirePlumber from re-routing to a different microphone. Unpin on off.
+
+Also fix info() returning 1 under -q, which triggered set -e abort
+before the default source was switched. Added || true so info()
+always returns 0.
+---
+ src/tools/rnnoise-toggle | 85 +++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 75 insertions(+), 10 deletions(-)
+
+diff --git a/src/tools/rnnoise-toggle b/src/tools/rnnoise-toggle
+index 3fdbdb8..2c28f17 100755
+--- a/src/tools/rnnoise-toggle
++++ b/src/tools/rnnoise-toggle
+@@ -19,12 +19,13 @@
+ set -euo pipefail
+ 
+ readonly RNNOISE_SOURCE="effect_output.rnnoise"
++readonly RNNOISE_INPUT="effect_input.rnnoise"
+ readonly STATE_FILE="${XDG_RUNTIME_DIR:-/run/user/${UID:-$(id -u)}}/rnnoise-toggle-original-source"
+ 
+ quiet=0
+ 
+ # --- output helpers: info -> stderr (silenced by -q), errors always stderr ---
+-info() { [[ "$quiet" -eq 0 ]] && printf '%s\n' "$*" >&2; }
++info() { [[ "$quiet" -eq 0 ]] && printf '%s\n' "$*" >&2 || true; }
+ err()  { printf '%s\n' "$*" >&2; }
+ 
+ # --- audit logging (always logged to syslog, regardless of -q) --------------
+@@ -81,11 +82,11 @@ Usage: rnnoise-toggle [-q|--quiet] <command> [args]
+        rnnoise-toggle -h|--help
+ 
+ Commands:
+-  on               Enable noise suppression (save original source, set default
+-                   to effect_output.rnnoise)
+-  off [<source>]   Disable; restore <source>, or the saved original source
+-                   if <source> is omitted
+-  status           Print current state to stdout ("on" or "off")
++  on               Enable noise suppression (save original source, pin it as
++                    effect_input's target, set default to effect_output.rnnoise)
++   off [<source>]   Disable; restore <source>, or the saved original source
++                    if <source> is omitted; unpin effect_input's target
++   status           Print current state to stdout ("on" or "off")
+ 
+ Options:
+   -q, --quiet      Suppress informational messages (errors still printed)
+@@ -94,14 +95,22 @@ Options:
+ Exit codes:
+   0  success
+   1  usage error (bad/missing arguments)
+-  2  dependency missing (pactl not in PATH)
+-  3  pactl command failed (rnnoise source not available, or set-default failed)
++  2  dependency missing (pactl or pw-metadata not in PATH)
++  3  command failed (rnnoise source not available, or set-default failed)
+ EOF
+ }
+ 
+ # --- dependency check -------------------------------------------------------
++missing_deps=()
+ if ! command -v pactl >/dev/null 2>&1; then
+-    err "error: 'pactl' not found in PATH (is pulseaudio-utils installed?)"
++    missing_deps+=("pactl")
++fi
++if ! command -v pw-metadata >/dev/null 2>&1; then
++    missing_deps+=("pw-metadata")
++fi
++if [[ ${#missing_deps[@]} -gt 0 ]]; then
++    err "error: missing dependencies: ${missing_deps[*]}"
++    err "       (is pipewire-utils / pulseaudio-utils installed?)"
+     exit 2
+ fi
+ 
+@@ -117,6 +126,45 @@ check_rnnoise_source() {
+     fi
+ }
+ 
++# Get the PipeWire object.serial for a node by its node.name.
++# Prints the serial number on stdout, or nothing if not found.
++get_node_serial() {
++    local name="$1"
++    pw-cli ls Node 2>/dev/null \
++        | awk -v n="$name" '
++            $0 ~ /^\s*id [0-9]+/ { id=$2; sub(/,/, "", id) }
++            $0 ~ "node.name = \"" n "\"" { print id; exit }
++        '
++}
++
++# Pin effect_input.rnnoise to a specific source via pw-metadata target.object.
++# This prevents WirePlumber from re-routing to a different source when the
++# default source changes (e.g. falling back to a headset instead of the mic).
++pin_input_source() {
++    local target_source="$1"
++    local serial
++    serial="$(get_node_serial "$RNNOISE_INPUT")" || true
++    if [[ -z "$serial" ]]; then
++        err "warning: could not find '$RNNOISE_INPUT' in PipeWire; skipping target pin"
++        return 0
++    fi
++    if ! pw-metadata -n default "$serial" target.object "$target_source" >/dev/null 2>&1; then
++        err "warning: failed to pin target.object on '$RNNOISE_INPUT'"
++        return 0
++    fi
++    info "pinned effect_input to: $target_source"
++}
++
++# Unpin effect_input.rnnoise target.object (let WirePlumber auto-route again).
++unpin_input_source() {
++    local serial
++    serial="$(get_node_serial "$RNNOISE_INPUT")" || true
++    if [[ -z "$serial" ]]; then
++        return 0
++    fi
++    pw-metadata -n default -d "$serial" target.object >/dev/null 2>&1 || true
++}
++
+ # Save the current default source to the state file.
+ # Returns 0 on success, 1 on failure (does not exit).
+ save_original_source() {
+@@ -215,17 +263,30 @@ fi
+ # --- commands ---------------------------------------------------------------
+ do_on() {
+     check_rnnoise_source
++
++    # Save current default source BEFORE switching.
++    local original_source
++    original_source="$(pactl get-default-source 2>/dev/null)" || true
++
+     if ! save_original_source; then
+         audit_log "on" "failure" "save_source_failed"
+         exit 1
+     fi
++
++    # Pin effect_input.rnnoise to the original source so WirePlumber won't
++    # re-route it to a different mic when we change the default.
++    if [[ -n "$original_source" ]]; then
++        validate_source_name "$original_source" 2>/dev/null && \
++            pin_input_source "$original_source"
++    fi
++
+     if ! pactl set-default-source "$RNNOISE_SOURCE"; then
+         err "error: failed to set default source to '$RNNOISE_SOURCE'"
+         audit_log "on" "failure" "set_default_failed"
+         exit 3
+     fi
+     info "rnnoise ON (default source: $RNNOISE_SOURCE)"
+-    audit_log "on" "success" "source=$RNNOISE_SOURCE"
++    audit_log "on" "success" "source=$RNNOISE_SOURCE input_target=${original_source:-auto}"
+ }
+ 
+ do_off() {
+@@ -252,6 +313,10 @@ do_off() {
+         audit_log "off" "failure" "invalid_source_name"
+         exit 1
+     fi
++
++    # Unpin effect_input.rnnoise so WirePlumber can auto-route again.
++    unpin_input_source
++
+     if ! pactl set-default-source "$target"; then
+         err "error: failed to set default source to '$target'"
+         audit_log "off" "failure" "set_default_failed target=$target"
+-- 
+2.20.1
+
