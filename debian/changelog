@@ -1,3 +1,10 @@
+pipewire (1.6.4-1deepin15) unstable; urgency=medium
+
+  * Add spa_alloca with overflow and limit checks for safer stack allocation
+    Fixes: CVE-2026-14330
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 30 Jul 2026 15:39:55 +0800
+
 pipewire (1.6.4-1deepin14) unstable; urgency=medium
 
   * Fix input source drift and -q abort in rnnoise-toggle

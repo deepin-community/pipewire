@@ -12,3 +12,4 @@ Feat-Add-rnnoise-source-config-for-noise-suppression.patch
 Fix-Use-absolute-LADSPA-plugin-path.patch
 Feat-Add-rnnoise-toggle-script-in-src-tools.patch
 Fix-input-source-drift-and-q-abort-in-rnnoise-toggle.patch
+fix-spa-add-spa-alloca-overflow-checks.patch
