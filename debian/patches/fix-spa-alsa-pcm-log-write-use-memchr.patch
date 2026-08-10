@@ -1,0 +1,37 @@
+From cfe9c7d6caa550c23bd64813b2776d73ab734e9b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Barnab=C3=A1s=20P=C5=91cze?= <pobrn@protonmail.com>
+Date: Wed, 6 May 2026 21:45:44 +0200
+Subject: [PATCH] spa: alsa: pcm: log_write(): don't use `strcspn()`
+
+Do not use `strcspn()` because it assumes a null terminated string,
+but the `fopencookie()` write callback receives a (ptr, length) pair.
+
+So use `memchr()` instead to find the `\n`.
+
+Index: repo/spa/plugins/alsa/alsa-pcm.c
+===================================================================
+--- repo.orig/spa/plugins/alsa/alsa-pcm.c
++++ repo/spa/plugins/alsa/alsa-pcm.c
+@@ -717,15 +717,18 @@ int spa_alsa_parse_prop_params(struct st
+ static ssize_t log_write(void *cookie, const char *buf, size_t size)
+ {
+ 	struct state *state = cookie;
+-	int len;
+ 
+ 	while (size > 0) {
+-		len = strcspn(buf, "\n");
++		const char *end = memchr(buf, '\n', size);
++		size_t len = end ? end - buf : size;
++
+ 		if (len > 0)
+ 			spa_log_debug(state->log, "%.*s", (int)len, buf);
+-		buf += len + 1;
+-		size -= len + 1;
++
++		buf += len + !!end;
++		size -= len + !!end;
+ 	}
++
+ 	return size;
+ }
+ 

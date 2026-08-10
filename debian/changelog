@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin16) unstable; urgency=medium
+
+  * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 10 Aug 2026 10:34:32 +0800
+
 pipewire (1.6.4-1deepin15) unstable; urgency=medium
 
   * Add spa_alloca with overflow and limit checks for safer stack allocation
