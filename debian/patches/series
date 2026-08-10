@@ -13,3 +13,4 @@ Fix-Use-absolute-LADSPA-plugin-path.patch
 Feat-Add-rnnoise-toggle-script-in-src-tools.patch
 Fix-input-source-drift-and-q-abort-in-rnnoise-toggle.patch
 fix-spa-add-spa-alloca-overflow-checks.patch
+fix-spa-alsa-pcm-log-write-use-memchr.patch
