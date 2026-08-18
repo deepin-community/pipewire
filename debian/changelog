@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix gst device-provider re-adding metadata listener on permission change, preventing pw_proxy object_listener_list corruption triggered by WirePlumber 0.5.15.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 18 Aug 2026 23:06:58 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
