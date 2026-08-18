@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix module-rtp: convert received packet SSRC from network to host byte order so valid RTP packets are not dropped on little-endian systems
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 01:47:10 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
