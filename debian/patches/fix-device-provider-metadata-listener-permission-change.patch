@@ -1,0 +1,64 @@
+From 1e817dff65c7a39384af75aa50e9ae4a95b201a9 Mon Sep 17 00:00:00 2001
+From: Julian Bouzas <julian.bouzas@collabora.com>
+Date: Wed, 8 Jul 2026 13:31:20 -0400
+Subject: [PATCH] gst: device-provider: don't re-add metadata listener on
+ permission change
+
+PipeWire re-emits the registry global event for an existing object when the
+client's permissions change. This can cause pw_metadata_add_listener() to be
+called again on the same hook, corrupting the proxy's object_listener_list.
+
+This is easily triggered by WirePlumber 0.5.15, whose reworked client access
+logic sets portal permissions in several stages, causing the metadata global to
+be announced more than once.
+
+Bind the default metadata and add the listener only once, and tear down the
+proxy and listener in global_remove so a genuine remove/re-add still works.
+
+diff --git a/src/gst/gstpipewiredeviceprovider.c b/src/gst/gstpipewiredeviceprovider.c
+index bc904b749..9204d2e8e 100644
+--- a/src/gst/gstpipewiredeviceprovider.c
++++ b/src/gst/gstpipewiredeviceprovider.c
+@@ -737,8 +737,16 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
+     if (!spa_streq(name, "default"))
+       return;
+ 
++    /* PipeWire re-emits the global event for the same id when the client's
++     * permissions change. Only bind and add the listener once, otherwise we
++     * would re-append the already-linked metadata_listener hook and corrupt
++     * the proxy's listener list. */
++    if (self->metadata != NULL)
++      return;
++
+     self->metadata =
+         pw_registry_bind(self->registry, id, type, PW_VERSION_METADATA, 0);
++    self->metadata_id = id;
+     pw_metadata_add_listener(self->metadata, &self->metadata_listener,
+                              &metadata_events, self);
+   }
+@@ -752,6 +760,13 @@ no_mem:
+ 
+ static void registry_event_global_remove(void *data, uint32_t id)
+ {
++  GstPipeWireDeviceProvider *self = data;
++
++  if (self->metadata != NULL && self->metadata_id == id) {
++    spa_hook_remove(&self->metadata_listener);
++    pw_proxy_destroy((struct pw_proxy *)self->metadata);
++    self->metadata = NULL;
++  }
+ }
+ 
+ static const struct pw_registry_events registry_events = {
+diff --git a/src/gst/gstpipewiredeviceprovider.h b/src/gst/gstpipewiredeviceprovider.h
+index 82b2a8a11..c74ada091 100644
+--- a/src/gst/gstpipewiredeviceprovider.h
++++ b/src/gst/gstpipewiredeviceprovider.h
+@@ -52,6 +52,7 @@ struct _GstPipeWireDeviceProvider {
+   struct spa_hook registry_listener;
+ 
+   struct pw_metadata *metadata;
++  uint32_t metadata_id;
+   struct spa_hook metadata_listener;
+ 
+   gchar *default_audio_source_name;
