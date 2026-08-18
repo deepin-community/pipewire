@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix milan-avb MRP to not apply RX_LVA to own attributes when transmitting LeaveAll, which caused periodic AVB stream interruption (MSRP TalkerFailed every 10-15s)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 01:19:37 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
