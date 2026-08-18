@@ -1,0 +1,40 @@
+From 67ac1d101b982262b8635fd630e1fad00b96d221 Mon Sep 17 00:00:00 2001
+From: Carlos Rafael Giani <crg7475@mailbox.org>
+Date: Sat, 21 Feb 2026 14:38:23 +0100
+Subject: [PATCH] spa: Fix SPA_LOAD_ONCE and SPA_STORE_ONCE atomic macros
+
+These expected pointer to variables instead of variables directly, which
+is inconsistent with how the other atomic macros behave. Furthermore,
+SPA_STORE_ONCE was plain broken, since the underlying operation expects
+an additional argument that was not included.
+
+diff --git a/spa/include/spa/pod/body.h b/spa/include/spa/pod/body.h
+index 90eadb82e..8801eb739 100644
+--- a/spa/include/spa/pod/body.h
++++ b/spa/include/spa/pod/body.h
+@@ -143,8 +143,8 @@ SPA_API_POD_BODY int spa_pod_is_bool(const struct spa_pod *pod)
+ 	return SPA_POD_CHECK(pod, SPA_TYPE_Bool, sizeof(int32_t));
+ }
+ 
+-#define SPA_POD_BODY_LOAD_ONCE(a, b) (*(a) = SPA_LOAD_ONCE((__typeof__(a))(b)))
+-#define SPA_POD_BODY_LOAD_FIELD_ONCE(a, b, field) ((a)->field = SPA_LOAD_ONCE(&((__typeof__(a))(b))->field))
++#define SPA_POD_BODY_LOAD_ONCE(a, b) (*(a) = SPA_LOAD_ONCE(*(__typeof__(a))(b)))
++#define SPA_POD_BODY_LOAD_FIELD_ONCE(a, b, field) ((a)->field = SPA_LOAD_ONCE(((__typeof__(a))(b))->field))
+ 
+ SPA_API_POD_BODY int spa_pod_body_get_bool(const struct spa_pod *pod, const void *body, bool *value)
+ {
+diff --git a/spa/include/spa/utils/atomic.h b/spa/include/spa/utils/atomic.h
+index 72a18ab8d..fe3494055 100644
+--- a/spa/include/spa/utils/atomic.h
++++ b/spa/include/spa/utils/atomic.h
+@@ -19,8 +19,8 @@ extern "C" {
+ #define SPA_ATOMIC_DEC(s)		__atomic_sub_fetch(&(s), 1, __ATOMIC_SEQ_CST)
+ #define SPA_ATOMIC_INC(s)		__atomic_add_fetch(&(s), 1, __ATOMIC_SEQ_CST)
+ #define SPA_ATOMIC_LOAD(s)		__atomic_load_n(&(s), __ATOMIC_SEQ_CST)
+-#define SPA_LOAD_ONCE(s)		__atomic_load_n((s), __ATOMIC_RELAXED)
+-#define SPA_STORE_ONCE(s)		__atomic_store_n((s), __ATOMIC_RELAXED)
++#define SPA_LOAD_ONCE(s)		__atomic_load_n(&(s), __ATOMIC_RELAXED)
++#define SPA_STORE_ONCE(s,v)		__atomic_store_n(&(s), (v), __ATOMIC_RELAXED)
+ #define SPA_ATOMIC_STORE(s,v)		__atomic_store_n(&(s), (v), __ATOMIC_SEQ_CST)
+ #define SPA_ATOMIC_XCHG(s,v)		__atomic_exchange_n(&(s), (v), __ATOMIC_SEQ_CST)
+
