@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix NULL-deref crash and node-proxy leak in gst deviceprovider by tearing down node proxies before releasing core
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 18 Aug 2026 23:06:56 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
