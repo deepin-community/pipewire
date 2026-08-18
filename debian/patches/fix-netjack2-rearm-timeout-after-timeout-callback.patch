@@ -1,0 +1,25 @@
+From 2f0c8791a77731d62026c1d3d81d349dca7cd8a1 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 20 Jul 2026 17:05:32 +0200
+Subject: [PATCH] netjack2: rearm timeout after timeout callback
+
+The timer-queue does not support automatic periodic timeouts. In the
+timeout handler, the user is supposed to rearm the timer themselves
+to implement periodic timeouts.
+
+This periodic timeout was accidentally removed in the conversion to
+the timer queue.
+
+diff --git a/src/modules/module-netjack2-driver.c b/src/modules/module-netjack2-driver.c
+index adf29d3aa..276c6a143 100644
+--- a/src/modules/module-netjack2-driver.c
++++ b/src/modules/module-netjack2-driver.c
+@@ -1151,6 +1151,7 @@ static void on_timer_event(void *data)
+ 		}
+ 		send_follower_available(impl);
+ 	}
++	update_timer(impl, FOLLOWER_INIT_TIMEOUT);
+ }
+ 
+ static void core_error(void *data, uint32_t id, int seq, int res, const char *message)
+
