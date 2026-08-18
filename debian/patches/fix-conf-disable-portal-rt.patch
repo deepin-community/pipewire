@@ -1,0 +1,151 @@
+From 54199d77c6dbecad373b5c6b2df7a2aa3af42045 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 1 Jun 2026 10:00:47 +0200
+Subject: [PATCH] conf: disable portal.rt for pipewire and pipewire-pulse
+
+Thse should not be portal clients and can go directly to rtkit.
+
+The reason is that there is a locking problem in the portal rt
+implementation that cause timeouts for some reason.
+
+diff --git a/src/daemon/client.conf.in b/src/daemon/client.conf.in
+index e0baeda92..0ed0dd2d1 100644
+--- a/src/daemon/client.conf.in
++++ b/src/daemon/client.conf.in
+@@ -47,6 +47,11 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+         condition = [ { module.rt = !false } ]
+diff --git a/src/daemon/filter-chain.conf.in b/src/daemon/filter-chain.conf.in
+index 48088758a..0e85c0dfb 100644
+--- a/src/daemon/filter-chain.conf.in
++++ b/src/daemon/filter-chain.conf.in
+@@ -45,6 +45,11 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+     }
+diff --git a/src/daemon/jack.conf.in b/src/daemon/jack.conf.in
+index 32d8076d7..796c583b1 100644
+--- a/src/daemon/jack.conf.in
++++ b/src/daemon/jack.conf.in
+@@ -46,6 +46,11 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+     }
+diff --git a/src/daemon/minimal.conf.in b/src/daemon/minimal.conf.in
+index ab61a564e..2414da944 100644
+--- a/src/daemon/minimal.conf.in
++++ b/src/daemon/minimal.conf.in
+@@ -115,6 +115,11 @@ context.modules = [
+             rt.prio      = @rtprio_server@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+     }
+diff --git a/src/daemon/pipewire-aes67.conf.in b/src/daemon/pipewire-aes67.conf.in
+index 167b89a6f..a43cc4f6f 100644
+--- a/src/daemon/pipewire-aes67.conf.in
++++ b/src/daemon/pipewire-aes67.conf.in
+@@ -55,6 +55,11 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+     }
+diff --git a/src/daemon/pipewire-avb.conf.in b/src/daemon/pipewire-avb.conf.in
+index 1a9f48499..f01b3648c 100644
+--- a/src/daemon/pipewire-avb.conf.in
++++ b/src/daemon/pipewire-avb.conf.in
+@@ -30,6 +30,11 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+     }
+diff --git a/src/daemon/pipewire-pulse.conf.in b/src/daemon/pipewire-pulse.conf.in
+index 0e98dc456..f79c79a5f 100644
+--- a/src/daemon/pipewire-pulse.conf.in
++++ b/src/daemon/pipewire-pulse.conf.in
+@@ -45,6 +45,9 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            rtportal.enabled = false
++            #rtkit.enabled = true
+             #uclamp.min = 0
+             #uclamp.max = 1024
+         }
+diff --git a/src/daemon/pipewire-vulkan.conf.in b/src/daemon/pipewire-vulkan.conf.in
+index 388a4fc5d..f9299bfff 100644
+--- a/src/daemon/pipewire-vulkan.conf.in
++++ b/src/daemon/pipewire-vulkan.conf.in
+@@ -54,6 +54,11 @@ context.modules = [
+             #rt.prio      = @rtprio_client@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            #rtportal.enabled = true
++            #rtkit.enabled = true
++            #uclamp.min = 0
++            #uclamp.max = 1024
+         }
+         flags = [ ifexists nofail ]
+     }
+diff --git a/src/daemon/pipewire.conf.in b/src/daemon/pipewire.conf.in
+index ca398404d..f554ecc56 100644
+--- a/src/daemon/pipewire.conf.in
++++ b/src/daemon/pipewire.conf.in
+@@ -126,6 +126,9 @@ context.modules = [
+             rt.prio       = @rtprio_server@
+             #rt.time.soft = -1
+             #rt.time.hard = -1
++            #rlimits.enabled = true
++            rtportal.enabled = false
++            #rtkit.enabled = true
+             #uclamp.min = 0
+             #uclamp.max = 1024
+         }
+
