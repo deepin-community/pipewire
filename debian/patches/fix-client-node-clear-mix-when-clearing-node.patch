@@ -1,0 +1,32 @@
+From 3c14693bed8eda06dec8a45eed0409b5590c28dd Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 30 Jun 2026 16:17:12 +0200
+Subject: [PATCH] client-node: clear mix when clearing the node
+
+Even if we don't have a transport we should clear the mix info if there
+is any available.
+
+Fixes #5348
+
+diff --git a/src/modules/module-client-node/remote-node.c b/src/modules/module-client-node/remote-node.c
+index ef656b992..de32e3a0d 100644
+--- a/src/modules/module-client-node/remote-node.c
++++ b/src/modules/module-client-node/remote-node.c
+@@ -985,12 +985,10 @@ static void clean_node(struct node_data *d)
+ {
+ 	struct mix *mix;
+ 
+-	if (d->have_transport) {
+-		spa_list_consume(mix, &d->mix[SPA_DIRECTION_INPUT], link)
+-			clear_mix(d, mix);
+-		spa_list_consume(mix, &d->mix[SPA_DIRECTION_OUTPUT], link)
+-			clear_mix(d, mix);
+-	}
++	spa_list_consume(mix, &d->mix[SPA_DIRECTION_INPUT], link)
++		clear_mix(d, mix);
++	spa_list_consume(mix, &d->mix[SPA_DIRECTION_OUTPUT], link)
++		clear_mix(d, mix);
+ 	spa_list_consume(mix, &d->free_mix, link) {
+ 		spa_list_remove(&mix->link);
+ 		free(mix);
+
