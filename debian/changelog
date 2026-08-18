@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix V4L2 plugin buffer iteration to bound loop and n_buffers to caller-provided count (out-of-bounds read fix)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 00:19:21 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
