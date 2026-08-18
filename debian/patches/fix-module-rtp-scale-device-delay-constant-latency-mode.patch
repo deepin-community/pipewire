@@ -1,0 +1,26 @@
+From 20f17c73de1e6859464193e4d6030a4c72155619 Mon Sep 17 00:00:00 2001
+From: Carlos Rafael Giani <crg7475@mailbox.org>
+Date: Wed, 24 Jun 2026 10:35:48 +0200
+Subject: [PATCH] module-rtp: Correctly scale device_delay in constant latency
+ mode
+
+
+diff --git a/src/modules/module-rtp/audio.c b/src/modules/module-rtp/audio.c
+index 5021b223b..20f58fde6 100644
+--- a/src/modules/module-rtp/audio.c
++++ b/src/modules/module-rtp/audio.c
+@@ -217,6 +217,13 @@ static void rtp_audio_process_playback(void *data)
+ 
+ 		avail = spa_ringbuffer_get_read_index(&impl->ring, &timestamp);
+ 
++		if (impl->io_position) {
++			uint32_t clock_rate = impl->io_position->clock.rate.denom;
++			/* Device delay is reported in clock rate units. If this does not
++			 * match the RTP rate, the device delay must be transformed first. */
++			device_delay = scale_u64(device_delay, impl->rate, clock_rate);
++		}
++
+ 		/* Reduce target buffer by the delay amount to start playback sooner.
+ 		 * This compensates for the delay to the device. */
+ 		if (SPA_UNLIKELY(impl->target_buffer < device_delay)) {
+
