@@ -1,0 +1,48 @@
+From 0a413c866c21329207ece15819fa09fb77d7aa05 Mon Sep 17 00:00:00 2001
+From: Torkel Niklasson <torkel@axis.com>
+Date: Mon, 29 Jun 2026 10:36:33 +0200
+Subject: [PATCH] gst: deviceprovider: tear down node proxies before releasing
+ core
+
+Destroy the bound node proxies in probe() and stop() while the loop is
+locked, before releasing the core. This removes the node listeners so no
+node_event_info can fire after the core is gone, fixing the root cause of
+the resync() NULL-deref crash and a node-proxy leak.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+diff --git a/src/gst/gstpipewiredeviceprovider.c b/src/gst/gstpipewiredeviceprovider.c
+index 4ba265a66..bc904b749 100644
+--- a/src/gst/gstpipewiredeviceprovider.c
++++ b/src/gst/gstpipewiredeviceprovider.c
+@@ -502,6 +502,14 @@ static const struct pw_proxy_events proxy_node_events = {
+   .destroy = destroy_node,
+ };
+ 
++static void clear_nodes(GstPipeWireDeviceProvider *self)
++{
++  struct node_data *nd;
++
++  spa_list_consume(nd, &self->nodes, link)
++    pw_proxy_destroy((struct pw_proxy *)nd->proxy);
++}
++
+ static void
+ removed_port (void *data)
+ {
+@@ -792,6 +800,7 @@ gst_pipewire_device_provider_probe (GstDeviceProvider * provider)
+   GST_DEBUG_OBJECT (self, "disconnect");
+ 
+   g_clear_pointer ((struct pw_proxy**)&self->registry, pw_proxy_destroy);
++  clear_nodes (self);
+   spa_hook_remove (&self->core_listener);
+   pw_thread_loop_unlock (self->core->loop);
+   g_clear_pointer (&self->core, gst_pipewire_core_release);
+@@ -867,6 +876,7 @@ gst_pipewire_device_provider_stop (GstDeviceProvider * provider)
+ 
+   g_clear_pointer ((struct pw_proxy**)&self->registry, pw_proxy_destroy);
+   if (self->core != NULL) {
++    clear_nodes (self);
+     spa_hook_remove (&self->core_listener);
+     pw_thread_loop_unlock (self->core->loop);
+   }
