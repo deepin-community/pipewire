@@ -1,0 +1,35 @@
+From 551eb0a473f46cb2ef8d22f38886c9af81009de1 Mon Sep 17 00:00:00 2001
+From: Daniel Scally <dan.scally@ideasonboard.com>
+Date: Tue, 23 Jun 2026 13:06:50 +0100
+Subject: [PATCH] gstpipewiresrc: Add a wait_negotiated() call to create()
+
+Add a wait_negotiated() call to gst_pipewire_src_create(). This works
+around a race-condition that we experience where the function is
+called after the state is transitioning to paused, and after a
+SPA_PARAM_Format with a NULL parameter has been passed. That event
+is handled in the pipewire source by setting its negotiated flag to
+False, which results in gst_pipewire_src_create() returning
+GST_FLOW_NOT_NEGOTIATED, resulting in a failed stream attempt.
+
+With this change, the stream survives the state change.
+
+Signed-off-by: Daniel Scally <dan.scally@ideasonboard.com>
+
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index 757c92d9b..dbb5f289a 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -1574,8 +1574,10 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
+   pwsrc = GST_PIPEWIRE_SRC (psrc);
+ 
+   pw_thread_loop_lock (pwsrc->stream->core->loop);
+-  if (!pwsrc->negotiated)
+-    goto not_negotiated;
++  if (!pwsrc->negotiated) {
++    if (wait_negotiated(pwsrc) == PW_STREAM_STATE_ERROR)
++      goto not_negotiated;
++  }
+ 
+   while (TRUE) {
+     enum pw_stream_state state;
+

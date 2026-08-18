@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Add a wait_negotiated() call to gst_pipewire_src_create() to work around a race-condition during state transitions to paused
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 18 Aug 2026 23:22:17 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
