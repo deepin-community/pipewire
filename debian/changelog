@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Backport upstream f2ccfe12: pw-cli command handlers return errno-style error codes; add NULL checks on pw_core_create_object() in do_create_device/do_create_node and on the create path in create_link_with_properties to fix NULL pointer dereferences on object creation failure (P0 security fix).
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 01:55:53 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
