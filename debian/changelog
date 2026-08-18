@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Parse module port values with pw_net helpers to reject invalid ports
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 02:23:21 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
