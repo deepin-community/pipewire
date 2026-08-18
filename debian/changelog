@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Backport upstream 1a6708aa to milan-avb: SET_CONFIGURATION error status, same-config no-op and unsolicited notifications (streams-running guard stubbed pending ACMP Milan v1.2 FSM)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 01:52:06 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
