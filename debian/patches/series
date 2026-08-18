@@ -14,3 +14,4 @@ Feat-Add-rnnoise-toggle-script-in-src-tools.patch
 Fix-input-source-drift-and-q-abort-in-rnnoise-toggle.patch
 fix-spa-add-spa-alloca-overflow-checks.patch
 fix-spa-alsa-pcm-log-write-use-memchr.patch
+fix-spa-alsa-detect-ports-hdmi-ac3-profiles.patch
