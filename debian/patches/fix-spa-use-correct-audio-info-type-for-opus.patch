@@ -1,0 +1,23 @@
+From 07e6dce94d689ebc4d89c9731d30f7b1dd251ce7 Mon Sep 17 00:00:00 2001
+From: Colin Kinloch <colin.kinloch@collabora.com>
+Date: Tue, 21 Jul 2026 14:04:54 +0100
+Subject: [PATCH] spa: use correct audio info type for opus
+
+This appears to be a typo from copy-pasting the previous line.
+
+Signed-off-by: Colin Kinloch <colin.kinloch@collabora.com>
+
+diff --git a/spa/include/spa/param/audio/format.h b/spa/include/spa/param/audio/format.h
+index 6e7a71f6c..88102687c 100644
+--- a/spa/include/spa/param/audio/format.h
++++ b/spa/include/spa/param/audio/format.h
+@@ -52,7 +52,7 @@ struct spa_audio_info {
+ 		struct spa_audio_info_alac alac;
+ 		struct spa_audio_info_flac flac;
+ 		struct spa_audio_info_ape ape;
+-		struct spa_audio_info_ape opus;
++		struct spa_audio_info_opus opus;
+ 		struct spa_audio_info_ac3 ac3;
+ 		struct spa_audio_info_eac3 eac3;
+ 		struct spa_audio_info_truehd truehd;
+
