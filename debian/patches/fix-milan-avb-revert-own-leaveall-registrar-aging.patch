@@ -1,0 +1,36 @@
+From 024f7201cb1031bf9e3d02c81862008210b0212d Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Tue, 2 Jun 2026 15:26:35 +0000
+Subject: [PATCH] =?UTF-8?q?milan-avb:=20revert=20own-LeaveAll=20registrar?=
+ =?UTF-8?q?=20aging=20=E2=80=94=20it=20tears=20down=20active=20SRP=20reser?=
+ =?UTF-8?q?vations=20on=20a=20spec-compliant=20bridge=20(802.1Q-2018=208.8?=
+ =?UTF-8?q?.7=20Dynamic=20Reservation=20Entry);=20talker=20disconnect-rese?=
+ =?UTF-8?q?t=20to=20be=20redone=20via=20the=20listener=20explicit=20MSRP?=
+ =?UTF-8?q?=20Leave=20on=20UNBIND?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+
+Index: repo/src/modules/module-avb/mrp.c
+===================================================================
+--- repo.orig/src/modules/module-avb/mrp.c
++++ repo/src/modules/module-avb/mrp.c
+@@ -403,7 +403,6 @@ void avb_mrp_attribute_update_state(stru
+ 		break;
+ 	case AVB_MRP_EVENT_RX_LV:
+ 	case AVB_MRP_EVENT_RX_LVA:
+-	case AVB_MRP_EVENT_TX_LVA:
+ 	case AVB_MRP_EVENT_REDECLARE:
+ 		switch (state) {
+ 		case AVB_MRP_IN:
+@@ -412,6 +411,9 @@ void avb_mrp_attribute_update_state(stru
+ 			break;
+ 		}
+ 		break;
++	case AVB_MRP_EVENT_TX_LVA:
++		/* IEEE 802.1Q-2018 Table 10-4: TX events do not transition the registrar */
++		break;
+ 	case AVB_MRP_EVENT_FLUSH:
+ 		switch (state) {
+ 		case AVB_MRP_LV:
