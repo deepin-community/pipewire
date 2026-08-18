@@ -1,0 +1,41 @@
+From 9d08cb87c613cdc47c31571f722adece932f39c8 Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Thu, 28 May 2026 11:50:00 +0000
+Subject: [PATCH] milan-avb: stream: do not wire CRF streams into the PipeWire
+ audio graph
+
+
+diff --git a/src/modules/module-avb/stream.c b/src/modules/module-avb/stream.c
+index f7101bd..0216aba 100644
+--- a/src/modules/module-avb/stream.c
++++ b/src/modules/module-avb/stream.c
+@@ -285,12 +285,13 @@ struct stream *server_create_stream(struct server *server, struct stream *stream
+ 	if (stream->stream == NULL)
+ 		goto error_free;
+ 
+-	pw_stream_add_listener(stream->stream,
+-			&stream->stream_listener,
+-			direction == SPA_DIRECTION_INPUT ?
+-				&source_stream_events :
+-				&sink_stream_events,
+-			stream);
++	if (!stream->is_crf)
++		pw_stream_add_listener(stream->stream,
++				&stream->stream_listener,
++				direction == SPA_DIRECTION_INPUT ?
++					&source_stream_events :
++					&sink_stream_events,
++				stream);
+ 
+ 	stream->info.info.raw.format = SPA_AUDIO_FORMAT_S24_32_BE;
+ 	stream->info.info.raw.flags = SPA_AUDIO_FLAG_UNPOSITIONED;
+@@ -303,7 +304,8 @@ struct stream *server_create_stream(struct server *server, struct stream *stream
+ 	params[n_params++] = spa_format_audio_raw_build(&b,
+ 			SPA_PARAM_EnumFormat, &stream->info.info.raw);
+ 
+-	if ((res = pw_stream_connect(stream->stream,
++	if (!stream->is_crf &&
++	    (res = pw_stream_connect(stream->stream,
+ 			pw_direction_reverse(direction),
+ 			PW_ID_ANY,
+ 			PW_STREAM_FLAG_MAP_BUFFERS |
