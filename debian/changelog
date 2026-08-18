@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Disable portal.rt for pipewire and pipewire-pulse to avoid portal rt locking problem that causes timeouts; go directly to rtkit. Also document rlimits/rtportal/rtkit/uclamp module-rt options in daemon configs.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 18 Aug 2026 23:58:00 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
