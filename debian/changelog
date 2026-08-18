@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Don't arm SPA_IO_IN on the milan-avb talker (STREAM_OUTPUT) socket to avoid packet-tap loopback flooding
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 03:57:31 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
