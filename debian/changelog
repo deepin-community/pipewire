@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix spa_param_dict_info_parse() and spa_tag_info_parse() to update dict size when loop breaks early
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 00:14:08 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
