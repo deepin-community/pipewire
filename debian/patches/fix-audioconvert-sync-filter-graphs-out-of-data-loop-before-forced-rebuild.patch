@@ -1,0 +1,56 @@
+From f174b4e688346898b7cdf3a45934ab91849d7369 Mon Sep 17 00:00:00 2001
+From: Torkel Niklasson <torkel@axis.com>
+Date: Sat, 27 Jun 2026 11:15:44 +0200
+Subject: [PATCH] audioconvert: sync filter-graphs out of data loop before
+ forced rebuild
+
+A forced setup_filter_graphs() deactivates and re-instantiates every graph,
+which frees and recreates the underlying plugin handles (node_cleanup sets
+node->hndl[i] = NULL before re-instantiating). This was done on a graph that
+was still referenced by the RT data-loop snapshot (filter_graph[]), so the
+RT thread could run a graph whose handles were NULL mid-rebuild, leading to a
+NULL handle dereference in the filter-graph process path.
+
+Mirror the safe ordering already used by load_filter_graph()/clean_filter_handles():
+before reconfiguring, mark the graphs not-setup and sync_filter_graph() so the
+data loop drops them from filter_graph[] under the loop lock. They are
+republished by the sync that follows setup. The cheap snapshot swap is done
+under the lock; the heavy re-instantiation stays off the RT path.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+diff --git a/spa/plugins/audioconvert/audioconvert.c b/spa/plugins/audioconvert/audioconvert.c
+index 379b5b91e..55e074cd0 100644
+--- a/spa/plugins/audioconvert/audioconvert.c
++++ b/spa/plugins/audioconvert/audioconvert.c
+@@ -1368,6 +1368,8 @@ static int ensure_tmp(struct impl *this)
+ }
+ 
+ 
++static void sync_filter_graph(struct impl *impl);
++
+ static int setup_filter_graphs(struct impl *impl, bool force)
+ {
+ 	int res;
+@@ -1382,6 +1384,20 @@ static int setup_filter_graphs(struct impl *impl, bool force)
+ 	position = in->format.info.raw.position;
+ 	impl->maxports = SPA_MAX(in->format.info.raw.channels, out->format.info.raw.channels);
+ 
++	if (force) {
++		/* A forced setup deactivates and re-instantiates each graph below,
++		 * which frees and recreates the underlying plugin handles. Pull the
++		 * graphs out of the data-loop's view first (under the loop lock, via
++		 * sync_filter_graph) so the RT thread cannot run a graph while its
++		 * handles are NULL during the rebuild. They are republished by the
++		 * sync_filter_graph() that follows setup. */
++		spa_list_for_each(g, &impl->active_graphs, link) {
++			if (!g->removing)
++				g->setup = false;
++		}
++		sync_filter_graph(impl);
++	}
++
+ 	spa_list_for_each_safe(g, t, &impl->active_graphs, link) {
+ 		if (g->removing)
+ 			continue;
+
