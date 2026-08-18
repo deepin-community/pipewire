@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Always use pffft aligned alloc (64-byte) for FFT memory to satisfy AVX2/SSE 32-byte alignment requirements, fixing potential SIGSEGV crashes (fixes #5320).
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 03:40:57 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
