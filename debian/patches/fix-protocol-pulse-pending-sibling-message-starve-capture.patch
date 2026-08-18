@@ -1,0 +1,50 @@
+From f75fc4c85c74b0bda18dee032370494f27ce18b6 Mon Sep 17 00:00:00 2001
+From: Gabor Lukacs <lukacs@topgroups.ca>
+Date: Mon, 20 Jul 2026 07:57:52 -0300
+Subject: [PATCH] protocol-pulse: don't let a pending sibling message starve
+ capture
+
+
+diff --git a/src/modules/module-protocol-pulse/client.c b/src/modules/module-protocol-pulse/client.c
+index e33f01fb9..d9f50ba34 100644
+--- a/src/modules/module-protocol-pulse/client.c
++++ b/src/modules/module-protocol-pulse/client.c
+@@ -226,7 +226,8 @@ static int client_try_flush_messages(struct client *client)
+ {
+ 	pw_log_trace("client %p: flushing", client);
+ 
+-	spa_assert(!client->disconnect);
++	if (client->disconnect)
++		return -ENOTCONN;
+ 
+ 	while (!spa_list_is_empty(&client->out_messages)) {
+ 		struct message *m = spa_list_first(&client->out_messages, struct message, link);
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index a9ab42529..a95cc495f 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -1387,9 +1387,20 @@ do_process_done(struct spa_loop *loop,
+ 		avail = spa_ringbuffer_get_read_index(&stream->ring, &index);
+ 
+ 		if (!spa_list_is_empty(&client->out_messages)) {
+-			pw_log_debug("%p: [%s] pending read:%u avail:%d",
+-					stream, client->name, index, avail);
+-			return 0;
++			/* Try to flush the pending messages first. A control
++			 * message queued for a sibling stream in this same
++			 * cycle (a playback stream's REQUEST) would otherwise
++			 * make us skip this cycle, and when one is queued
++			 * every cycle it starves this capture stream
++			 * persistently while the connection itself keeps
++			 * flowing. Only skip when the messages really cannot
++			 * be flushed (socket backed up). */
++			if (client_flush_messages(client) < 0 ||
++			    !spa_list_is_empty(&client->out_messages)) {
++				pw_log_debug("%p: [%s] pending read:%u avail:%d",
++						stream, client->name, index, avail);
++				return 0;
++			}
+ 		}
+ 
+ 		if (SPA_UNLIKELY(avail <= 0)) {
+
