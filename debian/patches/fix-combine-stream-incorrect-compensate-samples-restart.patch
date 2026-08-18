@@ -1,0 +1,44 @@
+From fa9eb6320a9bbdeaa285eb87eb472ce1c050900b Mon Sep 17 00:00:00 2001
+From: Martin Geier <martin.geier@streamunlimited.com>
+Date: Tue, 26 May 2026 10:52:12 +0200
+Subject: [PATCH] combine-stream: fix incorrect compensate samples on playback
+ restart
+
+update_delay is called primarily when the stream format or latency changes,
+and from playback thread, if stream reports different delay as before.
+This function calculates the number of compensate samples for each stream
+based on the latencies of other streams (which must be in a streaming state).
+
+During the first playback on a new format, update_delay is called multiple times
+due to format or latency changes. The delay is calculated only from streams
+that are currently streaming. If some streams are not yet streaming, their
+latencies are ignored, and the delay is updated later in the processing
+thread. The processing thread also stores the stream delay in a local variable
+(accessed only from that thread, thus requiring no locking).
+
+On a subsequent playback using the same format, update_delay is still called a
+few times, and the delay is updated based on the currently streaming streams.
+If some streams are not streaming, their latencies are ignored.
+However, this time, the processing thread fails to update the delay for the
+previously non-streaming streams. Because the format didn't change, the streams
+delay matches the last stored delay from the previous playback. As a
+result, the compensate samples are not recalculated.
+
+To properly update the compensate samples, update_delay must also be called
+when a stream's state changes to streaming (avoiding the need to clear the
+thread-buffered value, which would require locking in the processing
+thread).
+
+diff --git a/src/modules/module-combine-stream.c b/src/modules/module-combine-stream.c
+index 81e20b0d1..7acee1463 100644
+--- a/src/modules/module-combine-stream.c
++++ b/src/modules/module-combine-stream.c
+@@ -777,6 +777,7 @@ static void stream_state_changed(void *d, enum pw_stream_state old,
+ 		break;
+ 	case PW_STREAM_STATE_STREAMING:
+ 		update_latency(s->impl);
++		update_delay(s->impl);
+ 		break;
+ 	default:
+ 		break;
+
