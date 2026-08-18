@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Scope Milan V1.2 Domain re-adjust to matching sr_class_id in msrp
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 03:13:13 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
