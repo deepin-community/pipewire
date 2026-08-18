@@ -1,0 +1,69 @@
+From b904c3ee1501bd9b9f1739f0acfcea084c774e96 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Sat, 4 Jul 2026 23:58:05 +0100
+Subject: [PATCH] spa: alsa: acp-device: stop 100% CPU spin when a poll fd
+ hangs up
+
+handle_acp_poll() copies the poll revents into ACP and clears them, but
+never actually looks at them. When one of the polled fds reports
+POLLERR/POLLHUP - which happens when the ALSA card goes away, e.g. the
+audio function of a USB dock being unplugged - the source is never
+removed, and because that condition is level-triggered the loop just
+keeps redispatching the handler.
+
+The result is wireplumber pegged at 100% CPU, spinning on the card's
+control fd:
+
+    read(24, ..., 72) = -1 ENODEV (No such device)
+
+with fd 24 pointing at a now-deleted /dev/snd/controlC<n>. It stays like
+that until the card comes back or the service is restarted.
+
+Accumulate the returned mask and, if anything reports SPA_IO_ERR or
+SPA_IO_HUP, drop the poll sources so we stop hammering a dead descriptor.
+The udev monitor still drives the real device removal and setup_sources()
+re-arms the poll if the card reappears - the same teardown alsa-pcm.c
+already does for its own control sources.
+
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+
+diff --git a/spa/plugins/alsa/alsa-acp-device.c b/spa/plugins/alsa/alsa-acp-device.c
+index 57b60c92b..dc70655ec 100644
+--- a/spa/plugins/alsa/alsa-acp-device.c
++++ b/spa/plugins/alsa/alsa-acp-device.c
+@@ -85,17 +85,34 @@ struct impl {
+ };
+ 
+ static int emit_info(struct impl *this, bool full);
++static void remove_sources(struct impl *this);
+ 
+ static void handle_acp_poll(struct spa_source *source)
+ {
+ 	struct impl *this = source->data;
++	uint32_t rmask = 0;
+ 	int i;
+ 
+-	for (i = 0; i < this->n_pfds; i++)
++	for (i = 0; i < this->n_pfds; i++) {
+ 		this->pfds[i].revents = this->sources[i].rmask;
++		rmask |= this->sources[i].rmask;
++	}
+ 	acp_card_handle_events(this->card);
+ 	for (i = 0; i < this->n_pfds; i++)
+ 		this->sources[i].rmask = 0;
++
++	/* A POLLERR/POLLHUP on a poll fd (e.g. the ALSA control device was
++	 * unplugged) is level-triggered and never clears, so the loop would
++	 * redispatch this handler on every iteration and spin at 100% CPU.
++	 * Stop polling the dead descriptors; the udev monitor handles the
++	 * actual device removal, and setup_sources() re-arms on the next
++	 * profile change if the card comes back. */
++	if (rmask & (SPA_IO_ERR | SPA_IO_HUP)) {
++		spa_log_warn(this->log, "%p: poll fd error/hangup (card removed?), "
++				"removing poll sources", this);
++		remove_sources(this);
++		return;
++	}
+ 	emit_info(this, false);
+ }
+
