@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix bq_raw closest-rate coefficient selection in filter-graph to compare against the graph sample rate (impl->rate), aligning with upstream 8f8a51320514e472ef8d914260d195fb28846caf
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 02:44:05 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
