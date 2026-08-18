@@ -1,0 +1,89 @@
+From 95f796f08ccc8b4c4ffabd9e89ca5bfb527ad04b Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Tue, 2 Jun 2026 12:48:00 +0000
+Subject: [PATCH] =?UTF-8?q?milan-avb:=20age=20MRP=20registrations=20on=20t?=
+ =?UTF-8?q?he=20node=20own=20LeaveAll=20so=20a=20talker=20resets=20its=20S?=
+ =?UTF-8?q?TREAM=5FOUTPUT=20on=20ACMP=20disconnect=20=E2=80=94=20fire=20th?=
+ =?UTF-8?q?e=20shared=20MSRP/MVRP/MMRP=20LeaveAll=20timer=20periodically?=
+ =?UTF-8?q?=20(prime=20+=20re-arm,=20RX=5FLVA=20no=20longer=20resets=20it)?=
+ =?UTF-8?q?=20and=20transition=20the=20registrar=20IN->LV=20on=20TX=5FLVA,?=
+ =?UTF-8?q?=20so=20a=20departed=20Listener=20ages=20LV->MT=20->=20NOTIFY?=
+ =?UTF-8?q?=5FLEAVE=20->=20listener=5Fobserved=3Dfalse=20(802.1Q-2018=2010?=
+ =?UTF-8?q?.7.5.20)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+
+diff --git a/src/modules/module-avb/mrp.c b/src/modules/module-avb/mrp.c
+--- a/src/modules/module-avb/mrp.c
++++ b/src/modules/module-avb/mrp.c
+@@ -55,6 +55,10 @@ struct mrp {
+ 	uint64_t periodic_timeout;
+ 	struct fsm_leave_all_timer lva_timer;
+ 	uint64_t join_timeout;
++
++	/* IEEE 802.1Q-2014 Section 10.7.6.3 lva bit: true while the next outgoing
++	 * vector header must carry lva=1 (local LeaveAll being transmitted). */
++	bool lva_tx_pending;
+ };
+ 
+ static void mrp_destroy(void *data)
+@@ -103,21 +107,26 @@ static void mrp_periodic(void *data, uint64_t now)
+ 	}
+ 
+ 
+-	if (now > mrp->lva_timer.leave_all_timeout) {
+-		/* 802.1Q-2014 Table 10-5 */
++	if (mrp->lva_timer.leave_all_timeout == 0) {
++		/* Prime the LeaveAll timer at startup so this participant emits its OWN periodic LeaveAll (IEEE 802.1Q-2018 §10.7.5.20) even when it never RECEIVES one — without this, an instance with no LeaveAll-sending peer (e.g. MSRP when the bridge drops inbound LeaveAlls) never ages its Registrars, so a departed Listener's registration sticks forever. */
++		mrp_set_update_lva(mrp, now, false);
++	} else if (now > mrp->lva_timer.leave_all_timeout) {
++		/* IEEE 802.1Q-2018 Section 10.7.5.20: own LVA timer => TX path only, no RX_LVA */
+ 		mrp->lva_timer.state = FSM_LVA_ACTIVE;
+-		if (mrp->lva_timer.leave_all_timeout > 0) {
+-			global_event(mrp, now, AVB_MRP_EVENT_RX_LVA);
+-			leave_all = true;
+-		}
++		mrp->lva_tx_pending = true;
++		leave_all = true;
++		/* Re-arm for the NEXT LeaveAll (now + LVATIMER + jitter), NOT now — re-arming to now would re-fire every tick (LeaveAll storm). */
++		mrp_set_update_lva(mrp, now, false);
+ 	}
+ 
+ 	if (now > mrp->join_timeout) {
+ 		if (mrp->join_timeout > 0) {
+-			uint8_t event = leave_all ? AVB_MRP_EVENT_TX_LVA : AVB_MRP_EVENT_TX;
++			/* use the persistent lva_tx_pending (set on lva expiry) so a LeaveAll is sent on the next join tick even if expiry didn't coincide with this tick. */
++			uint8_t event = (leave_all || mrp->lva_tx_pending) ? AVB_MRP_EVENT_TX_LVA : AVB_MRP_EVENT_TX;
+ 			global_event(mrp, now, event);
+ 		}
+ 		mrp->join_timeout = now + MRP_JOINTIMER_MS * SPA_NSEC_PER_MSEC;
++		mrp->lva_tx_pending = false;
+ 	}
+ 
+ 	spa_list_for_each(a, &mrp->attributes, link) {
+@@ -361,13 +370,11 @@ void avb_mrp_attribute_update_state(struct avb_mrp_attribute *attr, uint64_t now
+ 	// Handle the LVA timer FSM
+ 	switch (event) {
+ 		case AVB_MRP_EVENT_RX_LVA:
+-			mrp_set_update_lva(mrp, now, false);
++			/* Do NOT reset the LeaveAll timer on a received LeaveAll. MSRP/MVRP/MMRP share ONE mrp instance + ONE lva_timer here; MVRP receives LeaveAlls ~every 10s, and resetting the shared timer each time kept it from ever reaching its ~13.5s expiry, so this node never emitted its OWN LeaveAll and MSRP attributes (which receive none) never aged. Letting the own timer free-run means we emit a (harmless, slightly redundant) LeaveAll ~every LVATIMER, which ages stale registrations on every protocol. */
+ 			mrp->lva_timer.state = FSM_LVA_PASSIVE;
+ 		break;
+ 		case AVB_MRP_EVENT_TX:
+-			if (mrp->lva_timer.state == FSM_LVA_ACTIVE) {
+-				mrp_set_update_lva(mrp, now, true);
+-			}
++			/* The LeaveAll timer is re-armed by mrp_periodic on expiry now; do NOT re-arm to `now` here (that re-fired every tick and, on an instance that never receives a LeaveAll, left leave_all_timeout pinned). */
+ 			mrp->lva_timer.state = FSM_LVA_PASSIVE;
+ 		break;
+ 		default:
+@@ -405,6 +412,7 @@ void avb_mrp_attribute_update_state(struct avb_mrp_attribute *attr, uint64_t now
+ 	case AVB_MRP_EVENT_RX_LVA:
+ 	case AVB_MRP_EVENT_TX_LVA:
+ 	case AVB_MRP_EVENT_REDECLARE:
++		/* IEEE 802.1Q-2018 Section 10.7.5.20: the LeaveAll timer expiry (sLA) signals rLA! to the participant's OWN Registrars too, not only received LeaveAlls, so a TRANSMITTED LeaveAll must also move IN->LV and arm the leaveTimer. Active declarers re-JoinIn promptly (applicant RX_LVA/TX_LVA -> VP -> JOININ on the next ~100ms TX, well inside MRP_LVTIMER 1s) and return to IN; a departed declarer (e.g. an unbound Listener whose explicit Leave was lost) ages LV->MT -> NOTIFY_LEAVE, so the talker clears listener_observed and tears down. Without this, a registration only ages on a RECEIVED LeaveAll, so a silently-departed peer never ages out. */
+ 		switch (state) {
+ 		case AVB_MRP_IN:
+ 			a->leave_timeout = now + MRP_LVTIMER_MS * SPA_NSEC_PER_MSEC;
