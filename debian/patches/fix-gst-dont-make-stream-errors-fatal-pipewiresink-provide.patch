@@ -1,0 +1,58 @@
+From fc6e12bed032a69111caa4180ae265a0b1612537 Mon Sep 17 00:00:00 2001
+From: Charles <charles05@canonical.com>
+Date: Tue, 21 Apr 2026 20:17:56 +0100
+Subject: [PATCH] gst: don't make stream errors fatal in pipewiresink
+ mode=provide
+
+When a consumer (e.g. Firefox via xdg-desktop-portal) connects to a
+pipewiresink mode=provide node and format negotiation fails, the error
+reaches the stream as a transient proxy error. The comments in
+proxy_error suggest the application should decide whether the error is
+permanent.
+
+Before this on_state_changed unconditionally made every proxy error
+permanent by calling pw_stream_set_error, which posted
+GST_ELEMENT_ERROR and killed the entire provider pipeline. A virtual
+camera provider should survive consumer negotiation failures.
+
+In mode=provide, log the error as a warning and continue. Other modes
+retain the existing behavior.
+
+To reproduce (with the previous pool fix applied):
+
+Producers:
+
+gst-launch-1.0 -v -e pipewiresrc path=<id> ! \
+  video/x-raw,width=1280,height=720,framerate=24/1 ! \
+  jpegenc ! rtpjpegpay ! rtpstreampay ! \
+  udpsink host=127.0.0.1 port=5000
+gst-launch-1.0 -e \
+  udpsrc address=127.0.0.1 port=5000 ! queue ! \
+  application/x-rtp-stream,encoding-name=JPEG ! rtpstreamdepay ! \
+  application/x-rtp,encoding-name=JPEG ! rtpjpegdepay ! \
+  decodebin ! videorate ! videoconvert ! \
+  pipewiresink mode=provide \
+  stream-properties="properties,media.class=Video/Source,media.role=Camera" \
+  client-name=VirtualCam
+
+Then open Firefox and select VirtualCam as camera source, without this
+fix the provider pipeline exits with an error, bringing down any other
+clients streaming from it.
+
+diff --git a/src/gst/gstpipewiresink.c b/src/gst/gstpipewiresink.c
+index 99235b118..f62cdc39a 100644
+--- a/src/gst/gstpipewiresink.c
++++ b/src/gst/gstpipewiresink.c
+@@ -816,7 +816,10 @@ on_state_changed (void *data, enum pw_stream_state old, enum pw_stream_state sta
+     case PW_STREAM_STATE_ERROR:
+       /* make the error permanent, if it is not already;
+          pw_stream_set_error() will recursively call us again */
+-      if (pw_stream_get_state (pwsink->stream->pwstream, NULL) != PW_STREAM_STATE_ERROR)
++      if (pwsink->mode == GST_PIPEWIRE_SINK_MODE_PROVIDE) {
++        /* don't make consumer errors fatal for the provider */
++        GST_WARNING_OBJECT (pwsink, "stream error in mode=provide (ignored): %s", error);
++      } else if (pw_stream_get_state (pwsink->stream->pwstream, NULL) != PW_STREAM_STATE_ERROR)
+         pw_stream_set_error (pwsink->stream->pwstream, -EPIPE, "%s", error);
+       else
+         GST_ELEMENT_ERROR (pwsink, RESOURCE, FAILED,
+
