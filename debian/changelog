@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix module-combine-stream incorrect compensate samples on playback restart
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 19 Aug 2026 00:54:56 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
