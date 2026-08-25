@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Fix V4L2 node activation failure caused by wrongly enumerating compound controls with payload as props (skip V4L2_CTRL_FLAG_HAS_PAYLOAD controls)
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 25 Aug 2026 10:16:25 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()
