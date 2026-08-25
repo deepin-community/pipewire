@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin17) unstable; urgency=medium
+
+  * Rebalance rnnoise source for natural-sounding speech
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Tue, 25 Aug 2026 17:26:23 +0800
+
 pipewire (1.6.4-1deepin16) unstable; urgency=medium
 
   * Fix log_write() in spa alsa pcm to use memchr() instead of strcspn()

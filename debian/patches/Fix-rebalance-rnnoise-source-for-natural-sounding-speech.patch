@@ -1,0 +1,56 @@
+From 4e49570182f506a8f42f6ebd24d61de33cd83694 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Tue, 25 Aug 2026 17:13:59 +0800
+Subject: [PATCH] fix: rebalance rnnoise source for natural-sounding speech
+
+The VAD (voice-activity-detection) controls 60/300/30 = Threshold/
+Grace/Retroactive favored a quiet floor over naturalness: clips soft
+speech, chops sentence tails, mutes word onsets. New values stay
+minimally off the neutral defaults (49.5/500/100): Threshold +5.5,
+Grace unchanged, Retroactive +10ms. VAD controls only tune silence
+gating (RNNoise denoises every frame regardless), so this is smoother
+gating for more natural speech. Pins audio.rate=48000 since rnnoise
+hardcodes 48kHz, preventing pitch mismatch on non-48kHz devices.
+---
+ src/daemon/filter-chain.conf.d/source-rnnoise.conf | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/src/daemon/filter-chain.conf.d/source-rnnoise.conf b/src/daemon/filter-chain.conf.d/source-rnnoise.conf
+index f299075..6c4941c 100644
+--- a/src/daemon/filter-chain.conf.d/source-rnnoise.conf
++++ b/src/daemon/filter-chain.conf.d/source-rnnoise.conf
+@@ -20,9 +20,9 @@ context.modules = [
+                         plugin = "/usr/lib/ladspa/librnnoise_ladspa.so"
+                         label  = noise_suppressor_mono
+                         control = {
+-			    "VAD Threshold (%)"       = 60.0   # Increase to 60–80 to reduce false triggers and prevent repeated toggling of noise segments
+-			    "VAD Grace Period (ms)"   = 300    # Extend to 300–500 for smoother noise decay and less abrupt silence insertion
+-			    "Retroactive VAD Grace (ms)" = 30  # Set to 20–60 to preserve consonant onsets without introducing excessive noise
++                            "VAD Threshold (%)"          = 55.0
++                            "VAD Grace Period (ms)"      = 500
++                            "Retroactive VAD Grace (ms)" = 110
+                         }
+                     }
+                 ]
+@@ -31,10 +31,18 @@ context.modules = [
+             capture.props = {
+                 node.name = "effect_input.rnnoise"
+                 node.passive = true
++                # rnnoise hardcodes 48kHz (FRAME_SIZE=480) and ignores the host
++                # rate; pin it so the adapter resamples to 48kHz on non-48kHz
++                # devices, preventing silent pitch/spectrum mismatch.
++                audio.rate = 48000
+             }
+             playback.props = {
+                 node.name = "effect_output.rnnoise"
+                 media.class = Audio/Source
++                # rnnoise hardcodes 48kHz (FRAME_SIZE=480) and ignores the host
++                # rate; pin it so the adapter resamples to 48kHz on non-48kHz
++                # devices, preventing silent pitch/spectrum mismatch.
++                audio.rate = 48000
+             }
+         }
+     }
+-- 
+2.20.1
+
