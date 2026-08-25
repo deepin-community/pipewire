@@ -1,0 +1,49 @@
+From 6734d69c887d23445b380aa201beb3762466ecda Mon Sep 17 00:00:00 2001
+From: Viorel Cernateanu <vrilutza@gmail.com>
+Date: Wed, 19 Aug 2026 04:33:39 +0300
+Subject: [PATCH] spa: v4l2: do not expose compound controls as props
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+VIDIOC_QUERY_EXT_CTRL reports an array of integers as
+V4L2_CTRL_TYPE_INTEGER, so spa_v4l2_enum_controls() registers it as a
+plain Int property. Such a control has a payload and can only be
+accessed with VIDIOC_G_EXT_CTRLS; VIDIOC_G_CTRL returns EINVAL for it.
+
+spa_v4l2_update_controls() treats that as a fatal error, so every
+enumeration of SPA_PARAM_Props on the node fails with -EINVAL as soon as
+the device has one such control. vivid, which exposes one ("S32 2
+Element Array"), is affected: WirePlumber requests all features on every
+node, the failing Props enumeration aborts the activation, no node-added
+event is emitted, no session item is created, and a camera client fails
+with "target not found".
+
+Skip controls that have a payload; they cannot be represented as a
+single Int or Bool anyway. The control types that already fall through
+to the default case (string, integer64, u8/u16/u32 arrays) are
+unaffected; only the integer, boolean and menu cases could reach
+VIDIOC_G_CTRL with a payload control. The flag is also filled in on the
+VIDIOC_QUERYCTRL fallback path, so the check works on drivers without
+VIDIOC_QUERY_EXT_CTRL too.
+
+Fixes #5431
+Suggested-by: Barnabás Pőcze <pobrn@protonmail.com>
+
+diff --git a/spa/plugins/v4l2/v4l2-utils.c b/spa/plugins/v4l2/v4l2-utils.c
+index dbe911377..16387bc11 100644
+--- a/spa/plugins/v4l2/v4l2-utils.c
++++ b/spa/plugins/v4l2/v4l2-utils.c
+@@ -1439,7 +1439,11 @@ spa_v4l2_enum_controls(struct impl *this, int seq,
+ 	else
+ 		result.next++;
+ 
+-	if (queryctrl.flags & V4L2_CTRL_FLAG_DISABLED)
++	/* A compound control (an array, a string, a struct) can only be accessed
++	 * with VIDIOC_G_EXT_CTRLS/VIDIOC_S_EXT_CTRLS; VIDIOC_G_CTRL returns EINVAL
++	 * for it. VIDIOC_QUERY_EXT_CTRL reports an array of integers as
++	 * V4L2_CTRL_TYPE_INTEGER, so the type alone does not tell them apart. */
++	if (queryctrl.flags & (V4L2_CTRL_FLAG_DISABLED | V4L2_CTRL_FLAG_HAS_PAYLOAD))
+ 		goto next;
+ 
+ 	if (port->n_controls >= MAX_CONTROLS)
