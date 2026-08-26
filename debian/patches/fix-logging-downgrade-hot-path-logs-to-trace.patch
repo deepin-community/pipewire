@@ -1,0 +1,162 @@
+From 2d265c8df2a5129085b32f5ace3e2da6d4937a28 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Mon, 24 Aug 2026 13:41:58 +0800
+Subject: [PATCH] module-protocol-pulse: downgrade hot-path memblock logs to
+ trace
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+handle_memblock() logs "received memblock" and "new block" at DEBUG
+for every audio data chunk transferred over the PulseAudio socket.
+stream_send_request() logs "REQUEST" at DEBUG for every playback
+cycle. On an active stream this produces ~271 lines/second:
+
+  69/s received memblock  (channel/offset/flags constant across samples)
+  69/s new block           (only the monotonic index counter changes)
+  38/s REQUEST             (only 2 distinct size values observed)
+  95/s stream_pop_missing  (already pw_log_trace_fp in same call chain)
+
+In a real-world deployment this was the single largest contributor to
+/var/log growth: ~4.8 GB/day, filling a 47G root filesystem in under a
+week. The content is near-constant — channel, offset, and flags are
+identical across thousands of consecutive samples; only the monotonic
+ringbuffer index (a heartbeat, not a diagnostic) and the block size
+(which varies by a few hundred bytes) carry any information.
+
+These also break the level convention already established within the
+same call chain: stream_pop_missing() uses pw_log_trace_fp for the
+same per-cycle data, but its callers (stream_send_request and
+handle_memblock) use pw_log_debug. Downgrade to pw_log_trace to align
+with stream_pop_missing and eliminate the flooding. Stream lifecycle
+events (create/destroy/error/underflow) remain at their current levels.
+
+This follows the precedent set by 0121bdc47 (module-rtp: Lower missing
+timeout log line from warn to trace): "this log line can spam the logs,
+so set it to trace."
+
+diff --git a/src/modules/module-protocol-pulse/server.c b/src/modules/module-protocol-pulse/server.c
+index d2f6fa6cf..c00ea8e55 100644
+--- a/src/modules/module-protocol-pulse/server.c
++++ b/src/modules/module-protocol-pulse/server.c
+@@ -123,7 +123,7 @@ static int handle_memblock(struct client *client, struct message *msg)
+ 		(((uint64_t) ntohl(client->desc.offset_lo))));
+ 	flags = ntohl(client->desc.flags);
+ 
+-	pw_log_debug("client %p: received memblock channel:%d offset:%" PRIi64 " flags:%08x size:%u",
++	pw_log_trace("client %p: received memblock channel:%d offset:%" PRIi64 " flags:%08x size:%u",
+ 		     client, channel, offset, flags, msg->length);
+ 
+ 	stream = pw_map_lookup(&client->streams, channel);
+@@ -135,7 +135,7 @@ static int handle_memblock(struct client *client, struct message *msg)
+ 	}
+ 
+ 	filled = spa_ringbuffer_get_write_index(&stream->ring, &index);
+-	pw_log_debug("new block %p %p/%u filled:%d index:%d flags:%02x offset:%" PRIu64,
++	pw_log_trace("new block %p %p/%u filled:%d index:%d flags:%02x offset:%" PRIu64,
+ 		     msg, msg->data, msg->length, filled, index, flags, offset);
+ 
+ 	switch (flags & FLAG_SEEKMASK) {
+diff --git a/src/modules/module-protocol-pulse/stream.c b/src/modules/module-protocol-pulse/stream.c
+index a22d3f236..5c9f01107 100644
+--- a/src/modules/module-protocol-pulse/stream.c
++++ b/src/modules/module-protocol-pulse/stream.c
+@@ -386,7 +386,7 @@ int stream_send_request(struct stream *stream)
+ 	if (size == 0)
+ 		return 0;
+ 
+-	pw_log_debug("stream %p: REQUEST channel:%d %u", stream, stream->channel, size);
++	pw_log_trace("stream %p: REQUEST channel:%d %u", stream, stream->channel, size);
+ 
+ 	msg = message_alloc(impl, -1, 0);
+ 	message_put(msg,
+
+From 8ffa3efb442370d09267d2d1273d7eb574f006ed Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Mon, 24 Aug 2026 13:41:44 +0800
+Subject: [PATCH] spa: downgrade BW_PERIOD rate-matching logs to trace when
+ nominal
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The rate-matching debug log in update_time() fires every BW_PERIOD
+(3 seconds) unconditionally, even when the DLL has long converged and
+rate correction is negligible. On systems configured with log.level=DEBUG
+(e.g. for troubleshooting) this produces ~28800 lines/day per audio
+device, all reporting rate~=1.0, err~=0 — effectively a heartbeat with
+no diagnostic value.
+
+In a real-world deployment this log was the second-largest contributor
+to /var/log growth: ~10GB in 3 days, contributing to filling the root
+filesystem (47G) and rendering the system unresponsive. The content
+is near-constant; 80% of fields (name, follower, matching, threshold,
+max_error, max_resync) never change between samples in stable operation.
+
+Keep DEBUG only when rate correction is non-trivial (|corr-1.0|>0.001
+or |err| exceeding half the resync threshold); downgrade to TRACE
+otherwise. This preserves diagnostic output for actual clock drift
+while eliminating the flood in nominal operation.
+
+This follows the precedent set by 0121bdc47 (module-rtp: Lower missing
+timeout log line from warn to trace) and c8462edf4 (spa: alsa: pcm:
+log_write(): return early if log level is disabled), both of which
+reduced log spam in hot paths.
+
+Applied to alsa-pcm.c, alsa-seq.c, and node-driver.c which share the
+same BW_PERIOD debug dump pattern.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index 47caacf8b..884f71222 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -3083,7 +3083,13 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
+ 
+ 		bw = (fabs(state->err_avg) + sqrt(fabs(state->err_var)))/1000.0;
+ 
+-		spa_log_debug(state->log, "%s: follower:%d match:%d rate:%f "
++		/* Downgrade to TRACE in nominal operation (rate ~= 1.0, err ~= 0)
++		 * to avoid flooding logs every BW_PERIOD; DEBUG only when correction
++		 * is non-trivial. */
++		spa_log_lev(state->log,
++				(fabs(corr - 1.0) > 0.001 || fabs(err) > state->max_resync * 0.5)
++					? SPA_LOG_LEVEL_DEBUG : SPA_LOG_LEVEL_TRACE,
++				"%s: follower:%d match:%d rate:%f "
+ 				"bw:%f thr:%u del:%ld target:%ld err:%f max_err:%f max_resync: %f var:%f:%f:%f",
+ 				state->name, follower, state->matching,
+ 				corr, state->dll.bw, state->threshold, delay, target,
+diff --git a/spa/plugins/alsa/alsa-seq.c b/spa/plugins/alsa/alsa-seq.c
+index 893930464..b57f28aea 100644
+--- a/spa/plugins/alsa/alsa-seq.c
++++ b/spa/plugins/alsa/alsa-seq.c
+@@ -982,7 +982,11 @@ static int update_time(struct seq_state *state, uint64_t nsec, bool follower)
+ 
+ 	if ((state->next_time - state->base_time) > BW_PERIOD) {
+ 		state->base_time = state->next_time;
+-		spa_log_debug(state->log, "%p: follower:%d rate:%f bw:%f err:%f (%f %f %f)",
++		/* Downgrade to TRACE in nominal operation to avoid log flooding. */
++		spa_log_lev(state->log,
++				(fabs(corr - 1.0) > 0.001)
++					? SPA_LOG_LEVEL_DEBUG : SPA_LOG_LEVEL_TRACE,
++				"%p: follower:%d rate:%f bw:%f err:%f (%f %f %f)",
+ 				state, follower, corr, state->dll.bw, err,
+ 				state->dll.z1, state->dll.z2, state->dll.z3);
+ 	}
+diff --git a/spa/plugins/support/node-driver.c b/spa/plugins/support/node-driver.c
+index d260c0fe7..948285440 100644
+--- a/spa/plugins/support/node-driver.c
++++ b/spa/plugins/support/node-driver.c
+@@ -508,7 +508,11 @@ static void on_timeout(struct spa_source *source)
+ 
+ 	if (SPA_UNLIKELY((this->next_time - this->base_time) > BW_PERIOD)) {
+ 		this->base_time = this->next_time;
+-		spa_log_debug(this->log, "%p: rate:%f "
++		/* Downgrade to TRACE in nominal operation to avoid log flooding. */
++		spa_log_lev(this->log,
++				(fabs(corr - 1.0) > 0.001 || fabs(err) > this->max_error * 0.5)
++					? SPA_LOG_LEVEL_DEBUG : SPA_LOG_LEVEL_TRACE,
++			"%p: rate:%f "
+ 			"bw:%f dur:%"PRIu64" max:%f drift:%f",
+ 				this, corr, this->dll.bw, duration,
+ 				this->max_error, err);
+
