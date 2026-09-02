@@ -1,0 +1,39 @@
+From a9f1ad414ecf994eaa665b0f27f57f6b912788af Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 16:09:08 +0200
+Subject: [PATCH] security: fix integer truncation in peer_name alloca size
+
+Memory Safety: Medium
+
+The strlen() return value (size_t) is stored in an int before being
+passed to alloca(). If a malicious client sets an extremely long
+PW_KEY_NODE_NAME property, the addition could overflow the int,
+resulting in a small or negative alloca size and a subsequent buffer
+overflow in snprintf().
+
+Change the type to size_t and add a bounds check to prevent
+excessively large stack allocations.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+Index: repo/src/modules/module-protocol-pulse/pulse-server.c
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/pulse-server.c
++++ repo/src/modules/module-protocol-pulse/pulse-server.c
+@@ -866,10 +866,12 @@ static void manager_added(void *data, st
+ 					peer_name = "unknown";
+ 				if (peer_name && s->direction == PW_DIRECTION_INPUT &&
+ 				    pw_manager_object_is_monitor(peer)) {
+-					int len = strlen(peer_name) + 10;
+-					char *tmp = alloca(len);
+-					spa_scnprintf(tmp, len, "%s.monitor", peer_name);
+-					peer_name = tmp;
++					size_t len = strlen(peer_name) + 10;
++					if (len <= 1024) {
++						char *tmp = alloca(len);
++						spa_scnprintf(tmp, len, "%s.monitor", peer_name);
++						peer_name = tmp;
++					}
+ 				}
+ 				if (peer_name != NULL)
+ 					stream_send_moved(s, peer->index, peer_name);
