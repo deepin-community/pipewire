@@ -1,0 +1,58 @@
+From 56c5eaf31771bc9d1aff218e10e86e177756948b Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 18:04:17 +0200
+Subject: [PATCH] security: fix integer overflow in netjack2 socket buffer size
+ calculation
+
+Memory Safety: Medium
+
+In both module-netjack2-driver.c and module-netjack2-manager.c, the
+socket buffer size is computed as:
+  NETWORK_MAX_LATENCY * (mtu + period_size * sizeof(float) * n_ports)
+
+This arithmetic is performed in int (signed 32-bit) but the
+intermediate values can exceed INT_MAX with large but valid network
+parameters. Signed integer overflow is undefined behavior in C,
+and the resulting negative value passed to setsockopt would set an
+incorrect socket buffer size.
+
+Fix by widening the intermediate computation to size_t and clamping
+the result to INT_MAX before storing in the int variable.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2-driver.c b/src/modules/module-netjack2-driver.c
+index ca4e70195..462857766 100644
+--- a/src/modules/module-netjack2-driver.c
++++ b/src/modules/module-netjack2-driver.c
+@@ -923,9 +923,9 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
+ 	peer->quantum_limit = impl->quantum_limit;
+ 	netjack2_init(peer);
+ 
+-	int bufsize = NETWORK_MAX_LATENCY * (peer->params.mtu +
+-		peer->params.period_size * sizeof(float) *
+-		SPA_MAX(impl->source.n_ports, impl->sink.n_ports));
++	int bufsize = SPA_MIN((size_t)NETWORK_MAX_LATENCY * (peer->params.mtu +
++		(size_t)peer->params.period_size * sizeof(float) *
++		SPA_MAX(impl->source.n_ports, impl->sink.n_ports)), (size_t)INT_MAX);
+ 
+ 	pw_log_info("send/recv buffer %d", bufsize);
+ 	if (setsockopt(impl->socket->fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize)) < 0)
+diff --git a/src/modules/module-netjack2-manager.c b/src/modules/module-netjack2-manager.c
+index a9af6a9b0..bb8d9d020 100644
+--- a/src/modules/module-netjack2-manager.c
++++ b/src/modules/module-netjack2-manager.c
+@@ -1106,9 +1106,9 @@ static int handle_follower_available(struct impl *impl, struct nj2_session_param
+ 	peer->quantum_limit = impl->quantum_limit;
+ 	netjack2_init(peer);
+ 
+-	int bufsize = NETWORK_MAX_LATENCY * (peer->params.mtu +
+-		follower->period_size * sizeof(float) *
+-		SPA_MAX(follower->source.n_ports, follower->sink.n_ports));
++	int bufsize = SPA_MIN((size_t)NETWORK_MAX_LATENCY * (peer->params.mtu +
++		(size_t)follower->period_size * sizeof(float) *
++		SPA_MAX(follower->source.n_ports, follower->sink.n_ports)), (size_t)INT_MAX);
+ 
+ 	pw_log_info("send/recv buffer %d", bufsize);
+ 	if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize)) < 0)
+
