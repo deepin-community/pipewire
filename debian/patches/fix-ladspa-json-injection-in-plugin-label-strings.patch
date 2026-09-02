@@ -1,0 +1,66 @@
+From c5c2d197dcd01a1998ecc1a35e0cff729ff541f4 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 17:50:49 +0200
+Subject: [PATCH] security: fix JSON injection in LADSPA plugin/label strings
+
+The plugin and label parameters in module-ladspa-sink and
+module-ladspa-source were inserted into the filter-chain JSON config
+without escaping. Use spa_json_encode_string to prevent injection.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c b/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c
+index 50c368398..4c9f33c47 100644
+--- a/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c
++++ b/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c
+@@ -76,6 +76,7 @@ static int module_ladspa_sink_load(struct module *module)
+ 	FILE *f;
+ 	char *args;
+ 	const char *str, *plugin, *label;
++	char encoded_plugin[1024], encoded_label[1024];
+ 	size_t size;
+ 
+ 	if ((plugin = pw_properties_get(module->props, "plugin")) == NULL)
+@@ -95,9 +96,12 @@ static int module_ladspa_sink_load(struct module *module)
+ 	pw_properties_serialize_dict(f, &module->props->dict, 0);
+ 	fprintf(f, " filter.graph = {");
+ 	fprintf(f, " nodes = [ { ");
++	spa_json_encode_string(encoded_plugin, sizeof(encoded_plugin), plugin);
++	spa_json_encode_string(encoded_label, sizeof(encoded_label), label);
++
+ 	fprintf(f, " type = ladspa ");
+-	fprintf(f, " plugin = \"%s\" ", plugin);
+-	fprintf(f, " label = \"%s\" ", label);
++	fprintf(f, " plugin = %s ", encoded_plugin);
++	fprintf(f, " label = %s ", encoded_label);
+ 	if ((str = pw_properties_get(module->props, "control")) != NULL) {
+ 		size_t len;
+ 		const char *s, *state = NULL;
+diff --git a/src/modules/module-protocol-pulse/modules/module-ladspa-source.c b/src/modules/module-protocol-pulse/modules/module-ladspa-source.c
+index 09eb11ce4..d4883b551 100644
+--- a/src/modules/module-protocol-pulse/modules/module-ladspa-source.c
++++ b/src/modules/module-protocol-pulse/modules/module-ladspa-source.c
+@@ -76,6 +76,7 @@ static int module_ladspa_source_load(struct module *module)
+ 	FILE *f;
+ 	char *args;
+ 	const char *str, *plugin, *label;
++	char encoded_plugin[1024], encoded_label[1024];
+ 	size_t size;
+ 
+ 	if ((plugin = pw_properties_get(module->props, "plugin")) == NULL)
+@@ -95,9 +96,12 @@ static int module_ladspa_source_load(struct module *module)
+ 	pw_properties_serialize_dict(f, &module->props->dict, 0);
+ 	fprintf(f, " filter.graph = {");
+ 	fprintf(f, " nodes = [ { ");
++	spa_json_encode_string(encoded_plugin, sizeof(encoded_plugin), plugin);
++	spa_json_encode_string(encoded_label, sizeof(encoded_label), label);
++
+ 	fprintf(f, " type = ladspa ");
+-	fprintf(f, " plugin = \"%s\" ", plugin);
+-	fprintf(f, " label = \"%s\" ", label);
++	fprintf(f, " plugin = %s ", encoded_plugin);
++	fprintf(f, " label = %s ", encoded_label);
+ 	if ((str = pw_properties_get(module->props, "control")) != NULL) {
+ 		size_t len;
+ 		const char *s, *state = NULL;
+
