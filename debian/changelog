@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin19) unstable; urgency=medium
+
+  * Validate MTU bounds in NetJack2 to prevent stack overflow
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 02 Sep 2026 20:54:30 +0800
+
 pipewire (1.6.4-1deepin18) unstable; urgency=medium
 
   * Downgrade hot-path logs (memblock/REQUEST/BW_PERIOD rate-matching) to trace to avoid log flooding
