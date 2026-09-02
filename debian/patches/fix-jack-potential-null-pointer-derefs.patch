@@ -1,0 +1,46 @@
+From 62dbd49f5ac321e36fe6100376c36879b85ed952 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 4 May 2026 12:04:08 +0200
+Subject: [PATCH] jack: fix some potential NULL pointer derefs
+
+If the client has no pid property, don't try to atoi a NULL string.
+
+If the : is stripped of a very long port name, don't return a NULL+1
+string in port_short_name().
+
+Don't deref a potential NULL port in debug log.
+
+diff --git a/pipewire-jack/src/pipewire-jack.c b/pipewire-jack/src/pipewire-jack.c
+index 281bf55b4..61c75afd2 100644
+--- a/pipewire-jack/src/pipewire-jack.c
++++ b/pipewire-jack/src/pipewire-jack.c
+@@ -3790,7 +3790,8 @@ static void registry_event_global(void *data, uint32_t id,
+ 		if ((str = spa_dict_lookup(props, PW_KEY_SEC_PID)) != NULL) {
+ 			pw_log_debug("%p: pid of \"%s\" is \"%s\"", c, app, str);
+ 		} else {
+-			pw_log_debug("%p: pid of \"%s\" is unknown", c, app);
++			pw_log_warn("%p: pid of \"%s\" is unknown", c, app);
++			str = "0";
+ 		}
+ 
+ 		o = alloc_object(c, INTERFACE_Client);
+@@ -5986,7 +5987,8 @@ const char * jack_port_short_name (const jack_port_t *port)
+ 	return_val_if_fail(o != NULL, NULL);
+ 	if (o->type != INTERFACE_Port)
+ 		return NULL;
+-	return strchr(port_name(o), ':') + 1;
++	const char *p = strchr(port_name(o), ':');
++	return p ? p + 1 : port_name(o);
+ }
+ 
+ SPA_EXPORT
+@@ -6582,8 +6584,6 @@ int jack_disconnect (jack_client_t *client,
+ 	src = find_port_by_name(c, source_port);
+ 	dst = find_port_by_name(c, destination_port);
+ 
+-	pw_log_debug("%p: %d %d", client, src->id, dst->id);
+-
+ 	if (src == NULL || dst == NULL ||
+ 	    !(src->port.flags & JackPortIsOutput) ||
+ 	    !(dst->port.flags & JackPortIsInput)) {
+
