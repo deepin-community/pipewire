@@ -1,0 +1,46 @@
+From 508407b35092c6fa83ab02428df9675422256e67 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 16:43:05 +0200
+Subject: [PATCH] security: fix missing malloc/realloc NULL checks in pw-dot
+
+Memory Safety: High
+
+In dot_data_init(), the return value of malloc() was not checked before
+dereferencing, causing a NULL pointer dereference if allocation fails.
+
+In dot_data_ensure_max_size(), the return value of realloc() was
+assigned directly to dd->data without checking for NULL, which both
+loses the original pointer (memory leak) and causes a NULL pointer
+dereference on subsequent use.
+
+Add NULL checks for both cases. For realloc, use a temporary variable
+to preserve the original pointer on failure.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/tools/pw-dot.c b/src/tools/pw-dot.c
+index 8491e1279..addabb976 100644
+--- a/src/tools/pw-dot.c
++++ b/src/tools/pw-dot.c
+@@ -88,6 +88,8 @@ static bool dot_data_init(struct dot_data * dd, size_t size)
+ 		return false;
+ 
+ 	dd->data = malloc(sizeof (char) * size);
++	if (dd->data == NULL)
++		return false;
+ 	dd->data[0] = '\0';
+ 	dd->size = 0;
+ 	dd->max_size = size;
+@@ -108,7 +110,10 @@ static void dot_data_ensure_max_size (struct dot_data * dd, size_t size)
+ 	size_t new_size = dd->size + size + 1;
+ 	if (new_size > dd->max_size) {
+ 		size_t next_size = new_size * 2;
+-		dd->data = realloc (dd->data, next_size);
++		void *p = realloc (dd->data, next_size);
++		if (p == NULL)
++			return;
++		dd->data = p;
+ 		dd->max_size = next_size;
+ 	}
+ }
+
