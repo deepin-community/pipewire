@@ -1,0 +1,62 @@
+From 62e1da2ea3a17f10248ae48c81bb0d7c52ec5d0c Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 18:45:29 +0200
+Subject: [PATCH] security: fix unchecked allocation returns in filter-graph
+ descriptor loading
+
+Memory Safety: High
+
+In descriptor_load(), the initial calloc for the descriptor struct, the
+strdup for the label, and four calloc calls for port arrays (input,
+output, control, notify) all lacked NULL checks. If any allocation fails
+under memory pressure, the code proceeds to dereference NULL pointers
+when populating the port arrays, causing a crash.
+
+Add NULL checks after all allocation calls, using the existing
+descriptor_unref cleanup path which already handles freeing partially
+initialized descriptors.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/filter-graph/filter-graph.c b/spa/plugins/filter-graph/filter-graph.c
+index 4b47d0c9f..e88588dfa 100644
+--- a/spa/plugins/filter-graph/filter-graph.c
++++ b/spa/plugins/filter-graph/filter-graph.c
+@@ -1016,6 +1016,11 @@ static struct descriptor *descriptor_load(struct impl *impl, const char *type,
+ 	}
+ 
+ 	desc = calloc(1, sizeof(*desc));
++	if (desc == NULL) {
++		plugin_unref(pl);
++		errno = ENOMEM;
++		return NULL;
++	}
+ 	desc->ref = 1;
+ 	desc->plugin = pl;
+ 	spa_list_init(&desc->link);
+@@ -1027,6 +1032,10 @@ static struct descriptor *descriptor_load(struct impl *impl, const char *type,
+ 	}
+ 	desc->desc = d;
+ 	desc->label = strdup(label);
++	if (desc->label == NULL) {
++		res = -ENOMEM;
++		goto exit;
++	}
+ 
+ 	n_input = n_output = n_control = n_notify = 0;
+ 	for (p = 0; p < d->n_ports; p++) {
+@@ -1047,6 +1056,13 @@ static struct descriptor *descriptor_load(struct impl *impl, const char *type,
+ 	desc->output = calloc(n_output, sizeof(unsigned long));
+ 	desc->control = calloc(n_control, sizeof(unsigned long));
+ 	desc->notify = calloc(n_notify, sizeof(unsigned long));
++	if ((n_input > 0 && desc->input == NULL) ||
++	    (n_output > 0 && desc->output == NULL) ||
++	    (n_control > 0 && desc->control == NULL) ||
++	    (n_notify > 0 && desc->notify == NULL)) {
++		res = -ENOMEM;
++		goto exit;
++	}
+ 
+ 	for (p = 0; p < d->n_ports; p++) {
+ 		struct spa_fga_port *fp = &d->ports[p];
+
