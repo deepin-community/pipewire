@@ -16,3 +16,4 @@ fix-spa-add-spa-alloca-overflow-checks.patch
 fix-spa-alsa-pcm-log-write-use-memchr.patch
 Fix-rebalance-rnnoise-source-for-natural-sounding-speech.patch
 fix-logging-downgrade-hot-path-logs-to-trace.patch
+fix-rtp-midi-unchecked-write-event-return-value.patch
