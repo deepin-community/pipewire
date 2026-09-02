@@ -1,0 +1,41 @@
+From 47ca937905bd27a7163b7147f5f909e696b56fcf Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 18:38:26 +0200
+Subject: [PATCH] fix capture rate assignment using logical NOT instead of copy
+
+Three modules had "impl->capture_info.rate = !impl->playback_info.rate"
+which evaluates to 0 (logical NOT of a non-zero rate) instead of
+copying the playback rate. This is a copy-paste typo from the line
+above which correctly uses "= impl->capture_info.rate".
+
+Affects module-filter-chain, module-loopback, module-example-filter.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-example-filter.c b/src/modules/module-example-filter.c
+index 209a23eac..8c3d8bde5 100644
+--- a/src/modules/module-example-filter.c
++++ b/src/modules/module-example-filter.c
+@@ -590,7 +590,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	} else if (impl->capture_info.rate && !impl->playback_info.rate)
+ 		impl->playback_info.rate = impl->capture_info.rate;
+ 	else if (impl->playback_info.rate && !impl->capture_info.rate)
+-		impl->capture_info.rate = !impl->playback_info.rate;
++		impl->capture_info.rate = impl->playback_info.rate;
+ 	else if (impl->capture_info.rate != impl->playback_info.rate) {
+ 		pw_log_warn("Both capture and playback rate are set, but"
+ 			" they are different. Using the highest of two. This behaviour"
+diff --git a/src/modules/module-loopback.c b/src/modules/module-loopback.c
+index d1725751c..1075316b8 100644
+--- a/src/modules/module-loopback.c
++++ b/src/modules/module-loopback.c
+@@ -981,7 +981,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	} else if (impl->capture_info.rate && !impl->playback_info.rate)
+ 		impl->playback_info.rate = impl->capture_info.rate;
+ 	else if (impl->playback_info.rate && !impl->capture_info.rate)
+-		impl->capture_info.rate = !impl->playback_info.rate;
++		impl->capture_info.rate = impl->playback_info.rate;
+ 	else if (impl->capture_info.rate != impl->playback_info.rate) {
+ 		pw_log_warn("Both capture and playback rate are set, but"
+ 			" they are different. Using the highest of two. This behaviour"
+
