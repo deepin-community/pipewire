@@ -1,0 +1,31 @@
+From 01dd7e607c244098348ffade1923f238988c9978 Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Fri, 24 Apr 2026 07:02:54 +0200
+Subject: [PATCH] module-avb: bound packet copy length in reply_status helper
+
+
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-resp-helpers.h b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-resp-helpers.h
+index de9152a84..bbae66e9c 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-resp-helpers.h
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-resp-helpers.h
+@@ -6,6 +6,7 @@
+ #ifndef __AVB_AECP_AEM_HELPERS_H__
+ #define __AVB_AECP_AEM_HELPERS_H__
+ 
++#include <errno.h>
+ #include <stdint.h>
+ #include <string.h>
+ 
+@@ -21,6 +22,11 @@ static inline int reply_status(struct aecp *aecp, int status, const void *m, int
+ 	struct avb_ethernet_header *h = (void*)buf;
+ 	struct avb_packet_aecp_header *reply = SPA_PTROFF(h, sizeof(*h), void);
+ 
++	if (len < 0 || (size_t)len > sizeof(buf)) {
++		pw_log_warn("reply_status: invalid len %d", len);
++		return -EINVAL;
++	}
++
+ 	memcpy(buf, m, len);
+ 
+ 	pw_log_debug("status 0x%x\n", status);
+
