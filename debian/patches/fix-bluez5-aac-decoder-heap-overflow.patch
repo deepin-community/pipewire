@@ -1,0 +1,26 @@
+From 136fc59765f4cf286456a111aa621783c82e3cdd Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 8 May 2026 12:49:54 +0200
+Subject: [PATCH] bluez5: avoid heap overflow in AAC decoder
+
+aacDecoder_DecodeFrame expects the number of destination INT_PCM samples,
+not bytes. Since INT_PCM is int16_t (2 bytes), passing dst_size in bytes
+tells the decoder the buffer is 2x larger than reality.
+
+Note that we don't need to care about the number of channels in this
+size, the decoder will do that for us.
+
+diff --git a/spa/plugins/bluez5/a2dp-codec-aac.c b/spa/plugins/bluez5/a2dp-codec-aac.c
+index f4cbecd9b..49bed720d 100644
+--- a/spa/plugins/bluez5/a2dp-codec-aac.c
++++ b/spa/plugins/bluez5/a2dp-codec-aac.c
+@@ -585,7 +585,7 @@ static int codec_decode(void *data,
+ 		return -EINVAL;
+ 	}
+ 
+-	res = aacDecoder_DecodeFrame(this->aacdec, dst, dst_size, 0);
++	res = aacDecoder_DecodeFrame(this->aacdec, dst, dst_size / sizeof(INT_PCM), 0);
+ 	if (res != AAC_DEC_OK) {
+ 		spa_log_debug(log, "AAC decode frame error: 0x%04X", res);
+ 		return -EINVAL;
+
