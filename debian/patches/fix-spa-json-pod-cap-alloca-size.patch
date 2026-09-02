@@ -1,0 +1,37 @@
+From 06421554d307e3a10b8e3f77e9230c0b13eadc1a Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 28 Apr 2026 10:25:08 +0200
+Subject: [PATCH] security: cap alloca size in JSON-to-POD string conversion
+
+Memory Safety: Medium
+
+spa_json_to_pod_part() uses alloca(len+1) to allocate a stack buffer
+for JSON string values, where len comes from the JSON parser. Since
+this function is recursive (for nested JSON objects/arrays), a
+crafted JSON document with large string values can cause stack
+exhaustion through unbounded alloca calls.
+
+Add a size check capping the alloca to 8192 bytes, which is generous
+for all legitimate PipeWire configuration values (type names, IDs,
+property strings) while preventing stack overflow from malicious or
+malformed JSON input.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/include/spa/utils/json-pod.h b/spa/include/spa/utils/json-pod.h
+index 6dfc6241f..7689e47ec 100644
+--- a/spa/include/spa/utils/json-pod.h
++++ b/spa/include/spa/utils/json-pod.h
+@@ -121,7 +121,10 @@ SPA_API_JSON_POD int spa_json_to_pod_part(struct spa_pod_builder *b, uint32_t fl
+ 		spa_pod_builder_none(b);
+ 	}
+ 	else {
+-		char *val = (char*)alloca(len+1);
++		char *val;
++		if (len > 8192)
++			return -ENOSPC;
++		val = (char*)alloca(len+1);
+ 		spa_json_parse_stringn(value, len, val, len+1);
+ 		switch (info ? info->parent : (uint32_t)SPA_TYPE_Struct) {
+ 		case SPA_TYPE_Id:
+
