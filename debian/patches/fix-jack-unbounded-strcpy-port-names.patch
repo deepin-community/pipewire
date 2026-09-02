@@ -1,0 +1,42 @@
+From 9cf4d05c9ec5d4fa12b25f7afc65ecaf3ad23112 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 14:40:18 +0200
+Subject: [PATCH] security: fix unbounded strcpy for JACK port names
+
+Memory Safety: Medium
+
+strcpy was used to copy port names into fixed-size buffers
+(REAL_JACK_PORT_NAME_SIZE+1) without explicit bounds checking.
+Port names originate from JACK client API calls and PipeWire
+port info, which are external inputs. Replaced with snprintf
+using sizeof(destination) to guarantee the copy is always
+bounded, preventing potential buffer overflows if source
+strings exceed the expected maximum length.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/pipewire-jack/src/pipewire-jack.c b/pipewire-jack/src/pipewire-jack.c
+index a84e4254c..f1b707fe0 100644
+--- a/pipewire-jack/src/pipewire-jack.c
++++ b/pipewire-jack/src/pipewire-jack.c
+@@ -3714,8 +3714,8 @@ static int update_port_name(struct object *o, const char *name)
+ 	if (spa_streq(port_name, o->port.name))
+ 		return 0;
+ 
+-	strcpy(o->port.old_name, o->port.name);
+-	strcpy(o->port.name, port_name);
++	snprintf(o->port.old_name, sizeof(o->port.old_name), "%s", o->port.name);
++	snprintf(o->port.name, sizeof(o->port.name), "%s", port_name);
+ 	return 1;
+ }
+ 
+@@ -5560,7 +5560,7 @@ jack_port_t * jack_port_register (jack_client_t *client,
+ 
+ 	o = p->object;
+ 	o->port.flags = flags;
+-	strcpy(o->port.name, name);
++	snprintf(o->port.name, sizeof(o->port.name), "%s", name);
+ 	o->port.type_id = type_id;
+ 
+ 	init_buffer(p, c->max_frames);
+
