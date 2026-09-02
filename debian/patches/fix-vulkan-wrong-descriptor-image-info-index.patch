@@ -1,0 +1,29 @@
+From 2953f48d9b127b79d485d1226fada755444261bc Mon Sep 17 00:00:00 2001
+From: Wang Yu <wangyu@uniontech.com>
+Date: Tue, 21 Apr 2026 21:42:24 +0800
+Subject: [PATCH] vulkan: fix wrong descriptor image info index
+
+When streams are skipped via continue in updateDescriptors(),
+the loop index i and descriptorSetLen diverge. The image info
+is written at descriptorSetLen but pImageInfo was referencing
+index i, pointing to uninitialized memory and causing incorrect
+Vulkan descriptor updates.
+
+Fix by using descriptorSetLen consistently.
+
+Signed-off-by: Wang Yu <wangyu@uniontech.com>
+
+diff --git a/spa/plugins/vulkan/vulkan-compute-utils.c b/spa/plugins/vulkan/vulkan-compute-utils.c
+index 503542483..6c0ff279e 100644
+--- a/spa/plugins/vulkan/vulkan-compute-utils.c
++++ b/spa/plugins/vulkan/vulkan-compute-utils.c
+@@ -147,7 +147,7 @@ static int updateDescriptors(struct vulkan_compute_state *s)
+ 			.descriptorType = i == 0 ?
+ 				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE :
+ 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+-			.pImageInfo = &descriptorImageInfo[i],
++			.pImageInfo = &descriptorImageInfo[descriptorSetLen],
+ 		};
+ 		descriptorSetLen++;
+ 	}
+
