@@ -1,0 +1,23 @@
+From bceaf1a212b6b3258ca24333e3915f9aa795c670 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 6 May 2026 11:47:53 +0200
+Subject: [PATCH] vulkan: handle mmap failure
+
+
+diff --git a/spa/plugins/vulkan/vulkan-compute-utils.c b/spa/plugins/vulkan/vulkan-compute-utils.c
+index b51fd81c1..74813a02a 100644
+--- a/spa/plugins/vulkan/vulkan-compute-utils.c
++++ b/spa/plugins/vulkan/vulkan-compute-utils.c
+@@ -176,6 +176,11 @@ static VkShaderModule createShaderModule(struct vulkan_compute_state *s, const c
+ 	}
+ 
+ 	data = mmap(NULL, stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
++	if (data == MAP_FAILED) {
++		spa_log_error(s->log, "can't mmap %s: %m", shaderFile);
++		close(fd);
++		return VK_NULL_HANDLE;
++	}
+ 
+ 	const VkShaderModuleCreateInfo shaderModuleCreateInfo = {
+ 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+
