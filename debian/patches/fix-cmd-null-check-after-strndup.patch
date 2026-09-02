@@ -1,0 +1,24 @@
+From c6faaff410ece3b6faaad8cdd8764adb76a9f5c4 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 18:21:16 +0200
+Subject: [PATCH] security: add missing NULL check after strndup in cmd.c
+
+strndup can return NULL under OOM. The result was passed directly to
+spa_json_begin_array which would dereference the NULL pointer.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/cmd.c b/src/modules/module-protocol-pulse/cmd.c
+index 58f0ce4b5..0f64b4b59 100644
+--- a/src/modules/module-protocol-pulse/cmd.c
++++ b/src/modules/module-protocol-pulse/cmd.c
+@@ -73,6 +73,8 @@ static int parse_cmd(void *user_data, const char *location,
+ 	int res = 0;
+ 
+ 	spa_autofree char *s = strndup(str, len);
++	if (s == NULL)
++		return -errno;
+ 	if (spa_json_begin_array(&it[0], s, len) < 0) {
+ 		pw_log_error("config file error: pulse.cmd is not an array");
+ 		return -EINVAL;
+
