@@ -1,0 +1,58 @@
+From 1d68d7f2e91beca01ae40cf6e833a32e85ca8a58 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 18:00:33 +0200
+Subject: [PATCH] security: fix integer overflow in loopback delay buffer
+ allocation
+
+Memory Safety: Medium
+
+In recalculate_buffer(), the buffer size computation
+(delay + (1u<<15)) * 4 can overflow uint32_t when delay is large.
+Additionally, the subsequent multiplication buffer_size * channels
+for the realloc size can also overflow uint32_t, wrapping to a
+small value and causing an undersized allocation. Later writes to
+the buffer using the logical buffer_size would then overflow the
+heap.
+
+The delay value derives from rate * target_delay where both values
+come from stream negotiation properties.
+
+Fix by adding an overflow check on the delay computation and
+widening the allocation size to size_t to prevent the second
+overflow.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-loopback.c b/src/modules/module-loopback.c
+index 5b34834ac..fafb3e77f 100644
+--- a/src/modules/module-loopback.c
++++ b/src/modules/module-loopback.c
+@@ -576,9 +576,18 @@ static void recalculate_buffer(struct impl *impl)
+ 	if (impl->target_delay > 0.0f && impl->channels > 0 && impl->rate > 0) {
+ 		uint32_t delay = (uint32_t)(impl->rate * impl->target_delay);
+ 		void *data;
++		size_t alloc_size;
+ 
++		if (delay > (UINT32_MAX / 4) - (1u<<15)) {
++			pw_log_warn("delay too large, delay disabled");
++			impl->buffer_size = 0;
++			free(impl->buffer_data);
++			impl->buffer_data = NULL;
++			goto done;
++		}
+ 		impl->buffer_size = (delay + (1u<<15)) * 4;
+-		data = realloc(impl->buffer_data, impl->buffer_size * impl->channels);
++		alloc_size = (size_t)impl->buffer_size * impl->channels;
++		data = realloc(impl->buffer_data, alloc_size);
+ 		if (data == NULL) {
+ 			pw_log_warn("can't allocate delay buffer, delay disabled: %m");
+ 			impl->buffer_size = 0;
+@@ -591,6 +600,7 @@ static void recalculate_buffer(struct impl *impl)
+ 		free(impl->buffer_data);
+ 		impl->buffer_data = NULL;
+ 	}
++done:
+ 	pw_log_info("configured delay:%f buffer:%d", impl->target_delay, impl->buffer_size);
+ 	impl->recalc_delay = true;
+ }
+
