@@ -1,0 +1,30 @@
+From 88a3bf8aab11c6473e908428d74acd497dfc0b4b Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 11:24:11 +0200
+Subject: [PATCH] security: validate packet length in AVB get_avb_info handler
+
+Memory Safety: High
+
+The handle_get_avb_info_common() function copied network packet data
+into a stack buffer using memcpy(buf, m, len) without validating that
+len fits within the 2048-byte buffer. A crafted AVB packet with a
+large length could overflow the stack buffer. Added bounds validation
+matching the pattern already used in handle_read_descriptor_common().
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-avb/aecp-aem.c b/src/modules/module-avb/aecp-aem.c
+index b1010eb65..51fbab23b 100644
+--- a/src/modules/module-avb/aecp-aem.c
++++ b/src/modules/module-avb/aecp-aem.c
+@@ -151,6 +151,9 @@ static int handle_get_avb_info_common(struct aecp *aecp, int64_t now,
+ 	if (desc_type != AVB_AEM_DESC_AVB_INTERFACE || desc_id != 0)
+ 		return reply_not_implemented(aecp, m, len);
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp, AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
++
+ 	avb_interface = desc->ptr;
+ 
+ 	memcpy(buf, m, len);
+
