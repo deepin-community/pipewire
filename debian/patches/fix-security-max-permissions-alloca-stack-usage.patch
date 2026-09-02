@@ -1,0 +1,35 @@
+From 0816d4a2fd227a15c1dafbfd538c45e714e9d43e Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 13:33:51 +0200
+Subject: [PATCH] security: reduce MAX_PERMISSIONS to limit alloca stack usage
+
+Memory Safety: Medium
+
+The parse_permissions_struct macro in protocol-native uses alloca()
+to allocate space for permissions received from protocol messages.
+With MAX_PERMISSIONS=4096 and sizeof(struct pw_permission)=8, this
+could allocate up to 32KB on the stack from a single message. Combined
+with parse_dict (up to 16KB), a crafted message could consume ~48KB
+of stack space.
+
+Reduce MAX_PERMISSIONS from 4096 to 1024 (matching MAX_DICT) to limit
+the maximum stack allocation to 8KB. This is still more than sufficient
+for any legitimate permission update - typical systems have far fewer
+than 1024 objects that need individual permission entries.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-native/connection.h b/src/modules/module-protocol-native/connection.h
+index bc9bb530d..6a9cf1971 100644
+--- a/src/modules/module-protocol-native/connection.h
++++ b/src/modules/module-protocol-native/connection.h
+@@ -12,7 +12,7 @@
+ 
+ #define MAX_DICT	1024
+ #define MAX_PARAM_INFO	128
+-#define MAX_PERMISSIONS	4096
++#define MAX_PERMISSIONS	1024
+ 
+ #ifdef __cplusplus
+ extern "C" {
+
