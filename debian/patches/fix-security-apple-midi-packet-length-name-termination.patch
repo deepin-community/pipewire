@@ -1,0 +1,60 @@
+From 0d41a7b82fb2ac97be5790bc2d2a9f0c028700e6 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 12:20:28 +0200
+Subject: [PATCH] security: validate Apple MIDI packet length and name
+ termination in RTP session
+
+Input Validation: High
+
+The Apple MIDI command parser in module-rtp-session had two issues:
+
+1. Insufficient minimum length check: the caller validated len >= 12,
+   but struct rtp_apple_midi is 16 bytes (cmd + protocol + initiator +
+   ssrc). Accessing hdr->ssrc on a 12-byte packet reads 4 bytes past
+   the received data.
+
+2. Missing null-termination check: the name field (flexible array
+   member) from the network packet was passed directly to pw_log_info
+   with %s format and to find_session_by_addr_name for string
+   comparison, without verifying it contains a null terminator within
+   the received data. This could read past the receive buffer into
+   uninitialized stack memory, potentially leaking data into logs.
+
+Fix by adding a sizeof check in parse_apple_midi_cmd and by validating
+that the name is null-terminated within the received data in
+parse_apple_midi_cmd_in.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-rtp-session.c b/src/modules/module-rtp-session.c
+index 2dca681d6..a8ceb36d2 100644
+--- a/src/modules/module-rtp-session.c
++++ b/src/modules/module-rtp-session.c
+@@ -721,9 +721,17 @@ static void parse_apple_midi_cmd_in(struct impl *impl, bool ctrl, uint8_t *buffe
+ 	char addr[128];
+ 	uint16_t port = 0;
+ 
++	if ((size_t)len < sizeof(*hdr))
++		return;
++
+ 	initiator = ntohl(hdr->initiator);
+ 	ssrc = ntohl(hdr->ssrc);
+ 
++	/* ensure the name field is null-terminated within the received data */
++	size_t name_area = len - sizeof(*hdr);
++	if (name_area == 0 || memchr(hdr->name, '\0', name_area) == NULL)
++		return;
++
+ 	pw_net_get_ip(sa, addr, sizeof(addr), NULL, &port);
+ 	pw_log_info("IN from %s:%d %s ssrc:%08x initiator:%08x",
+ 			addr, port, hdr->name, ssrc, initiator);
+@@ -962,6 +970,8 @@ static void parse_apple_midi_cmd(struct impl *impl, bool ctrl, uint8_t *buffer,
+ 		ssize_t len, struct sockaddr_storage *sa, socklen_t salen)
+ {
+ 	struct rtp_apple_midi *hdr = (struct rtp_apple_midi*)buffer;
++	if ((size_t)len < sizeof(*hdr))
++		return;
+ 	switch (ntohl(hdr->cmd)) {
+ 	case APPLE_MIDI_CMD_IN:
+ 		parse_apple_midi_cmd_in(impl, ctrl, buffer, len, sa, salen);
+
