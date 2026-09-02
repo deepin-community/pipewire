@@ -1,0 +1,37 @@
+From d4ec630b2fac1b9fee3dce3697a42cbbe51a320a Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 17:56:57 +0200
+Subject: [PATCH] security: fix missing packet length validation in VBAN MIDI
+ receive
+
+Memory Safety: High
+
+In vban_midi_receive(), the received buffer is cast to struct
+vban_header and its n_frames field is accessed before validating
+that the packet is large enough to contain the header. A truncated
+packet shorter than VBAN_HEADER_SIZE would cause an out-of-bounds
+read.
+
+Fix by checking that len >= VBAN_HEADER_SIZE before accessing the
+header, matching the fix applied to vban_audio_receive().
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-vban/midi.c b/src/modules/module-vban/midi.c
+index 484902448..3b677b1ac 100644
+--- a/src/modules/module-vban/midi.c
++++ b/src/modules/module-vban/midi.c
+@@ -190,8 +190,11 @@ static int vban_midi_receive(struct impl *impl, uint8_t *buffer, ssize_t len)
+ 	ssize_t hlen;
+ 	uint32_t n_frames;
+ 
+-	hdr = (struct vban_header*)buffer;
+ 	hlen = VBAN_HEADER_SIZE;
++	if (len < hlen)
++		return 0;
++
++	hdr = (struct vban_header*)buffer;
+ 
+ 	n_frames = hdr->n_frames;
+ 	if (impl->have_sync && impl->n_frames != n_frames) {
+
