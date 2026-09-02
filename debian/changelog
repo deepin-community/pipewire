@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin19) unstable; urgency=medium
+
+  * Replace unsafe atoi() with strtol() and validate RTSP status code range (100-599) to prevent protocol state confusion from malformed network responses
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 02 Sep 2026 20:38:08 +0800
+
 pipewire (1.6.4-1deepin18) unstable; urgency=medium
 
   * Downgrade hot-path logs (memblock/REQUEST/BW_PERIOD rate-matching) to trace to avoid log flooding

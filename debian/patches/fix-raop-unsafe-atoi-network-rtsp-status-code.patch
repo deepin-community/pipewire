@@ -1,0 +1,32 @@
+From 9b845f4415b275870b999197cef7649bac2c84de Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 16:13:14 +0200
+Subject: [PATCH] security: fix unsafe atoi() on network RTSP status code
+
+Input Validation: Medium
+
+atoi() on network-received data returns 0 on parse failure, which is
+indistinguishable from a valid "0" input. It also accepts negative
+values and does not detect overflow. Replace with strtol() and
+validate that the status code is in the valid HTTP/RTSP range
+(100-599) to prevent protocol state confusion from malformed
+responses.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-raop/rtsp-client.c b/src/modules/module-raop/rtsp-client.c
+index d7a59765f..bd9b8a753 100644
+--- a/src/modules/module-raop/rtsp-client.c
++++ b/src/modules/module-raop/rtsp-client.c
+@@ -253,8 +253,8 @@ static int process_status(struct pw_rtsp_client *client, char *buf)
+ 	if (s == NULL)
+ 		return -EPROTO;
+ 
+-	client->status = atoi(s);
+-	if (client->status == 0)
++	client->status = strtol(s, NULL, 10);
++	if (client->status < 100 || client->status > 599)
+ 		return -EPROTO;
+ 
+ 	s = pw_split_walk(buf, " ", &len, &state);
+
