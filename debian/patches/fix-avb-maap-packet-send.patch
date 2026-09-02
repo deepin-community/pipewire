@@ -1,0 +1,22 @@
+From 17723bc00dc84f4252222e006688630f164dd4b6 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 4 May 2026 10:21:41 +0200
+Subject: [PATCH] avb: fix MAAP packet send
+
+Actually send the ehaternet header data as well. The send was skipping
+the ehternet header and reading past the packet end.
+
+diff --git a/src/modules/module-avb/maap.c b/src/modules/module-avb/maap.c
+index b66eb9437..b053c08d3 100644
+--- a/src/modules/module-avb/maap.c
++++ b/src/modules/module-avb/maap.c
+@@ -163,7 +163,7 @@ static int send_packet(struct maap *maap, uint64_t now,
+ 		maap_message_debug(maap, p);
+ 	}
+ 
+-	if (send(maap->source->fd, p, sizeof(*h) + sizeof(*p), 0) < 0) {
++	if (send(maap->source->fd, h, sizeof(*h) + sizeof(*p), 0) < 0) {
+ 		res = -errno;
+ 		pw_log_warn("got send error: %m");
+ 	}
+
