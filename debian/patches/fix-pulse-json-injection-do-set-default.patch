@@ -1,0 +1,31 @@
+From 2d8dc8b457c979abe9e28ddb418eb181ef384026 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 17:09:50 +0200
+Subject: [PATCH] security: fix JSON injection in PulseAudio do_set_default
+
+The device name was interpolated into a JSON metadata string without
+escaping. A node with crafted name containing quote characters could
+inject arbitrary JSON keys into the default sink/source metadata.
+Use spa_json_encode_string to properly escape the value.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index 516b04237..23dd9a363 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -4802,10 +4802,12 @@ static int do_set_default(struct client *client, uint32_t command, uint32_t tag,
+ 		else if (spa_strendswith(name, ".monitor"))
+ 			name = strndupa(name, strlen(name)-8);
+ 
++		char val[1024];
++		spa_json_encode_string(val, sizeof(val), name);
+ 		res = pw_manager_set_metadata(manager, client->metadata_default,
+ 				PW_ID_CORE,
+ 				sink ? METADATA_CONFIG_DEFAULT_SINK : METADATA_CONFIG_DEFAULT_SOURCE,
+-				"Spa:String:JSON", "{ \"name\": \"%s\" }", name);
++				"Spa:String:JSON", "{ \"name\": %s }", val);
+ 	} else {
+ 		res = pw_manager_set_metadata(manager, client->metadata_default,
+ 				PW_ID_CORE,
+
