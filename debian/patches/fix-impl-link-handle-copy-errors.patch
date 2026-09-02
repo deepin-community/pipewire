@@ -1,0 +1,25 @@
+From 8e596bd85f52ba7d081559a0034df6a5f65f2235 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 16:41:43 +0200
+Subject: [PATCH] impl-link: handle copy errors
+
+
+diff --git a/src/pipewire/impl-link.c b/src/pipewire/impl-link.c
+index 302f76ccd..028620ed1 100644
+--- a/src/pipewire/impl-link.c
++++ b/src/pipewire/impl-link.c
+@@ -457,7 +457,12 @@ static int do_negotiate(struct pw_impl_link *this)
+ 		goto error;
+ 	}
+ 
+-	format = spa_pod_copy(format);
++	if ((format = spa_pod_copy(format)) == NULL) {
++		error = spa_aprintf("error copy format: %m");
++		res = -errno;
++		goto error;
++	}
++
+ 	pw_log_pod(SPA_LOG_LEVEL_DEBUG, format);
+ 	spa_pod_fixate(format);
+ 	pw_log_pod(SPA_LOG_LEVEL_DEBUG, format);
+
