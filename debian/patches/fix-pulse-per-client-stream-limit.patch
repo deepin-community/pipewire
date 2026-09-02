@@ -1,0 +1,116 @@
+From 37990b5e9022020d78dd97ba4c1f72da2aab9de2 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 16:28:05 +0200
+Subject: [PATCH] security: add per-client stream limit in PulseAudio protocol
+
+There was no limit on the number of streams a single client could
+create. Each stream allocates a 4MB ring buffer, allowing a malicious
+client to exhaust server memory. Add a configurable pulse.max-streams
+property (default 64) to limit streams per client.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/daemon/pipewire-pulse.conf.in b/src/daemon/pipewire-pulse.conf.in
+index db646db0b..77dc8397e 100644
+--- a/src/daemon/pipewire-pulse.conf.in
++++ b/src/daemon/pipewire-pulse.conf.in
+@@ -119,6 +119,7 @@ pulse.properties = {
+     #pulse.default.tlength  = 96000/48000   # 2 seconds
+     #pulse.min.quantum      = 256/48000     # 5.3ms
+     #pulse.idle.timeout     = 0             # don't pause after underruns
++    #pulse.max-streams      = 64            # max streams per client
+     #pulse.default.format   = F32
+     #pulse.default.position = [ FL FR ]
+ }
+diff --git a/src/modules/module-protocol-pulse.c b/src/modules/module-protocol-pulse.c
+index 22e6748ef..99becb6a3 100644
+--- a/src/modules/module-protocol-pulse.c
++++ b/src/modules/module-protocol-pulse.c
+@@ -76,6 +76,7 @@
+  *     #pulse.default.format   = F32
+  *     #pulse.default.position = [ FL FR ]
+  *     #pulse.idle.timeout     = 0
++ *     #pulse.max-streams      = 64
+  * }
+  *
+  * pulse.properties.rules = [
+@@ -247,6 +248,12 @@
+  * save battery power. When the client resumes, it will unpause again.
+  * A value of 0 disables this feature.
+  *
++ *\code{.unparsed}
++ *     pulse.max-streams = 64
++ *\endcode
++ *
++ * The maximum number of streams a single client can create. Default is 64.
++ *
+  * ## Command execution
+  *
+  * As part of the server startup sequence, a set of commands can be executed.
+diff --git a/src/modules/module-protocol-pulse/defs.h b/src/modules/module-protocol-pulse/defs.h
+index f3281ae88..92161d09b 100644
+--- a/src/modules/module-protocol-pulse/defs.h
++++ b/src/modules/module-protocol-pulse/defs.h
+@@ -39,6 +39,9 @@
+ 
+ #define SCACHE_ENTRY_SIZE_MAX	(1024*1024*16)
+ 
++#define MAX_CLIENTS		64u
++#define MAX_STREAMS		64u
++
+ #define MODULE_INDEX_MASK	0xfffffffu
+ #define MODULE_FLAG		(1u << 29)
+ 
+diff --git a/src/modules/module-protocol-pulse/internal.h b/src/modules/module-protocol-pulse/internal.h
+index 906ae6ed1..5b3af80b7 100644
+--- a/src/modules/module-protocol-pulse/internal.h
++++ b/src/modules/module-protocol-pulse/internal.h
+@@ -36,6 +36,7 @@ struct defs {
+ 	struct channel_map channel_map;
+ 	uint32_t quantum_limit;
+ 	uint32_t idle_timeout;
++	uint32_t max_streams;
+ };
+ 
+ struct stats {
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index c577b93e1..b3af6f862 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -5605,6 +5605,7 @@ static void load_defaults(struct defs *def, struct pw_properties *props)
+ 	parse_format(props, "pulse.default.format", DEFAULT_FORMAT, &def->sample_spec);
+ 	parse_position(props, "pulse.default.position", DEFAULT_POSITION, &def->channel_map);
+ 	parse_uint32(props, "pulse.idle.timeout", DEFAULT_IDLE_TIMEOUT, &def->idle_timeout);
++	parse_uint32(props, "pulse.max-streams", SPA_STRINGIFY(MAX_STREAMS), &def->max_streams);
+ 	def->sample_spec.channels = def->channel_map.channels;
+ 	def->quantum_limit = 8192;
+ }
+diff --git a/src/modules/module-protocol-pulse/server.c b/src/modules/module-protocol-pulse/server.c
+index d53ff7086..f011d61db 100644
+--- a/src/modules/module-protocol-pulse/server.c
++++ b/src/modules/module-protocol-pulse/server.c
+@@ -45,7 +45,6 @@
+ #endif
+ 
+ #define LISTEN_BACKLOG 32
+-#define MAX_CLIENTS 64
+ 
+ PW_LOG_TOPIC_EXTERN(pulse_conn);
+ 
+diff --git a/src/modules/module-protocol-pulse/stream.c b/src/modules/module-protocol-pulse/stream.c
+index a6beb9fd7..0c4d55855 100644
+--- a/src/modules/module-protocol-pulse/stream.c
++++ b/src/modules/module-protocol-pulse/stream.c
+@@ -63,6 +63,11 @@ struct stream *stream_new(struct client *client, enum stream_type type, uint32_t
+ 	struct defs *defs = &client->impl->defs;
+ 	const char *str;
+ 
++	if (pw_map_get_size(&client->streams) >= defs->max_streams) {
++		errno = ENOSPC;
++		return NULL;
++	}
++
+ 	struct stream *stream = calloc(1, sizeof(*stream));
+ 	if (stream == NULL)
+ 		return NULL;
+
