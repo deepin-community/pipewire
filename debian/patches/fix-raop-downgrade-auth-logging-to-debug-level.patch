@@ -1,0 +1,58 @@
+From ebbc9acc90971845d5f39da110bf4c2553035c29 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 16:20:50 +0200
+Subject: [PATCH] security: downgrade RAOP auth logging from info to debug
+ level
+
+Information Disclosure: High
+
+The RTSP client logs all HTTP headers and full RTSP request messages
+at INFO level, which includes Authorization headers containing
+credentials (Base64-encoded for Basic auth, hash responses for Digest
+auth). The WWW-Authenticate challenge header with realm and nonce
+values is also logged at INFO level.
+
+INFO-level logs are commonly collected by system logging daemons and
+may be stored in world-readable log files, exposing credentials.
+
+Downgrade all three logging calls to DEBUG level, which is only
+enabled during explicit debugging sessions.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-raop-sink.c b/src/modules/module-raop-sink.c
+index 6e85f7d61..9b24a89a3 100644
+--- a/src/modules/module-raop-sink.c
++++ b/src/modules/module-raop-sink.c
+@@ -1327,7 +1327,7 @@ static int rtsp_do_options_auth(struct impl *impl, const struct spa_dict *header
+ 		return -ENOTSUP;
+ 	}
+ 
+-	pw_log_info("Auth: %s", str);
++	pw_log_debug("Auth: %s", str);
+ 
+ 	spa_auto(pw_strv) tokens = pw_split_strv(str, " ", INT_MAX, &n_tokens);
+ 	if (tokens == NULL || tokens[0] == NULL)
+diff --git a/src/modules/module-raop/rtsp-client.c b/src/modules/module-raop/rtsp-client.c
+index 4bcff8b88..6302bea4c 100644
+--- a/src/modules/module-raop/rtsp-client.c
++++ b/src/modules/module-raop/rtsp-client.c
+@@ -319,7 +319,7 @@ static int process_header(struct pw_rtsp_client *client, char *buf)
+ 	else {
+ 		const struct spa_dict_item *it;
+ 		spa_dict_for_each(it, &client->headers->dict)
+-			pw_log_info(" %s: %s", it->key, it->value);
++			pw_log_debug(" %s: %s", it->key, it->value);
+ 
+ 		client->content_length = pw_properties_get_uint32(client->headers, "Content-Length", 0);
+ 		if (client->content_length > 0)
+@@ -411,7 +411,7 @@ static int flush_output(struct pw_rtsp_client *client)
+ 			data = SPA_PTROFF(msg->data, msg->offset, void);
+ 			size = msg->len - msg->offset;
+ 		} else {
+-			pw_log_info("sent: %s", (char *)msg->data);
++			pw_log_debug("sent: %s", (char *)msg->data);
+ 			spa_list_remove(&msg->link);
+ 			if (msg->reply != NULL)
+ 				spa_list_append(&client->pending, &msg->link);
+
