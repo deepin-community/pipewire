@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin19) unstable; urgency=medium
+
+  * Fix TOCTOU race and symlink following in native protocol socket
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 00:48:10 +0800
+
 pipewire (1.6.4-1deepin18) unstable; urgency=medium
 
   * Downgrade hot-path logs (memblock/REQUEST/BW_PERIOD rate-matching) to trace to avoid log flooding

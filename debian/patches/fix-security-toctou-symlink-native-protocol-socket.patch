@@ -1,0 +1,52 @@
+From 613b35eedf9948eb5faffb1e73516ec730ba5889 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 14:11:47 +0200
+Subject: [PATCH] security: fix TOCTOU race and symlink following in native
+ protocol socket
+
+File and Resource Handling: Medium
+
+The socket initialization code uses stat() followed by unlink() to clean
+up stale socket files. This creates two issues:
+
+1. stat() follows symlinks, so an attacker who places a symlink at the
+   socket path can trick the daemon into unlinking an arbitrary file.
+
+2. The gap between stat() and unlink() creates a TOCTOU race window
+   where the file could be replaced between the check and the removal.
+
+Fix by using lstat() to detect symlinks without following them, refusing
+to proceed if the path is a symlink, and only unlinking files that are
+actually sockets (S_ISSOCK). This narrows the race window and prevents
+symlink-based file deletion attacks.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-native.c b/src/modules/module-protocol-native.c
+index 2a0b2f438..c393316e1 100644
+--- a/src/modules/module-protocol-native.c
++++ b/src/modules/module-protocol-native.c
+@@ -931,14 +931,20 @@ static int add_socket(struct pw_protocol *protocol, struct server *s, struct soc
+ 			s->addr.sun_path[0] = 0;
+ 			size = (socklen_t) (strlen(&s->addr.sun_path[1]) + 1);
+ 		} else {
+-			if (stat(s->addr.sun_path, &socket_stat) < 0) {
++			if (lstat(s->addr.sun_path, &socket_stat) < 0) {
+ 				if (errno != ENOENT) {
+ 					res = -errno;
+ 					pw_log_error("server %p: stat %s failed with error: %m",
+ 							s, s->addr.sun_path);
+ 					goto error_close;
+ 				}
+-			} else if (socket_stat.st_mode & S_IWUSR || socket_stat.st_mode & S_IWGRP) {
++			} else if (S_ISLNK(socket_stat.st_mode)) {
++				pw_log_error("server %p: refusing to follow symlink at %s",
++						s, s->addr.sun_path);
++				res = -EACCES;
++				goto error_close;
++			} else if (S_ISSOCK(socket_stat.st_mode) &&
++				   (socket_stat.st_mode & S_IWUSR || socket_stat.st_mode & S_IWGRP)) {
+ 				unlink(s->addr.sun_path);
+ 			}
+ 			size = (socklen_t) (strlen(s->addr.sun_path) + 1);
+
