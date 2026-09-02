@@ -1,0 +1,68 @@
+From a4e2856d06f3abba98fc542795075ec7322cdde7 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 7 May 2026 14:08:30 +0200
+Subject: [PATCH] pulse-server: block arbitrary filter-graphs
+
+Add a special 'blocked' spa-libs value that returns EPERM when trying to
+load the factory.
+
+Only allow loading the LADSPA filter.graph nodes for the LADSPA sink and
+source. The most problematic part is the pipe filter, that allows it to
+spawn arbirary programs as part of the filter.graph.
+
+You can add a filter-graph to any stream with stream_props.
+
+diff --git a/doc/dox/config/pipewire.conf.5.md b/doc/dox/config/pipewire.conf.5.md
+index 8c551ba55..12d2ea855 100644
+--- a/doc/dox/config/pipewire.conf.5.md
++++ b/doc/dox/config/pipewire.conf.5.md
+@@ -358,6 +358,8 @@ factory-name and the plugin where the factory can be found.
+ Factory names can contain a wildcard to group several related factories into one
+ plugin. The plugin is loaded from the first matching factory-name.
+ 
++A special `blocked` value for the plugin disables the factory-name.
++
+ ## Example
+ 
+ ```
+@@ -374,6 +376,7 @@ context.spa-libs = {
+     api.jack.*      = jack/libspa-jack
+     support.*       = support/libspa-support
+     video.convert.* = videoconvert/libspa-videoconvert
++    #filter.graph   = blocked
+ }
+ ```
+ 
+diff --git a/src/daemon/pipewire-pulse.conf.in b/src/daemon/pipewire-pulse.conf.in
+index bf4b93c77..3b427fbd6 100644
+--- a/src/daemon/pipewire-pulse.conf.in
++++ b/src/daemon/pipewire-pulse.conf.in
+@@ -22,6 +22,12 @@ context.properties = {
+ context.spa-libs = {
+     audio.convert.* = audioconvert/libspa-audioconvert
+     support.*       = support/libspa-support
++    # because the pulse server allows dynamic loading of streams and modules
++    # inside the server, we must be careful with the filter-graph. Only allow
++    # LADSPA filters.
++    filter.graph.plugin.ladspa = filter-graph/libspa-filter-graph-plugin-ladspa
++    filter.graph.plugin.* = blocked
++    filter.graph = filter-graph/libspa-filter-graph
+ }
+ 
+ context.modules = [
+diff --git a/src/pipewire/context.c b/src/pipewire/context.c
+index 63a3ae9c9..eb89ca752 100644
+--- a/src/pipewire/context.c
++++ b/src/pipewire/context.c
+@@ -1067,8 +1067,8 @@ struct spa_handle *pw_context_load_spa_handle(struct pw_context *context,
+ 	lib = pw_context_find_spa_lib(context, factory_name);
+ 	if (lib == NULL && info != NULL)
+ 		lib = spa_dict_lookup(info, SPA_KEY_LIBRARY_NAME);
+-	if (lib == NULL) {
+-		errno = ENOENT;
++	if (lib == NULL || spa_streq(lib, "blocked")) {
++		errno = lib ? EPERM : ENOENT;
+ 		pw_log_warn("%p: no library for %s: %m",
+ 				context, factory_name);
+ 		return NULL;
+
