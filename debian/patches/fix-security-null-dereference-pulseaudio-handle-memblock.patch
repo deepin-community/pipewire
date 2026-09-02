@@ -1,0 +1,27 @@
+From a2de6c886ebbb1513e393c395e1e36723bcf293d Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 16:12:49 +0200
+Subject: [PATCH] security: fix NULL dereference in PulseAudio handle_memblock
+
+A client can send memblock data to a playback stream channel before
+format negotiation completes and the stream buffer is allocated,
+causing a NULL pointer dereference crash. Reject memblock data for
+streams that are still being created (create_tag != SPA_ID_INVALID).
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/server.c b/src/modules/module-protocol-pulse/server.c
+index adf755d7f..d53ff7086 100644
+--- a/src/modules/module-protocol-pulse/server.c
++++ b/src/modules/module-protocol-pulse/server.c
+@@ -128,7 +128,8 @@ static int handle_memblock(struct client *client, struct message *msg)
+ 		     client, channel, offset, flags, msg->length);
+ 
+ 	stream = pw_map_lookup(&client->streams, channel);
+-	if (stream == NULL || stream->type == STREAM_TYPE_RECORD) {
++	if (stream == NULL || stream->type == STREAM_TYPE_RECORD ||
++	    stream->create_tag != SPA_ID_INVALID) {
+ 		pw_log_info("client %p [%s]: received memblock for unknown channel %d",
+ 			    client, client->name, channel);
+ 		goto finish;
+
