@@ -1,0 +1,117 @@
+From e3e1c4d2144e24cc678eea042859e193e0cb6984 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 18:50:14 +0200
+Subject: [PATCH] security: fix integer overflow in Bluetooth codec codesize
+ calculations
+
+Memory Safety: High
+
+Several Bluetooth audio codec implementations calculate codesize by
+multiplying samples * channels * sizeof(sample_type) without overflow
+checks. The parameters come from Bluetooth codec negotiation, which is
+influenced by the remote peer. If the multiplication overflows, codesize
+wraps to a small value, causing subsequent buffer size checks to pass
+while the actual data processing operates on the full (larger) sample
+count, leading to heap buffer overflows.
+
+Affected codecs: LC3 (BAP), LC3plus (A2DP), Opus (A2DP), Opus-G (A2DP).
+
+Add overflow checks before each codesize multiplication to ensure the
+result fits in the target integer type, returning -EINVAL on overflow.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/bluez5/a2dp-codec-lc3plus.c b/spa/plugins/bluez5/a2dp-codec-lc3plus.c
+index b6bf1c653..da6260926 100644
+--- a/spa/plugins/bluez5/a2dp-codec-lc3plus.c
++++ b/spa/plugins/bluez5/a2dp-codec-lc3plus.c
+@@ -413,10 +413,15 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
+ 	}
+ 
+ 	this->e.samples = lc3plus_enc_get_input_samples(this->enc);
+-	this->e.codesize = this->e.samples * this->channels * sizeof(int32_t);
+ 
+ 	spa_assert(this->e.samples <= LC3PLUS_MAX_SAMPLES);
+ 
++	if (this->e.samples > INT_MAX / (int)sizeof(int32_t) / SPA_MAX(this->channels, 1)) {
++		res = -EINVAL;
++		goto error;
++	}
++	this->e.codesize = this->e.samples * this->channels * sizeof(int32_t);
++
+ 	this->e.bitrate = this->bitrate;
+ 	this->e.next_bitrate = this->bitrate;
+ 
+diff --git a/spa/plugins/bluez5/a2dp-codec-opus-g.c b/spa/plugins/bluez5/a2dp-codec-opus-g.c
+index 0f9b2a200..81f05c292 100644
+--- a/spa/plugins/bluez5/a2dp-codec-opus-g.c
++++ b/spa/plugins/bluez5/a2dp-codec-opus-g.c
+@@ -8,6 +8,7 @@
+ #include <stddef.h>
+ #include <errno.h>
+ #include <arpa/inet.h>
++#include <limits.h>
+ 
+ #include <spa/debug/types.h>
+ #include <spa/param/audio/type-info.h>
+@@ -330,6 +331,10 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
+ 	}
+ 
+ 	this->e.samples = this->e.frame_dms * this->samplerate / 10000;
++	if (this->e.samples > INT_MAX / (int)sizeof(float) / SPA_MAX((int)this->channels, 1)) {
++		res = -EINVAL;
++		goto error;
++	}
+ 	this->e.codesize = this->e.samples * (int)this->channels * sizeof(float);
+ 
+ 	int header_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
+diff --git a/spa/plugins/bluez5/a2dp-codec-opus.c b/spa/plugins/bluez5/a2dp-codec-opus.c
+index c1bf5e030..4034bd502 100644
+--- a/spa/plugins/bluez5/a2dp-codec-opus.c
++++ b/spa/plugins/bluez5/a2dp-codec-opus.c
+@@ -8,6 +8,7 @@
+ #include <stddef.h>
+ #include <errno.h>
+ #include <arpa/inet.h>
++#include <limits.h>
+ 
+ #include <spa/debug/types.h>
+ #include <spa/param/audio/type-info.h>
+@@ -1004,6 +1005,10 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
+ 	opus_multistream_encoder_ctl(this->enc, OPUS_SET_BITRATE(this->e.bitrate));
+ 
+ 	this->e.samples = this->e.frame_dms * this->samplerate / 10000;
++	if (this->e.samples > INT_MAX / (int)sizeof(float) / SPA_MAX((int)this->channels, 1)) {
++		res = -EINVAL;
++		goto error;
++	}
+ 	this->e.codesize = this->e.samples * (int)this->channels * sizeof(float);
+ 
+ 	opus_multistream_encoder_ctl(this->enc, OPUS_GET_LOOKAHEAD(&this->e.delay));
+diff --git a/spa/plugins/bluez5/bap-codec-lc3.c b/spa/plugins/bluez5/bap-codec-lc3.c
+index 881af4e14..56f24fb67 100644
+--- a/spa/plugins/bluez5/bap-codec-lc3.c
++++ b/spa/plugins/bluez5/bap-codec-lc3.c
+@@ -1299,7 +1299,20 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
+ 		goto error;
+ 	}
+ 	this->samples = res;
+-	this->codesize = (size_t)this->samples * this->channels * conf.n_blks * sizeof(int32_t);
++	{
++		size_t cs = (size_t)this->samples * this->channels;
++		if (this->channels > 0 && cs / this->channels != (size_t)this->samples) {
++			res = -EINVAL;
++			goto error;
++		}
++		cs *= conf.n_blks;
++		cs *= sizeof(int32_t);
++		if (cs > UINT_MAX) {
++			res = -EINVAL;
++			goto error;
++		}
++		this->codesize = cs;
++	}
+ 
+ 	if (!(flags & MEDIA_CODEC_FLAG_SINK)) {
+ 		for (ich = 0; ich < this->channels; ich++) {
+
