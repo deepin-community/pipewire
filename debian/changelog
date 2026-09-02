@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin19) unstable; urgency=medium
+
+  * Clamp pw_strv_insert_at invalid pos to [0, len] to avoid inserting past the terminating NULL
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 03 Sep 2026 01:23:32 +0800
+
 pipewire (1.6.4-1deepin18) unstable; urgency=medium
 
   * Downgrade hot-path logs (memblock/REQUEST/BW_PERIOD rate-matching) to trace to avoid log flooding
