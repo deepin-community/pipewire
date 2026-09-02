@@ -1,0 +1,37 @@
+From e1f4c441f483efb7a1de26c550d3e00b065a9a62 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 09:19:41 +0200
+Subject: [PATCH] security: fix OOB read in IEC958 format enum parsing
+
+In the SPA_CHOICE_Enum case, values[index+1] was used to skip the
+default value at index 0, but the bounds check only validated index,
+not index+1. Move bounds checks into each case with the correct limit.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/format.c b/src/modules/module-protocol-pulse/format.c
+index ead37932d..99e8919c7 100644
+--- a/src/modules/module-protocol-pulse/format.c
++++ b/src/modules/module-protocol-pulse/format.c
+@@ -750,16 +750,17 @@ static int format_info_iec958_from_param(struct format_info *info, struct spa_po
+ 	if (val->type != SPA_TYPE_Id)
+ 		return -ENOTSUP;
+ 
+-	if (index >= n_values)
+-		return -ENOENT;
+-
+ 	values = SPA_POD_BODY(val);
+ 
+ 	switch (choice) {
+ 	case SPA_CHOICE_None:
++		if (index >= n_values)
++			return -ENOENT;
+ 		info->encoding = format_encoding_from_id(values[index]);
+ 		break;
+ 	case SPA_CHOICE_Enum:
++		if (index + 1 >= n_values)
++			return -ENOENT;
+ 		info->encoding = format_encoding_from_id(values[index+1]);
+ 		break;
+ 	default:
+
