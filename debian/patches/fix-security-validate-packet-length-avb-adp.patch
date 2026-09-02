@@ -1,0 +1,32 @@
+From c9d4854114d45f51b6b3c794e7e14e5caee9a71b Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 12:22:29 +0200
+Subject: [PATCH] security: validate packet length in AVB ADP message handler
+
+Input Validation: High
+
+The adp_message() handler accessed avb_ethernet_header and
+avb_packet_adp fields from network packet data without checking that
+the packet was large enough to contain these structures. A truncated
+ADP packet could cause out-of-bounds reads when accessing entity_id,
+message_type, and other header fields.
+
+Fix by adding a minimum packet length check before any field access.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-avb/adp.c b/src/modules/module-avb/adp.c
+index 416d5e9da..9a8190b1d 100644
+--- a/src/modules/module-avb/adp.c
++++ b/src/modules/module-avb/adp.c
+@@ -96,6 +96,9 @@ static int adp_message(void *data, uint64_t now, const void *message, int len)
+ 	char buf[128];
+ 	uint64_t entity_id;
+ 
++	if (len < 0 || (size_t)len < sizeof(*h) + sizeof(*p))
++		return 0;
++
+ 	if (ntohs(h->type) != AVB_TSN_ETH)
+ 		return 0;
+ 	if (memcmp(h->dest, mac, 6) != 0 &&
+
