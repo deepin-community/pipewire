@@ -1,0 +1,28 @@
+From c551408ec2f7af6083bfba098092c44a28876a23 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 17:44:28 +0200
+Subject: [PATCH] security: reject path traversal in echo-cancel aec_method
+ parameter
+
+The aec_method parameter is interpolated into a SPA library path
+as "aec/libspa-aec-%s". A client could use "../" sequences to
+load arbitrary SPA plugins. Reject values containing ".." or "/".
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-echo-cancel.c b/src/modules/module-protocol-pulse/modules/module-echo-cancel.c
+index ee1eb1671..8db12b8c4 100644
+--- a/src/modules/module-protocol-pulse/modules/module-echo-cancel.c
++++ b/src/modules/module-protocol-pulse/modules/module-echo-cancel.c
+@@ -275,6 +275,10 @@ static int module_echo_cancel_prepare(struct module * const module)
+ 
+ 	if ((str = pw_properties_get(props, "aec_method")) == NULL)
+ 		str = "webrtc";
++	if (strstr(str, "..") != NULL || strchr(str, '/') != NULL) {
++		res = -EINVAL;
++		goto out;
++	}
+ 	pw_properties_setf(global_props, "library.name", "aec/libspa-aec-%s", str);
+ 
+ 	if ((str = pw_properties_get(props, "source_name")) != NULL) {
+
