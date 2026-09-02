@@ -1,0 +1,36 @@
+From be4fe881e334981f4b6bd07280d83004dacc52e8 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 12:37:55 +0200
+Subject: [PATCH] security: validate opus encoded length in netjack2 recv
+
+Validate that the encoded length from the network does not exceed
+the available encoded data region before passing it to the opus
+decoder.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2/peer.c b/src/modules/module-netjack2/peer.c
+index a126f950c..a2171b430 100644
+--- a/src/modules/module-netjack2/peer.c
++++ b/src/modules/module-netjack2/peer.c
+@@ -967,14 +967,18 @@ static int netjack2_recv_opus(struct netjack2_peer *peer, struct nj2_packet_head
+ 
+ 	for (i = 0; i < active_ports; i++) {
+ 		uint16_t *ap = SPA_PTROFF(encoded_data, i * max_encoded, uint16_t);
++		uint16_t encoded_len = ntohs(ap[0]);
+ 		void *pcm;
+ 		int res;
+ 
+ 		if (i >= n_info || (pcm = info[i].data) == NULL)
+ 			continue;
+ 
++		if (encoded_len > max_encoded - sizeof(uint16_t))
++			continue;
++
+ 		res = opus_custom_decode_float(peer->opus_dec[i],
+-				(unsigned char*)&ap[1], ntohs(ap[0]),
++				(unsigned char*)&ap[1], encoded_len,
+ 				pcm, peer->sync.frames);
+ 
+ 		if (res < 0 || res > 0xffff || res != peer->sync.frames)
+
