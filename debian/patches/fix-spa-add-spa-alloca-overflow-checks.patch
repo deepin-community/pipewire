@@ -94,14 +94,15 @@ Index: repo/src/modules/module-protocol-pulse/message.c
 ===================================================================
 --- repo.orig/src/modules/module-protocol-pulse/message.c
 +++ repo/src/modules/module-protocol-pulse/message.c
-@@ -531,10 +531,13 @@ static void add_stream_group(struct mess
+@@ -531,12 +531,13 @@ static void add_stream_group(struct mess
  	else
  		return;
  
 -	write_string(m, key);
  	l = strlen(prefix) + strlen(id) + strlen(str) + 6; /* "-by-" , ":" and \0 */
+-	if (l < 0 || l > 1024)
 +	if (l < 0 || l > 4096)
-+		return;
+ 		return;
 +
 +	write_string(m, key);
  	b = alloca(l);
