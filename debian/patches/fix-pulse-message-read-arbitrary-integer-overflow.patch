@@ -1,0 +1,36 @@
+From a12cc84df4b68a5b2b2162e3fcc7ef46142fa5fe Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 28 Apr 2026 12:32:01 +0200
+Subject: [PATCH] security: fix integer overflow in PulseAudio message
+ read_arbitrary
+
+Memory Safety: High
+
+The read_arbitrary() bounds check used `m->offset + len > m->length`
+where len is an attacker-controlled uint32_t read from the PulseAudio
+protocol message. When m->offset is small and len is close to
+UINT32_MAX, the addition wraps around to a small value, bypassing
+the bounds check. This allows read_arbitrary() to return a pointer
+within the message buffer but report an enormous length to the caller,
+leading to out-of-bounds memory reads.
+
+Fixed by rearranging the arithmetic to use subtraction:
+`len > m->length - m->offset`, which cannot overflow since
+m->offset <= m->length is maintained as an invariant.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index 4b906c79e..5dcbcb48a 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -145,7 +145,7 @@ static int read_arbitrary(struct message *m, const void **val, size_t *length)
+ 	int res;
+ 	if ((res = read_u32(m, &len)) < 0)
+ 		return res;
+-	if (m->offset + len > m->length)
++	if (m->offset > m->length || len > m->length - m->offset)
+ 		return -ENOSPC;
+ 	*val = m->data + m->offset;
+ 	m->offset += len;
+
