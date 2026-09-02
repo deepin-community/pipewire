@@ -1,0 +1,36 @@
+From f3538dd7febd9d9509778ba049f18e13a36cef84 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 16:53:05 +0200
+Subject: [PATCH] security: validate metadata length before subtraction in BIS
+ config
+
+Memory Safety: Critical
+
+When a Bluetooth BIS metadata entry has length=0 (e.g. when the JSON
+config contains a "type" key but no "value" key, leaving the
+calloc-initialized length at zero), the expression
+'metadata_entry->length - 1' underflows to SIZE_MAX because the int
+value is implicitly converted to size_t in the memcpy call. This causes
+memcpy to read far past the metadata_entry->value buffer, leading to a
+heap buffer overflow and likely crash.
+
+Add a check that metadata_entry->length >= 1 before the subtraction,
+rejecting entries with invalid length.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/bluez5/bluez5-dbus.c b/spa/plugins/bluez5/bluez5-dbus.c
+index 094dcca8c..bac5ccf47 100644
+--- a/spa/plugins/bluez5/bluez5-dbus.c
++++ b/spa/plugins/bluez5/bluez5-dbus.c
+@@ -6215,7 +6215,8 @@ static void configure_bis(struct spa_bt_monitor *monitor,
+ 
+ 	/* Configure each BIS from a BIG */
+ 	spa_list_for_each(metadata_entry, &bis->metadata_list, link) {
+-		if ((metadata_size + metadata_entry->length + 1) > METADATA_MAX_LEN) {
++		if (metadata_entry->length < 1 ||
++		    (metadata_size + metadata_entry->length + 1) > METADATA_MAX_LEN) {
+ 			spa_log_warn(monitor->log, "Metadata configured for the BIS exceeds the maximum metadata size");
+ 			return;
+ 		}
+
