@@ -1,0 +1,59 @@
+From e277a91842b092d41db364e72cd332271c4d053a Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 17:16:04 +0200
+Subject: [PATCH] security: fix integer overflows in netjack2 MIDI packet
+ handling
+
+Memory Safety: High
+
+In netjack2_recv_midi(), the offset calculation `max_size * sub_cycle`
+uses sub_cycle from an untrusted network packet header. A large
+sub_cycle value could cause integer overflow, producing a small offset
+that passes the subsequent bounds check and leads to an out-of-bounds
+write into the MIDI data buffer.
+
+Similarly, the bounds check `offset + len < midi_size` could itself
+overflow, and the `used` size calculation from network-controlled
+event_count and write_pos fields could overflow to bypass the size
+check.
+
+Fix by adding an explicit overflow check before the multiplication,
+rewriting the bounds check to use subtraction (which cannot overflow
+after the prior check), and adding an underflow check on the `used`
+calculation.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2/peer.c b/src/modules/module-netjack2/peer.c
+index 7547cc5b2..548daa4d0 100644
+--- a/src/modules/module-netjack2/peer.c
++++ b/src/modules/module-netjack2/peer.c
+@@ -774,6 +774,9 @@ static int netjack2_recv_midi(struct netjack2_peer *peer, struct nj2_packet_head
+ 	sub_cycle = ntohl(header->sub_cycle);
+ 	peer->sync.num_packets = ntohl(header->num_packets);
+ 	max_size = peer->params.mtu - sizeof(*header);
++
++	if (sub_cycle > 0 && max_size > UINT32_MAX / sub_cycle)
++		return -EOVERFLOW;
+ 	offset = max_size * sub_cycle;
+ 
+ 	data += sizeof(*header);
+@@ -782,7 +785,7 @@ static int netjack2_recv_midi(struct netjack2_peer *peer, struct nj2_packet_head
+ 	midi_data = peer->midi_data;
+ 	midi_size = peer->midi_size;
+ 
+-	if (offset + len < midi_size)
++	if (offset <= midi_size && (size_t)len <= midi_size - offset)
+ 		memcpy(SPA_PTROFF(midi_data, offset, void), data, len);
+ 
+ 	if (++(*count) < peer->sync.num_packets)
+@@ -796,7 +799,7 @@ static int netjack2_recv_midi(struct netjack2_peer *peer, struct nj2_packet_head
+ 		size_t used = sizeof(*mbuf)
+ 			+ mbuf->event_count * sizeof(struct nj2_midi_event)
+ 			+ mbuf->write_pos;
+-		if (used > midi_size)
++		if (used < sizeof(*mbuf) || used > midi_size)
+ 			break;
+ 
+ 		if (i < n_info && info[i].data != NULL) {
+
