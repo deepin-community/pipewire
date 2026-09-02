@@ -1,0 +1,144 @@
+From 710414730d3eae66994c0204b68190544f116140 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 11:35:41 +0200
+Subject: [PATCH] security: validate packet length in AVB AECP AEM command
+ handlers
+
+Memory Safety: High
+
+Multiple AVB AECP AEM command handler functions copied network packet
+data into stack buffers via memcpy(buf, m, len) without validating
+that len fits within the destination buffer. A crafted AVB packet with
+an oversized length could overflow the stack buffer.
+
+Added bounds validation before each memcpy in:
+- cmd-available.c: handle_cmd_entity_available_milan_v12
+- cmd-get-set-configuration.c: set and get configuration handlers
+- cmd-get-set-sampling-rate.c: unsolicited, invalid response, and get handlers
+- cmd-get-set-stream-format.c: get and set stream format handlers
+- cmd-lock-entity.c: handle_cmd_lock_entity_milan_v12
+
+This matches the bounds checking pattern already used in
+cmd-get-set-control.c, cmd-get-set-clock-source.c, and
+cmd-get-set-name.c.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-available.c b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-available.c
+index fd3576cfd..3aa05c169 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-available.c
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-available.c
+@@ -49,6 +49,10 @@ int handle_cmd_entity_available_milan_v12(struct aecp *aecp, int64_t now, const
+ 	entity_state = desc->ptr;
+ 	lock = &entity_state->state.lock_state;
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, p, len);
++
+ 	/* Forge the response for the entity that is locking the device */
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *) buf;
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-configuration.c b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-configuration.c
+index 831c7bbbb..22e0a438a 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-configuration.c
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-configuration.c
+@@ -87,6 +87,10 @@ int handle_cmd_set_configuration_milan_v12(struct aecp *aecp, int64_t now,
+ 		return reply_status(aecp, 
+ 				AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, p, len);
++
+ 	// TODO maybe avoid copy here
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *)buf;
+@@ -169,6 +173,10 @@ int handle_cmd_get_configuration_common(struct aecp *aecp, int64_t now,
+ 		return reply_status(aecp,
+ 				AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, p, len);
++
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *)buf;
+ 	p_reply = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-sampling-rate.c b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-sampling-rate.c
+index d7f305add..a18dd968f 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-sampling-rate.c
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-sampling-rate.c
+@@ -84,6 +84,9 @@ static int send_unsol_get_sampling_rate_milan_v12(struct aecp *aecp,
+ 	struct aecp_aem_base_info info = { 0 };
+ 	int rc = 0;
+ 
++	if (len > sizeof(unsol_buf))
++		return -EINVAL;
++
+ 	memcpy(unsol_buf, m, len);
+ 	/* Prepare a template packet */
+ 	info.controller_entity_id = htobe64(ctrler_id);
+@@ -106,6 +109,9 @@ static int sample_rate_invalid_response(struct aecp *aecp,
+ 	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
+ 	struct avb_packet_aecp_aem_setget_sampling_rate *cmd;
+ 
++	if (len > sizeof(buf))
++		return -EINVAL;
++
+ 	memcpy(buf, m, len);
+ 	cmd = (struct avb_packet_aecp_aem_setget_sampling_rate *)p->payload;
+ 
+@@ -219,6 +225,10 @@ int handle_cmd_get_sampling_rate_common(struct aecp *aecp, int64_t now,
+ 				AVB_AECP_AEM_STATUS_NOT_IMPLEMENTED, p, len);
+ 	}
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, p, len);
++
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *)buf;
+ 	reply_p = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-stream-format.c b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-stream-format.c
+index 5c18034a3..7e9841f3b 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-stream-format.c
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-stream-format.c
+@@ -64,6 +64,10 @@ int handle_cmd_get_stream_format_milan_v12(struct aecp *aecp, int64_t now,
+ 
+ 	stream_desc = (struct avb_aem_desc_stream *)desc->ptr;
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
++
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *)buf;
+ 	p_reply = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
+@@ -133,6 +137,10 @@ int handle_cmd_set_stream_format_milan_v12(struct aecp *aecp, int64_t now,
+ 	}
+ 
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
++
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *)buf;
+ 	p_reply = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-lock-entity.c b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-lock-entity.c
+index 4b271b7fc..0e3f68953 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-lock-entity.c
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-lock-entity.c
+@@ -194,6 +194,10 @@ int handle_cmd_lock_entity_milan_v12(struct aecp *aecp, int64_t now, const void
+ 		}
+ 	}
+ 
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, p, len);
++
+ 	/* Forge the response for the entity that is locking the device */
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *) buf;
+
