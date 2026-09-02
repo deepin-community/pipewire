@@ -1,0 +1,51 @@
+From 84f8230a474615c61289d332c7146b247d5e05c9 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 14:20:45 +0200
+Subject: [PATCH] security: fix TOCTOU race and symlink following in pulse
+ protocol socket
+
+File and Resource Handling: Medium
+
+The PulseAudio protocol server socket initialization uses stat() to
+check for existing socket files before unlinking and rebinding. This has
+the same two vulnerabilities recently fixed in module-protocol-native:
+
+1. stat() follows symlinks, so an attacker who places a symlink at the
+   socket path (e.g., in XDG_RUNTIME_DIR/pulse/) can trick the daemon
+   into unlinking the symlink target.
+
+2. The gap between stat() and unlink() creates a TOCTOU race window.
+
+Fix by using lstat() instead of stat() and adding an explicit symlink
+check that refuses to proceed if the path is a symbolic link, consistent
+with the approach in module-protocol-native.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/server.c b/src/modules/module-protocol-pulse/server.c
+index 637757dfd..bf9b711a7 100644
+--- a/src/modules/module-protocol-pulse/server.c
++++ b/src/modules/module-protocol-pulse/server.c
+@@ -614,7 +614,7 @@ static int start_unix_server(struct server *server, const struct sockaddr_storag
+ 		goto error;
+ 	}
+ 
+-	if (stat(addr_un->sun_path, &socket_stat) < 0) {
++	if (lstat(addr_un->sun_path, &socket_stat) < 0) {
+ 		if (errno != ENOENT) {
+ 			res = -errno;
+ 			pw_log_warn("server %p: stat('%s') failed: %m",
+@@ -622,6 +622,12 @@ static int start_unix_server(struct server *server, const struct sockaddr_storag
+ 			goto error_close;
+ 		}
+ 	}
++	else if (S_ISLNK(socket_stat.st_mode)) {
++		res = -EACCES;
++		pw_log_error("server %p: refusing to follow symlink at '%s'",
++			    server, addr_un->sun_path);
++		goto error_close;
++	}
+ 	else if (socket_stat.st_mode & S_IWUSR || socket_stat.st_mode & S_IWGRP) {
+ 		if (!S_ISSOCK(socket_stat.st_mode)) {
+ 			res = -EEXIST;
+
