@@ -1,0 +1,41 @@
+From 835ba5efd6c90683bcaef8d28089687a30627678 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 18:01:10 +0200
+Subject: [PATCH] security: fix integer truncation in combine-stream delay
+ calculation
+
+Memory Safety: Medium
+
+In update_delay(), the delay compensation size is computed as
+delay * sizeof(float) where delay is int64_t but size is uint32_t.
+When the delay value is very large, the multiplication result
+truncates to a small uint32_t value. This causes an undersized
+buffer allocation in resize_delay(), while compensate_samples
+retains the original large value. Subsequent use of
+compensate_samples could then write past the end of the buffer.
+
+A negative delay (possible if delay_samples overflows) would also
+produce a large unsigned size due to implicit conversion.
+
+Fix by clamping the delay to be non-negative and within the maximum
+delay buffer size before the multiplication, ensuring the size
+cannot truncate or wrap.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-combine-stream.c b/src/modules/module-combine-stream.c
+index 453203ebb..f9a98528c 100644
+--- a/src/modules/module-combine-stream.c
++++ b/src/modules/module-combine-stream.c
+@@ -586,6 +586,10 @@ static void update_delay(struct impl *impl)
+ 
+ 		if (s->delay_samples != INT64_MIN) {
+ 			int64_t delay = max_delay - s->delay_samples;
++			if (delay < 0)
++				delay = 0;
++			if (delay > (int64_t)(DELAYBUF_MAX_SIZE / sizeof(float)))
++				delay = DELAYBUF_MAX_SIZE / sizeof(float);
+ 			s->compensate_samples = delay;
+ 			size = delay * sizeof(float);
+ 		}
+
