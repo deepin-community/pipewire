@@ -1,0 +1,35 @@
+From d60ae4a1df2f59c534be8813809e116cc969ebb3 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 16:08:45 +0200
+Subject: [PATCH] security: fix unchecked alloca in pulse protocol message
+ handling
+
+Memory Safety: High
+
+The add_stream_group() function computes a buffer size from the sum of
+multiple string lengths, including user-controlled dictionary values
+(media role, app name, etc.), and passes it to alloca() without any
+bounds check. A malicious client could send very long property strings
+causing an integer overflow in the size computation (wrapping a
+negative/small int) or an excessively large stack allocation, leading
+to a stack overflow.
+
+Add a bounds check to reject sizes that are negative or exceed 1024
+bytes before calling alloca().
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index bbeb7e99e..ad32bccec 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -534,6 +534,8 @@ static void add_stream_group(struct message *m, struct spa_dict *dict, const cha
+ 
+ 	write_string(m, key);
+ 	l = strlen(prefix) + strlen(id) + strlen(str) + 6; /* "-by-" , ":" and \0 */
++	if (l < 0 || l > 1024)
++		return;
+ 	b = alloca(l);
+ 	snprintf(b, l, "%s-by-%s:%s", prefix, id, str);
+ 	write_u32(m, l);
+
