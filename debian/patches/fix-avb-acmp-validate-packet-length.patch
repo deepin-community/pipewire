@@ -1,0 +1,49 @@
+From 11226544f7f07c7928b76b6db6007aa23592cc8b Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 12:21:13 +0200
+Subject: [PATCH] security: validate packet length in AVB ACMP message handler
+
+Input Validation: High
+
+The acmp_message() handler accessed fields of avb_ethernet_header and
+avb_packet_acmp from network packet data without first checking that
+the received packet was large enough to contain these structures.
+A short packet could cause out-of-bounds reads when accessing packet
+header fields.
+
+The VLA-based reply buffers in reply_not_supported(),
+handle_connect_tx_command(), and handle_disconnect_tx_command() also
+lacked an upper bound on the packet length, allowing a packet claiming
+a very large size to cause excessive stack allocation.
+
+Fix by adding minimum length (sizeof(header) + sizeof(acmp)) and
+maximum length (MTU) validation at the entry point before any field
+access or buffer allocation.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-avb/acmp.c b/src/modules/module-avb/acmp.c
+index 73a84ba89..371dcbbc8 100644
+--- a/src/modules/module-avb/acmp.c
++++ b/src/modules/module-avb/acmp.c
+@@ -8,6 +8,7 @@
+ #include <pipewire/pipewire.h>
+ 
+ #include "acmp.h"
++#include "aecp-aem.h"
+ #include "msrp.h"
+ #include "internal.h"
+ #include "stream.h"
+@@ -393,6 +394,11 @@ static int acmp_message(void *data, uint64_t now, const void *message, int len)
+ 	const struct msg_info *info;
+ 	int message_type;
+ 
++	if (len < 0 ||
++	    (size_t)len < sizeof(*h) + sizeof(*p) ||
++	    (size_t)len > AVB_PACKET_MILAN_DEFAULT_MTU)
++		return 0;
++
+ 	if (ntohs(h->type) != AVB_TSN_ETH)
+ 		return 0;
+ 	if (memcmp(h->dest, mac, 6) != 0 &&
+
