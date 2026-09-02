@@ -1,0 +1,219 @@
+From 31f0300c482b3d9978a636c5b465e194817b5992 Mon Sep 17 00:00:00 2001
+From: Pauli Virtanen <pav@iki.fi>
+Date: Mon, 4 May 2026 19:52:46 +0300
+Subject: [PATCH] bluez5: fix wrong use of send_with_reply in HFP backends
+
+The pattern if (!send_with_reply(...)) leaks DBusPendingCall and is
+UAF prone.
+
+Replace these with proper tracking and cancellation of the pending
+calls in HFP backends.
+
+diff --git a/spa/plugins/bluez5/backend-hsphfpd.c b/spa/plugins/bluez5/backend-hsphfpd.c
+index 64c092adb..b06d9951d 100644
+--- a/spa/plugins/bluez5/backend-hsphfpd.c
++++ b/spa/plugins/bluez5/backend-hsphfpd.c
+@@ -43,7 +43,8 @@ struct impl {
+ 
+ 	char *hsphfpd_service_id;
+ 
+-	bool acquire_in_progress;
++	DBusPendingCall *pending_acquire;
++	DBusPendingCall *pending_get_managed_objects;
+ 
+ 	unsigned int filters_added:1;
+ 	unsigned int msbc_supported:1;
+@@ -822,9 +823,8 @@ static void hsphfpd_audio_acquire_reply(DBusPendingCall *pending, void *user_dat
+ 	spa_auto(DBusError) error = DBUS_ERROR_INIT;
+ 	int ret = 0;
+ 
+-	backend->acquire_in_progress = false;
+-
+-	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&pending);
++	spa_assert(backend->pending_acquire == pending);
++	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&backend->pending_acquire);
+ 	if (r == NULL)
+ 		return;
+ 
+@@ -883,7 +883,7 @@ static int hsphfpd_audio_acquire(void *data, bool optional)
+ 	spa_log_debug(backend->log, "transport %p: Acquire %s",
+ 			transport, transport->path);
+ 
+-	if (backend->acquire_in_progress)
++	if (backend->pending_acquire)
+ 		return -EINPROGRESS;
+ 
+ 	if (transport->media_codec->codec_id == HFP_AUDIO_CODEC_MSBC) {
+@@ -899,11 +899,10 @@ static int hsphfpd_audio_acquire(void *data, bool optional)
+ 		return -ENOMEM;
+ 	dbus_message_append_args(m, DBUS_TYPE_STRING, &air_codec, DBUS_TYPE_STRING, &agent_codec, DBUS_TYPE_INVALID);
+ 
+-	if (!send_with_reply(backend->conn, m, hsphfpd_audio_acquire_reply, transport))
++	backend->pending_acquire = send_with_reply(backend->conn, m, hsphfpd_audio_acquire_reply, transport);
++	if (!backend->pending_acquire)
+ 		return -EIO;
+ 
+-	backend->acquire_in_progress = true;
+-
+ 	return 0;
+ }
+ 
+@@ -1171,7 +1170,8 @@ static void hsphfpd_get_endpoints_reply(DBusPendingCall *pending, void *user_dat
+ 	struct impl *backend = user_data;
+ 	DBusMessageIter i, array_i;
+ 
+-	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&pending);
++	spa_assert(backend->pending_get_managed_objects == pending);
++	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&backend->pending_get_managed_objects);
+ 	if (r == NULL)
+ 		return;
+ 
+@@ -1250,12 +1250,16 @@ static int hsphfpd_get_endpoints(struct impl *backend)
+ {
+ 	spa_autoptr(DBusMessage) m = NULL;
+ 
++	if (backend->pending_get_managed_objects)
++		return -EBUSY;
++
+ 	m = dbus_message_new_method_call(HSPHFPD_SERVICE, "/",
+ 			DBUS_INTERFACE_OBJECTMANAGER, "GetManagedObjects");
+ 	if (m == NULL)
+ 		return -ENOMEM;
+ 
+-	if (!send_with_reply(backend->conn, m, hsphfpd_get_endpoints_reply, backend))
++	backend->pending_get_managed_objects = send_with_reply(backend->conn, m, hsphfpd_get_endpoints_reply, backend);
++	if (!backend->pending_get_managed_objects)
+ 		return -EIO;
+ 
+ 	return 0;
+@@ -1279,6 +1283,9 @@ static int backend_hsphfpd_unregistered(void *data)
+ 	struct impl *backend = data;
+ 	struct hsphfpd_endpoint *endpoint;
+ 
++	cancel_and_unref(&backend->pending_get_managed_objects);
++	cancel_and_unref(&backend->pending_acquire);
++
+ 	if (backend->hsphfpd_service_id) {
+ 		free(backend->hsphfpd_service_id);
+ 		backend->hsphfpd_service_id = NULL;
+@@ -1431,6 +1438,9 @@ static int backend_hsphfpd_free(void *data)
+ 	struct impl *backend = data;
+ 	struct hsphfpd_endpoint *endpoint;
+ 
++	cancel_and_unref(&backend->pending_get_managed_objects);
++	cancel_and_unref(&backend->pending_acquire);
++
+ 	if (backend->filters_added) {
+ 		dbus_connection_remove_filter(backend->conn, hsphfpd_filter_cb, backend);
+ 		backend->filters_added = false;
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+index d55977185..af8cd51cd 100644
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -106,6 +106,8 @@ struct impl {
+ 	struct spa_dbus *dbus;
+ 	DBusConnection *conn;
+ 
++	DBusPendingCall *pending_register_profile;
++
+ 	const struct media_codec * const * codecs;
+ 
+ #define DEFAULT_ENABLED_PROFILES (SPA_BT_PROFILE_HFP_HF | SPA_BT_PROFILE_HFP_AG)
+@@ -3685,7 +3687,8 @@ static void register_profile_reply(DBusPendingCall *pending, void *user_data)
+ {
+ 	struct impl *backend = user_data;
+ 
+-	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&pending);
++	spa_assert(backend->pending_register_profile == pending);
++	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&backend->pending_register_profile);
+ 	if (r == NULL)
+ 		return;
+ 
+@@ -3715,6 +3718,9 @@ static int register_profile(struct impl *backend, const char *profile, const cha
+ 	if (!(backend->enabled_profiles & spa_bt_profile_from_uuid(uuid)))
+ 		return -ECANCELED;
+ 
++	if (backend->pending_register_profile)
++		return -EBUSY;
++
+ 	spa_log_debug(backend->log, "Registering Profile %s %s", profile, uuid);
+ 
+ 	m = dbus_message_new_method_call(BLUEZ_SERVICE, "/org/bluez",
+@@ -3813,7 +3819,8 @@ static int register_profile(struct impl *backend, const char *profile, const cha
+ 	}
+ 	dbus_message_iter_close_container(&it[0], &it[1]);
+ 
+-	if (!send_with_reply(backend->conn, m, register_profile_reply, backend))
++	backend->pending_register_profile = send_with_reply(backend->conn, m, register_profile_reply, backend);
++	if (!backend->pending_register_profile)
+ 		return -EIO;
+ 
+ 	return 0;
+@@ -3880,6 +3887,8 @@ static int backend_native_unregister_profiles(void *data)
+ {
+ 	struct impl *backend = data;
+ 
++	cancel_and_unref(&backend->pending_register_profile);
++
+ 	sco_close(backend);
+ 
+ #ifdef HAVE_BLUEZ_5_BACKEND_HSP_NATIVE
+@@ -4060,6 +4069,8 @@ static int backend_native_free(void *data)
+ 
+ 	struct rfcomm *rfcomm;
+ 
++	cancel_and_unref(&backend->pending_register_profile);
++
+ 	sco_close(backend);
+ 
+ 	if (backend->modemmanager) {
+diff --git a/spa/plugins/bluez5/backend-ofono.c b/spa/plugins/bluez5/backend-ofono.c
+index d0581ddf4..d61c4c1c6 100644
+--- a/spa/plugins/bluez5/backend-ofono.c
++++ b/spa/plugins/bluez5/backend-ofono.c
+@@ -44,6 +44,7 @@ struct impl {
+ 	struct spa_dbus *dbus;
+ 	struct spa_loop_utils *loop_utils;
+ 	DBusConnection *conn;
++	DBusPendingCall *pending_get_cards;
+ 
+ 	const struct spa_bt_quirks *quirks;
+ 
+@@ -637,7 +638,8 @@ static void ofono_getcards_reply(DBusPendingCall *pending, void *user_data)
+ 	struct impl *backend = user_data;
+ 	DBusMessageIter i, array_i, struct_i, props_i;
+ 
+-	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&pending);
++	spa_assert(backend->pending_get_cards == pending);
++	spa_autoptr(DBusMessage) r = steal_reply_and_unref(&backend->pending_get_cards);
+ 	if (r == NULL)
+ 		return;
+ 
+@@ -736,12 +738,16 @@ static int ofono_getcards(struct impl *backend)
+ {
+ 	spa_autoptr(DBusMessage) m = NULL;
+ 
++	if (backend->pending_get_cards)
++		return -EBUSY;
++
+ 	m = dbus_message_new_method_call(OFONO_SERVICE, "/",
+ 			OFONO_HF_AUDIO_MANAGER_INTERFACE, "GetCards");
+ 	if (m == NULL)
+ 		return -ENOMEM;
+ 
+-	if (!send_with_reply(backend->conn, m, ofono_getcards_reply, backend))
++	backend->pending_get_cards = send_with_reply(backend->conn, m, ofono_getcards_reply, backend);
++	if (!backend->pending_get_cards)
+ 		return -EIO;
+ 
+ 	return 0;
+@@ -825,6 +831,8 @@ static int backend_ofono_free(void *data)
+ {
+ 	struct impl *backend = data;
+ 
++	cancel_and_unref(&backend->pending_get_cards);
++
+ 	if (backend->filters_added) {
+ 		dbus_connection_remove_filter(backend->conn, ofono_filter_cb, backend);
+ 		backend->filters_added = false;
+
