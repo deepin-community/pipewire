@@ -1,0 +1,39 @@
+From 18df76b6548e9a306b10223a9c1f8999aedd3cae Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 17:57:22 +0200
+Subject: [PATCH] security: fix integer overflow in pw_reallocarray fallback
+ path
+
+Memory Safety: High
+
+When the system does not provide reallocarray(), pw_reallocarray()
+falls back to realloc(ptr, nmemb * size). The multiplication
+nmemb * size can silently overflow, causing a smaller-than-expected
+allocation. Subsequent writes to the allocation then overflow the
+heap buffer.
+
+This function is used extensively throughout PipeWire for allocating
+arrays from protocol data, making it a wide attack surface.
+
+Fix by adding an explicit overflow check before the multiplication
+in the fallback path, matching the behavior of the real
+reallocarray().
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/pipewire/utils.c b/src/pipewire/utils.c
+index 103058a6c..c0e5a9733 100644
+--- a/src/pipewire/utils.c
++++ b/src/pipewire/utils.c
+@@ -368,6 +368,10 @@ void* pw_reallocarray(void *ptr, size_t nmemb, size_t size)
+ #ifdef HAVE_REALLOCARRAY
+ 	return reallocarray(ptr, nmemb, size);
+ #else
++	if (size > 0 && nmemb > SIZE_MAX / size) {
++		errno = ENOMEM;
++		return NULL;
++	}
+ 	return realloc(ptr, nmemb * size);
+ #endif
+ }
+
