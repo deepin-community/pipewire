@@ -1,0 +1,28 @@
+From 4a34da368e4559b3cb7747afb3098a0f2bb803db Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 09:27:37 +0200
+Subject: [PATCH] security: fix potential buffer over-read in combine-sink name
+ encoding
+
+spa_json_encode_string was called with sizeof(name)-1, which would
+not write a null terminator on truncation. Use sizeof(name) and skip
+sink names that don't fit in the buffer.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-combine-sink.c b/src/modules/module-protocol-pulse/modules/module-combine-sink.c
+index 962c22293..b19d0b552 100644
+--- a/src/modules/module-protocol-pulse/modules/module-combine-sink.c
++++ b/src/modules/module-protocol-pulse/modules/module-combine-sink.c
+@@ -185,7 +185,9 @@ static int module_combine_sink_load(struct module *module)
+ 	} else {
+ 		for (i = 0; data->sink_names[i] != NULL; i++) {
+ 			char name[1024];
+-			spa_json_encode_string(name, sizeof(name)-1, data->sink_names[i]);
++			if (spa_json_encode_string(name, sizeof(name), data->sink_names[i]) >= (int)sizeof(name))
++				continue;
++
+ 			fprintf(f, "  { matches = [ { media.class = \"Audio/Sink\" ");
+ 			fprintf(f, " node.name = %s } ]", name);
+ 			fprintf(f, "    actions = { create-stream = { } } }");
+
