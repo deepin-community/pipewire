@@ -1,0 +1,46 @@
+From eadaa2608aca218544d9b7d6e1ec4e6476b95110 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 6 May 2026 16:05:30 +0200
+Subject: [PATCH] alsa: clear output and log file after doing alsa API
+
+Also be a bit more careful when the handles are NULL.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index 62f1e08d3..7bb5eccd6 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -1068,7 +1068,7 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
+ 
+ int spa_alsa_clear(struct state *state)
+ {
+-	int err;
++	int err = 0;
+ 	struct state *follower;
+ 
+ 	spa_list_remove(&state->link);
+@@ -1094,10 +1094,6 @@ int spa_alsa_clear(struct state *state)
+ 	state->card = NULL;
+ 	state->card_index = SPA_ID_INVALID;
+ 
+-	if ((err = snd_output_close(state->output)) < 0)
+-		spa_log_warn(state->log, "output close failed: %s", snd_strerror(err));
+-	fclose(state->log_file);
+-
+ 	free(state->tag[0]);
+ 	free(state->tag[1]);
+ 
+@@ -1121,6 +1117,13 @@ int spa_alsa_clear(struct state *state)
+ 		}
+ 	}
+ 
++	if (state->output) {
++		if ((err = snd_output_close(state->output)) < 0)
++			spa_log_warn(state->log, "output close failed: %s", snd_strerror(err));
++	}
++	if (state->log_file)
++		fclose(state->log_file);
++
+ 	spa_clear_ptr(state->alsa_chmap, free);
+ 
+ 	return err;
+
