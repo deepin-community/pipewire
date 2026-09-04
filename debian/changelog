@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin19) unstable; urgency=medium
+
+  * Make rtkit a hard dependency of pipewire-bin
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Fri, 04 Sep 2026 16:33:05 +0800
+
 pipewire (1.6.4-1deepin18) unstable; urgency=medium
 
   * Downgrade hot-path logs (memblock/REQUEST/BW_PERIOD rate-matching) to trace to avoid log flooding
