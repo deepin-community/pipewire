@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Remove pending pong on metadata unbind to fix leaked pending counter leaving clients without updates
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 08 Sep 2026 10:29:21 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
