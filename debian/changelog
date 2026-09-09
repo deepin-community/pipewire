@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * jack: free port and clear buffers before disconnect to fix use-after-free in jack_client_close
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 09 Sep 2026 10:13:18 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
