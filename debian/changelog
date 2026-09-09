@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Fix RAOP TCP interleaved transport writing the packet length into the first ALAC payload word while the TCP header kept a zero length; write the RTP plus encoded-audio length into the interleaved header and leave the payload untouched
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 09 Sep 2026 10:23:20 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
