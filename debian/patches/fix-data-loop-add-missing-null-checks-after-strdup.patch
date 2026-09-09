@@ -1,0 +1,48 @@
+From 640af6b20f43510a80ecdd39aebcb024f702d356 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 28 Apr 2026 13:19:54 +0200
+Subject: [PATCH] security: add missing NULL checks after strdup in data-loop
+
+Memory Safety: Medium
+
+In pw_data_loop construction, strdup() calls for the thread affinity
+and class strings were not checked for failure. A failed strdup()
+would store NULL, leading to NULL pointer dereferences when these
+strings are later used for thread configuration.
+
+Fix by checking strdup() return values and failing initialization
+with -ENOMEM on allocation failure.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/pipewire/data-loop.c b/src/pipewire/data-loop.c
+index b8491d616..73f4251bc 100644
+--- a/src/pipewire/data-loop.c
++++ b/src/pipewire/data-loop.c
+@@ -121,8 +121,13 @@ static struct pw_data_loop *loop_new(struct pw_loop *loop, const struct spa_dict
+ 			this->rt_prio = atoi(str);
+ 		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_NAME)) != NULL)
+ 			name = str;
+-		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_AFFINITY)) != NULL)
++		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_AFFINITY)) != NULL) {
+ 			this->affinity = strdup(str);
++			if (this->affinity == NULL) {
++				res = -ENOMEM;
++				goto error_free;
++			}
++		}
+ 		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_RESET_ON_FORK)) != NULL)
+ 			this->reset_on_fork = spa_atob(str);
+ 	}
+@@ -132,6 +137,10 @@ static struct pw_data_loop *loop_new(struct pw_loop *loop, const struct spa_dict
+ 		name = "data-loop";
+ 
+ 	this->class = strdup(class);
++	if (this->class == NULL) {
++		res = -ENOMEM;
++		goto error_free;
++	}
+ 	this->classes = pw_strv_parse(class, strlen(class), INT_MAX, NULL);
+ 	if (!this->loop->name[0])
+ 		pw_loop_set_name(this->loop, name);
+
