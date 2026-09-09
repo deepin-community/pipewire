@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Add missing O_CLOEXEC/SOCK_CLOEXEC flags to prevent file descriptor leaks to child processes
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 09 Sep 2026 10:30:43 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
