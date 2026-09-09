@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * acp: partially revert f76327e0765 to fix Line Out mute breaking audio routing (issue #5246)
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 09 Sep 2026 10:32:36 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
