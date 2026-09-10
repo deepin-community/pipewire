@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Fix v4l2 to keep the media type of the filter when it does not name a format
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 10 Sep 2026 10:31:04 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
