@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Fix pod type confusion: parse route props as PodObject to validate object type
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 10 Sep 2026 10:30:43 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
