@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Fix ALSA plugin to wake up poll on errors and stop
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 11 Sep 2026 10:10:11 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
