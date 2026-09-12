@@ -1,0 +1,34 @@
+From 05bcfa7a2a4113e458f49d5b1002191cd7a223fd Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 17:15:04 +0200
+Subject: [PATCH] security: fix missing fdopen() NULL check in conf.c
+
+Memory Safety: Medium
+
+In pw_conf_save_state(), the return value of fdopen() was not checked
+for NULL. If fdopen() fails, subsequent fprintf() and fclose() calls
+would operate on a NULL FILE pointer, causing a crash. Additionally,
+the file descriptor would be leaked since fclose() would not be called.
+
+Added a NULL check after fdopen() that closes the raw fd and returns
+an error on failure.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/pipewire/conf.c b/src/pipewire/conf.c
+index 34091031b..386a08cb5 100644
+--- a/src/pipewire/conf.c
++++ b/src/pipewire/conf.c
+@@ -368,6 +368,11 @@ int pw_conf_save_state(const char *prefix, const char *name, const struct pw_pro
+ 	}
+ 
+ 	f = fdopen(fd, "w");
++	if (f == NULL) {
++		res = -errno;
++		close(fd);
++		return res;
++	}
+ 	fprintf(f, "{");
+ 	count += pw_properties_serialize_dict(f, &conf->dict, PW_PROPERTIES_FLAG_NL);
+ 	fprintf(f, "%s}", count == 0 ? " " : "\n");
+
