@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Fix missing malloc NULL checks in pffft to prevent NULL dereference crash and memory leak
+
+ -- deepin-ci-robot <packages@deepin.org>  Sat, 12 Sep 2026 10:18:57 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
