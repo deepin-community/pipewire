@@ -1,0 +1,42 @@
+From e75f72476bd46c33a9fc06cd61b8f91eb0000151 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 16:44:42 +0200
+Subject: [PATCH] security: fix missing malloc NULL checks in pffft
+
+Memory Safety: Medium
+
+In new_setup_simd(), the return value of malloc() for the PFFFT_Setup
+struct was not checked before dereferencing. Similarly,
+pffft_aligned_malloc() for the data buffer was not checked. If either
+allocation fails, the code dereferences NULL causing a crash.
+
+Add NULL checks for both allocations, freeing previously allocated
+memory on failure.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/filter-graph/pffft.c b/spa/plugins/filter-graph/pffft.c
+index 6ec105c02..1a50d09e7 100644
+--- a/spa/plugins/filter-graph/pffft.c
++++ b/spa/plugins/filter-graph/pffft.c
+@@ -1419,6 +1419,8 @@ static PFFFT_Setup *new_setup_simd(int N, pffft_transform_t transform)
+ 	/* unfortunately, the fft size must be a multiple of 16 for complex FFTs
+ 	   and 32 for real FFTs -- a lot of stuff would need to be rewritten to
+ 	   handle other cases (or maybe just switch to a scalar fft, I don't know..) */
++	if (s == NULL)
++		return NULL;
+ 	if (transform == PFFFT_REAL) {
+ 		assert((N % (2 * SIMD_SZ * SIMD_SZ)) == 0 && N > 0);
+ 	}
+@@ -1431,6 +1433,10 @@ static PFFFT_Setup *new_setup_simd(int N, pffft_transform_t transform)
+ 	/* nb of complex simd vectors */
+ 	s->Ncvec = (transform == PFFFT_REAL ? N / 2 : N) / SIMD_SZ;
+ 	s->data = (v4sf *) pffft_aligned_malloc(2 * s->Ncvec * sizeof(v4sf));
++	if (s->data == NULL) {
++		free(s);
++		return NULL;
++	}
+ 	s->e = (float *)s->data;
+ 	s->twiddle =
+ 	    (float *)(s->data + (2 * s->Ncvec * (SIMD_SZ - 1)) / SIMD_SZ);
+
