@@ -1,0 +1,21 @@
+From ac37cf8e04e94842fd01bcbbc156596146bef6ab Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 14 Sep 2026 18:48:19 +0200
+Subject: [PATCH] audioadapter: remove Buffer IO before clearing
+
+Make sure we have removed the Buffer IO from the follwer and converter
+before we free the buffers.
+
+diff --git a/spa/plugins/audioconvert/audioadapter.c b/spa/plugins/audioconvert/audioadapter.c
+index 5f0140a1c..addaf2760 100644
+--- a/spa/plugins/audioconvert/audioadapter.c
++++ b/spa/plugins/audioconvert/audioadapter.c
+@@ -2158,6 +2158,8 @@ static int impl_clear(struct spa_handle *handle)
+ 
+ 	this = (struct impl *) handle;
+ 
++	activate_io(this, false);
++
+ 	spa_hook_remove(&this->follower_listener);
+ 	spa_node_set_callbacks(this->follower, NULL, NULL);
+

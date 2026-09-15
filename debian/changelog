@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * Remove Buffer IO before clearing buffers in audioadapter to avoid dangling references (use-after-free) during node cleanup
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 15 Sep 2026 10:10:18 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
