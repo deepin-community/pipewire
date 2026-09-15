@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin20) unstable; urgency=medium
+
+  * spa: v4l2: nul-terminate the strings copied into the props
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 15 Sep 2026 10:10:32 +0800
+
 pipewire (1.6.4-1deepin19) unstable; urgency=medium
 
   * Make rtkit a hard dependency of pipewire-bin
