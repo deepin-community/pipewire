@@ -1,0 +1,54 @@
+From 5b6078426317c9d0ab67cc23d6b4f6925a12b107 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=88=98=E4=BD=B3=E5=92=8C?= <liujiahe@uniontech.com>
+Date: Mon, 14 Sep 2026 13:55:19 +0800
+Subject: [PATCH] spa: v4l2: nul-terminate the strings copied into the props
+
+
+diff --git a/spa/plugins/v4l2/v4l2-device.c b/spa/plugins/v4l2/v4l2-device.c
+index 54b0b78f0..8e34df82f 100644
+--- a/spa/plugins/v4l2/v4l2-device.c
++++ b/spa/plugins/v4l2/v4l2-device.c
+@@ -237,13 +237,13 @@ impl_init(const struct spa_handle_factory *factory,
+ 	reset_props(&this->props);
+ 
+ 	if (info && (str = spa_dict_lookup(info, SPA_KEY_API_V4L2_PATH)))
+-		strncpy(this->props.device, str, sizeof(this->props.device)-1);
++		spa_scnprintf(this->props.device, sizeof(this->props.device), "%s", str);
+ 	if (info && (str = spa_dict_lookup(info, SPA_KEY_DEVICE_DEVIDS)))
+-		strncpy(this->props.devnum, str, sizeof(this->props.devnum)-1);
++		spa_scnprintf(this->props.devnum, sizeof(this->props.devnum), "%s", str);
+ 	if (info && (str = spa_dict_lookup(info, SPA_KEY_DEVICE_PRODUCT_ID)))
+-		strncpy(this->props.product_id, str, sizeof(this->props.product_id)-1);
++		spa_scnprintf(this->props.product_id, sizeof(this->props.product_id), "%s", str);
+ 	if (info && (str = spa_dict_lookup(info, SPA_KEY_DEVICE_VENDOR_ID)))
+-		strncpy(this->props.vendor_id, str, sizeof(this->props.vendor_id)-1);
++		spa_scnprintf(this->props.vendor_id, sizeof(this->props.vendor_id), "%s", str);
+ 
+ 	return 0;
+ }
+diff --git a/spa/plugins/v4l2/v4l2-source.c b/spa/plugins/v4l2/v4l2-source.c
+index bcf3a8899..f90193b3b 100644
+--- a/spa/plugins/v4l2/v4l2-source.c
++++ b/spa/plugins/v4l2/v4l2-source.c
+@@ -401,9 +401,8 @@ static int impl_node_set_param(void *object,
+ 		SPA_POD_OBJECT_FOREACH(obj, prop) {
+ 			switch (prop->key) {
+ 			case SPA_PROP_device:
+-				strncpy(p->device,
+-						(char *)SPA_POD_CONTENTS(struct spa_pod_string, &prop->value),
+-						sizeof(p->device)-1);
++				spa_scnprintf(p->device, sizeof(p->device), "%s",
++						(char *)SPA_POD_CONTENTS(struct spa_pod_string, &prop->value));
+ 				break;
+ 			default:
+ 				spa_v4l2_set_control(this, prop, SPA_POD_BODY_CONST(&prop->value));
+@@ -1102,7 +1101,7 @@ impl_init(const struct spa_handle_factory *factory,
+ 		const char *k = info->items[i].key;
+ 		const char *s = info->items[i].value;
+ 		if (spa_streq(k, SPA_KEY_API_V4L2_PATH)) {
+-			strncpy(this->props.device, s, 63);
++			spa_scnprintf(this->props.device, sizeof(this->props.device), "%s", s);
+ 		} else if (spa_streq(k, "meta.videotransform.transform")) {
+ 			this->transform = spa_debug_type_find_type_short(spa_type_meta_videotransform_type, s);
+ 		} else if (spa_streq(k, "clock.name")) {
+
