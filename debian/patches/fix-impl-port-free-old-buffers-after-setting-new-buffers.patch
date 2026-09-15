@@ -1,0 +1,69 @@
+From 35b6f33ac9d9c54ba4c58d496a08bd552c9873a5 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 14 Sep 2026 19:28:51 +0200
+Subject: [PATCH] impl-port: free old buffers after setting new buffers
+
+When we negotiate new mixer buffers, free the old ones after we set the
+new ones because it might be that the mixer will need to do some
+cleanup of the old buffers first.
+
+diff --git a/src/pipewire/impl-port.c b/src/pipewire/impl-port.c
+index b405c01a4..6124331cf 100644
+--- a/src/pipewire/impl-port.c
++++ b/src/pipewire/impl-port.c
+@@ -2131,10 +2131,13 @@ static int negotiate_mixer_buffers(struct pw_impl_port *port, uint32_t flags,
+ {
+ 	int res, res2;
+ 	struct pw_impl_node *node = port->node;
++	struct pw_buffers mix_buffers;
+ 
+ 	if (SPA_FLAG_IS_SET(port->mix_flags, PW_IMPL_PORT_MIX_FLAG_MIX_ONLY))
+ 		return 0;
+ 
++	spa_zero(mix_buffers);
++
+ 	if (SPA_FLAG_IS_SET(port->mix_flags, PW_IMPL_PORT_MIX_FLAG_NEGOTIATE)) {
+ 		int alloc_flags;
+ 
+@@ -2158,19 +2161,17 @@ static int negotiate_mixer_buffers(struct pw_impl_port *port, uint32_t flags,
+ 
+ 		pw_loop_locked(node->data_loop, do_remove_port, SPA_ID_INVALID, NULL, 0, port);
+ 
+-		pw_buffers_clear(&port->mix_buffers);
+-
+ 		if (n_buffers > 0) {
+ 			if ((res = pw_buffers_negotiate(node->context, alloc_flags,
+ 					port->mix, 0,
+ 					node->node, port->port_id,
+-					&port->mix_buffers)) < 0) {
++					&mix_buffers)) < 0) {
+ 				pw_log_warn("%p: can't negotiate buffers: %s",
+ 						port, spa_strerror(res));
+ 				return res;
+ 			}
+-			buffers = port->mix_buffers.buffers;
+-			n_buffers = port->mix_buffers.n_buffers;
++			buffers = mix_buffers.buffers;
++			n_buffers = mix_buffers.n_buffers;
+ 			flags = 0;
+ 		}
+ 	}
+@@ -2190,10 +2191,17 @@ static int negotiate_mixer_buffers(struct pw_impl_port *port, uint32_t flags,
+ 			if (res2 != -ENOTSUP && n_buffers > 0) {
+ 				pw_log_warn("%p: mix use buffers failed: %d (%s)",
+ 						port, res2, spa_strerror(res2));
++				if (mix_buffers.n_buffers)
++					pw_buffers_clear(&mix_buffers);
+ 				return res2;
+ 			}
+ 		}
+ 	}
++	if (mix_buffers.n_buffers) {
++		pw_buffers_clear(&port->mix_buffers);
++		port->mix_buffers = mix_buffers;
++	}
++
+ 	if (n_buffers > 0) {
+ 		spa_node_port_set_io(node->node,
+ 				     port->direction, port->port_id,
+
