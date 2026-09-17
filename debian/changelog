@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin21) unstable; urgency=medium
+
+  * spa: v4l2: enumerate the formats and filter the result
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 17 Sep 2026 10:27:06 +0800
+
 pipewire (1.6.4-1deepin20) unstable; urgency=medium
 
   * Rebuild with LTO enabled (dpkg vendor feature optimize/lto).
