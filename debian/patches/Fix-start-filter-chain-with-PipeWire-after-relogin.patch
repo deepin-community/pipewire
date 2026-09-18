@@ -1,0 +1,30 @@
+From 85e5e09f63829390b2c44d580f8c2fd61caed268 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Fri, 18 Sep 2026 13:42:46 +0800
+Subject: [PATCH] fix: start filter-chain with PipeWire after relogin
+
+filter-chain.service was only pulled in by default.target. Since the
+user manager may remain active across logout/login, default.target is
+not re-triggered and the service stays stopped after PipeWire restarts.
+
+Add pipewire.service as an additional WantedBy target so the filter
+chain is automatically pulled in whenever PipeWire starts, matching the
+behavior of wireplumber.service.
+---
+ src/daemon/systemd/user/filter-chain.service.in | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/daemon/systemd/user/filter-chain.service.in b/src/daemon/systemd/user/filter-chain.service.in
+index 542cbd7..a614cd0 100644
+--- a/src/daemon/systemd/user/filter-chain.service.in
++++ b/src/daemon/systemd/user/filter-chain.service.in
+@@ -17,5 +17,4 @@ Restart=on-failure
+ Slice=session.slice
+ 
+ [Install]
+-Also=pipewire.socket
+-WantedBy=default.target
++WantedBy=pipewire.service
+-- 
+2.20.1
+
