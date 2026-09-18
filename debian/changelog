@@ -1,3 +1,11 @@
+pipewire (1.6.4-1deepin22) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-5674 (high) - only dlopen from the defined search
+    paths   Upstream: https://gitlab.freedesktop.org/pipewire/pipewire/-
+    /commit/6bc07dfe0e18043aaf99f866b2c37f20e4a5e065
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 18 Sep 2026 23:45:17 +0800
+
 pipewire (1.6.4-1deepin21) unstable; urgency=medium
 
   * Start filter-chain with PipeWire after relogin
