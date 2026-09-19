@@ -17,3 +17,4 @@ fix-spa-alsa-pcm-log-write-use-memchr.patch
 Fix-rebalance-rnnoise-source-for-natural-sounding-speech.patch
 fix-logging-downgrade-hot-path-logs-to-trace.patch
 Fix-start-filter-chain-with-PipeWire-after-relogin.patch
+fix-audioconvert-latency-passthrough-monitor-ports.patch
