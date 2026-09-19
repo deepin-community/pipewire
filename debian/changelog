@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin22) unstable; urgency=medium
+
+  * Handle latency passthrough on monitor ports
+
+ -- deepin-ci-robot <packages@deepin.org>  Sat, 19 Sep 2026 10:06:49 +0800
+
 pipewire (1.6.4-1deepin21) unstable; urgency=medium
 
   * Start filter-chain with PipeWire after relogin
