@@ -252,12 +252,12 @@ Section: video
 Architecture: any
 Multi-Arch: foreign
 Depends: libpipewire-0.3-modules (= ${binary:Version}),
-         rnnoise-plugin-ladspa (>= 1.10-0deepin1),
          rtkit,
          ${misc:Depends},
          ${shlibs:Depends}
 Recommends: dbus-user-session,
-            wireplumber
+            wireplumber,
+            rnnoise-plugin-ladspa (>= 1.10-0deepin1)
 Breaks: pipewire (<< 0.3.5)
 Replaces: pipewire (<< 0.3.5)
 Description: PipeWire multimedia server - programs
