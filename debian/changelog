@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin23) unstable; urgency=medium
+
+  * Move rnnoise-plugin-ladspa from Depends to Recommends
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Thu, 24 Sep 2026 10:35:49 +0800
+
 pipewire (1.6.4-1deepin22) unstable; urgency=medium
 
   * fix(cve): CVE-2026-5674 (high) - only dlopen from the defined search
