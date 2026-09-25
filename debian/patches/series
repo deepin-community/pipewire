@@ -18,3 +18,4 @@ Fix-rebalance-rnnoise-source-for-natural-sounding-speech.patch
 fix-logging-downgrade-hot-path-logs-to-trace.patch
 Fix-start-filter-chain-with-PipeWire-after-relogin.patch
 CVE-2026-5674.patch
+fix-bluez5-reset-transport-error-count-on-acquire.patch
