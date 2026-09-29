@@ -1,3 +1,14 @@
+pipewire (1.6.4-1deepin24) unstable; urgency=medium
+
+  * impl-node: remove pending from peers of inactive node
+    When a node is INACTIVE but still in the driver target list, manually
+    decrease the pending counter of the peers until the server has
+    processed the message and the inactive node is unprepared, to avoid
+    xruns.
+    Upstream: https://github.com/PipeWire/pipewire/commit/2daeb938a8b97fd15eb93d3cff369db6da708d34
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 29 Sep 2026 10:14:00 +0800
+
 pipewire (1.6.4-1deepin23) unstable; urgency=medium
 
   * Move rnnoise-plugin-ladspa from Depends to Recommends
