@@ -1,0 +1,58 @@
+From b71b90721d2198d916d2b4cbbb22441c0f8af8da Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 28 Sep 2026 13:10:57 +0200
+Subject: [PATCH] impl-node: don't update the driver pending state
+
+The driver calculates its own pending state when it starts the cycle,
+when a node is activated, updating the pending state is not helping
+because the new node was nod included in the current cycle and won't be
+triggered anyway so that the new pending state of the driver will never
+trigger.
+
+See #5408
+
+diff --git a/src/pipewire/impl-node.c b/src/pipewire/impl-node.c
+index abb85c4a6..03d88567b 100644
+--- a/src/pipewire/impl-node.c
++++ b/src/pipewire/impl-node.c
+@@ -138,18 +138,23 @@ void pw_node_peer_unref(struct pw_node_peer *peer)
+ 
+ static inline void activate_target(struct pw_impl_node *node, struct pw_node_target *t)
+ {
+-	struct pw_node_activation_state *state = &t->activation->state[0];
++	struct pw_node_activation *ta = t->activation;
++	struct pw_node_activation_state *state = &ta->state[0];
+ 	if (!t->active) {
++		uint32_t driver_id = ta->driver_id;
++		uint32_t id = ta->position.clock.id;
++
+ 		if (!node->async) {
+ 			if (!node->exported) {
+ 				SPA_ATOMIC_INC(state->required);
+-				SPA_ATOMIC_INC(state->pending);
++				if (driver_id != id)
++					SPA_ATOMIC_INC(state->pending);
+ 			}
+ 		}
+ 		t->active = true;
+-		pw_log_debug("%p: target state:%p id:%d pending:%d/%d %d:%d:%d",
+-				node, state, t->id, state->pending, state->required,
+-				node->async, node->driving, node->exported);
++		pw_log_debug("%p: (%s-%d) target state:%d:%p pending:%d/%d %d:%d:%d  %u %u",
++				node, node->name, node->info.id, t->id, state, state->pending, state->required,
++				node->async, node->driving, node->exported, driver_id, id);
+ 	}
+ }
+ 
+@@ -168,8 +173,8 @@ static inline void deactivate_target(struct pw_impl_node *node, struct pw_node_t
+ 				SPA_ATOMIC_DEC(state->required);
+ 		}
+ 		t->active = false;
+-		pw_log_debug("%p: target state:%p id:%d pending:%d/%d %d:%d:%d trigger:%"PRIu64,
+-				node, state, t->id, state->pending, state->required,
++		pw_log_debug("%p: (%s-%d) target state:%d:%p pending:%d/%d %d:%d:%d trigger:%"PRIu64,
++				node, node->name, node->info.id, t->id, state, state->pending, state->required,
+ 				node->async, node->driving, node->exported, trigger);
+ 	}
+ }
+
