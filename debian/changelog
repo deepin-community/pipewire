@@ -1,3 +1,15 @@
+pipewire (1.6.4-1deepin24) unstable; urgency=medium
+
+  * Integrate backport PRs #253 and #254:
+    - impl-node: don't update the driver pending state (PR #253,
+      commit b71b90721d2198d916d2b4cbbb22441c0f8af8da)
+    - impl-node: remove pending from peers of inactive node (PR #254,
+      commit 2daeb938a8b97fd15eb93d3cff369db6da708d34)
+    Both patches modify src/pipewire/impl-node.c in different function
+    regions and apply cleanly together.
+
+ -- lensup-merger <packages@deepin.org>  Mon, 29 Sep 2026 11:00:00 +0800
+
 pipewire (1.6.4-1deepin23) unstable; urgency=medium
 
   * Move rnnoise-plugin-ladspa from Depends to Recommends
