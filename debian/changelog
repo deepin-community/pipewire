@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin24) unstable; urgency=medium
+
+  * fix(impl-node): don't update the driver pending state to avoid driver cycle hang when dynamically activating a node
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 29 Sep 2026 10:14:25 +0800
+
 pipewire (1.6.4-1deepin23) unstable; urgency=medium
 
   * Move rnnoise-plugin-ladspa from Depends to Recommends
