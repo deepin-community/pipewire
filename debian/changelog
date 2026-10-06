@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin24) unstable; urgency=medium
+
+  * fix(gst): fix locking order in gstpipewiresrc buffer recycle
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 06 Oct 2026 10:11:48 +0800
+
 pipewire (1.6.4-1deepin23) unstable; urgency=medium
 
   * Move rnnoise-plugin-ladspa from Depends to Recommends
