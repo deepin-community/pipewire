@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin24) unstable; urgency=medium
+
+  * impl-link: add ParamBegin and ParamEnd around negotiation
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 07 Oct 2026 10:14:42 +0800
+
 pipewire (1.6.4-1deepin23) unstable; urgency=medium
 
   * Move rnnoise-plugin-ladspa from Depends to Recommends
