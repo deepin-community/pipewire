@@ -65,7 +65,7 @@ override_dh_auto_configure:
 		-Dauto_features=enabled \
 		-Davahi=enabled \
 		-Dbluez5-backend-native-mm=enabled \
-		-Dbluez5-codec-aac=disabled \
+		-Dbluez5-codec-aac=enabled \
 		-Dbluez5-codec-aptx=enabled \
 		-Dbluez5-codec-lc3=enabled \
 		-Dbluez5-codec-lc3plus=disabled \
