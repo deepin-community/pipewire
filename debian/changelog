@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin25) unstable; urgency=medium
+
+  * wavfile: fix F64_LE bits (32 -> 64)  Upstream: https://github.com/PipeWire/pipewire/commit/b37700cb2083d68477cef9002d1f676dff796f3c
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 09 Oct 2026 10:11:57 +0800
+
 pipewire (1.6.4-1deepin24) unstable; urgency=medium
 
   * Enable AAC bluetooth codec in libspa-0.2-modules-extra
