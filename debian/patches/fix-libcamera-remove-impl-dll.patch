@@ -1,0 +1,62 @@
+From 1bfa3a9a4b6d288f241405b26f7b2231b4a3ece9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Barnab=C3=A1s=20P=C5=91cze?= <pobrn@protonmail.com>
+Date: Thu, 15 Oct 2026 22:09:09 +0200
+Subject: [PATCH] spa: libcamera: source: remove `impl::dll`
+
+Commit 41e35c7b178e ("v4l2: use dll to track rate difference") added
+delay locked loops for both the v4l2 and libcamera sources. However,
+rate handling has never been implemented in the libcamera source, so
+`port->info.rate` stayed as 0/0, poisoning the calculations with NaN,
+making the results useless. So remove it.
+
+Index: repo/spa/plugins/libcamera/libcamera-source.cpp
+===================================================================
+--- repo.orig/spa/plugins/libcamera/libcamera-source.cpp
++++ repo/spa/plugins/libcamera/libcamera-source.cpp
+@@ -167,8 +167,6 @@ struct impl {
+ 	     std::shared_ptr<CameraManager> manager, std::shared_ptr<Camera> camera,
+ 	     std::unique_ptr<CameraConfiguration> config);
+ 
+-	struct spa_dll dll;
+-
+ 	void stop()
+ 	{
+ 		spa_loop_locked(
+@@ -1060,18 +1058,6 @@ void handle_completed_request(struct imp
+ 	const FrameMetadata &fmd = buffer->metadata();
+ 
+ 	if (impl->clock) {
+-		double target = (double)port->info.rate.num / port->info.rate.denom;
+-		double corr;
+-
+-		if (impl->dll.bw == 0.0) {
+-			spa_dll_set_bw(&impl->dll, SPA_DLL_BW_MAX, port->info.rate.denom, port->info.rate.denom);
+-			impl->clock->next_nsec = fmd.timestamp;
+-			corr = 1.0;
+-		} else {
+-			double diff = ((double)impl->clock->next_nsec - (double)fmd.timestamp) / SPA_NSEC_PER_SEC;
+-			double error = port->info.rate.denom * (diff - target);
+-			corr = spa_dll_update(&impl->dll, SPA_CLAMPD(error, -128., 128.));
+-		}
+ 		/* FIXME, we should follow the driver clock and target_ values.
+ 		 * for now we ignore and use our own. */
+ 		impl->clock->target_rate = port->rate;
+@@ -1082,8 +1068,8 @@ void handle_completed_request(struct imp
+ 		impl->clock->position = fmd.sequence;
+ 		impl->clock->duration = 1;
+ 		impl->clock->delay = 0;
+-		impl->clock->rate_diff = corr;
+-		impl->clock->next_nsec += (uint64_t) (target * SPA_NSEC_PER_SEC * corr);
++		impl->clock->rate_diff = 1;
++		impl->clock->next_nsec = fmd.timestamp + 1;
+ 	}
+ 
+ 	if (b->h) {
+@@ -1360,7 +1346,6 @@ int spa_libcamera_stream_on(struct impl
+ 			goto err_stop;
+ 	}
+ 
+-	impl->dll.bw = 0.0;
+ 	impl->active = true;
+ 
+ 	res = spa_loop_locked(
