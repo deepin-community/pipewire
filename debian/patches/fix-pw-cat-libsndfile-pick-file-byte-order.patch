@@ -1,0 +1,44 @@
+From 5e0c00b672fa7b89cfa03641172c3163d6516583 Mon Sep 17 00:00:00 2001
+From: Charles <charles05@canonical.com>
+Date: Fri, 16 Oct 2026 18:40:27 +0100
+Subject: [PATCH] pw-cat: always let libsndfile pick the file byte order
+
+format_from_filename() asked for SF_ENDIAN_CPU on every container
+except a short list. libsndfile rejects SF_ENDIAN_CPU for W64, RF64,
+SD2 and others, so `pw-record foo.w64` fails with "Format not
+recognised" at any channel count. WAVEX hit the same problem and was
+added to the list in d444eebea.
+
+SF_ENDIAN_FILE works on every container that accepts SF_ENDIAN_CPU, so
+use it everywhere and drop the list. WAV and RAW come out the same on
+little-endian hosts; AU and CAF are now written in their native
+big-endian order, which every reader handles.
+
+diff --git a/src/tools/pw-cat.c b/src/tools/pw-cat.c
+index 9da63b408..3a11f5a6f 100644
+--- a/src/tools/pw-cat.c
++++ b/src/tools/pw-cat.c
+@@ -1847,19 +1847,9 @@ static void format_from_filename(SF_INFO *info, const char *filename, const char
+ 	if (format == SF_FORMAT_WAV && info->channels > 2)
+ 		format = SF_FORMAT_WAVEX;
+ 
+-	switch (format & SF_FORMAT_TYPEMASK) {
+-	case SF_FORMAT_OGG:
+-	case SF_FORMAT_FLAC:
+-	case SF_FORMAT_MPEG:
+-	case SF_FORMAT_AIFF:
+-	case SF_FORMAT_WAVEX:
+-		info->format |= SF_ENDIAN_FILE;
+-		break;
+-	default:
+-		info->format |= SF_ENDIAN_CPU;
+-		break;
+-	}
+-	info->format |= format;
++	/* Let libsndfile pick the container's native byte order; many
++	 * containers (W64, RF64, WAVEX, FLAC, ...) reject SF_ENDIAN_CPU. */
++	info->format |= SF_ENDIAN_FILE | format;
+ }
+ 
+ static void list_containers(struct data *d)
+
