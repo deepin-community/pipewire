@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin25) unstable; urgency=medium
+
+  * Backport upstream fix: use a unique serial instead of a raw pointer as ID for bluez5 device and transport properties to avoid use-after-free (UAF)
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 20 Oct 2026 10:29:05 +0800
+
 pipewire (1.6.4-1deepin24) unstable; urgency=medium
 
   * Enable AAC bluetooth codec in libspa-0.2-modules-extra
