@@ -1,0 +1,31 @@
+From 31137766ec23a3760c71622686bf92a49908bd44 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jens=20M=C3=B6lzer?= <moelzerjens@gmail.com>
+Date: Tue, 13 Oct 2026 21:52:08 +0000
+Subject: [PATCH] module-rtp: fail rtp_stream_new if psamples is zero
+
+If impl->psamples ended up being 0 it caused a crash via SIGFPE from the
+resulting modulo 0 in SPA_ROUND_DOWN.
+
+Log an error message and return with -EINVAL instead.
+
+diff --git a/src/modules/module-rtp/stream.c b/src/modules/module-rtp/stream.c
+index b7e6cb706..4d7063329 100644
+--- a/src/modules/module-rtp/stream.c
++++ b/src/modules/module-rtp/stream.c
+@@ -856,6 +856,15 @@ struct rtp_stream *rtp_stream_new(struct pw_core *core,
+ 		}
+ 	}
+ 
++	if (impl->psamples == 0) {
++		if (have_ptime)
++			pw_log_error("rtp.ptime %f too small", ptime);
++		else
++			pw_log_error("sess.max-ptime %f too small", max_ptime);
++		res = -EINVAL;
++		goto out;
++	}
++
+ 	ptime = samples_to_msec(impl, impl->psamples);
+ 
+ 	/* For senders, the default latency is ptime and for a receiver it is
+
