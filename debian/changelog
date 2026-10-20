@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin25) unstable; urgency=medium
+
+  * Fix module-rtp crash (SIGFPE) when psamples is zero
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 20 Oct 2026 10:24:58 +0800
+
 pipewire (1.6.4-1deepin24) unstable; urgency=medium
 
   * Enable AAC bluetooth codec in libspa-0.2-modules-extra
