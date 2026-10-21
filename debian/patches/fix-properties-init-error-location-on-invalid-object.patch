@@ -1,0 +1,27 @@
+From 1a83c8211eaec734e85b4c0ce5f5493c049e048b Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 20 Oct 2026 17:40:34 +0200
+Subject: [PATCH] properties: init error_location on invalid object
+
+We return an error when we can't start the object persing but
+don't set the error location to anything valid. Caller might assume the
+error location has something in it and crash when it contains garbage.
+
+diff --git a/src/pipewire/properties.c b/src/pipewire/properties.c
+index 3d7686f7a..bcd17ae8d 100644
+--- a/src/pipewire/properties.c
++++ b/src/pipewire/properties.c
+@@ -219,8 +219,11 @@ static int update_string(struct pw_properties *props, const char *str, size_t si
+ 	struct properties changes;
+ 	const char *value;
+ 
+-	if ((res = spa_json_begin_object_relax(&it[0], str, size)) <= 0)
++	if ((res = spa_json_begin_object_relax(&it[0], str, size)) <= 0) {
++		if (loc)
++			*loc = (struct spa_error_location){ 0, 0, 0, NULL, "Invalid object" };
+ 		return res;
++	}
+ 
+ 	if (props)
+ 		properties_init(&changes, 16);
+
