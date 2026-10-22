@@ -1,3 +1,11 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Integrate backport PRs #43, #47-#80: CVE-2026-14324 fix, gst
+    deviceprovider/jack/libcamera/rtp/alsa/bluez5/gstpipewiresrc fixes,
+    conf and filter-graph improvements (35 PRs aggregated as quilt patches)
+
+ -- jiabowen <jiabowen@uniontech.com>  Thu, 22 Oct 2026 22:02:38 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration

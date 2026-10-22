@@ -1,0 +1,45 @@
+From 743ce3b6d27aa710303a5743636adcf92f67fde4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Lipinsk=C3=BD?=
+ <18076-Mr-Tao@users.noreply.gitlab.freedesktop.org>
+Date: Tue, 28 Jul 2026 16:49:06 +0200
+Subject: [PATCH] module-raop: avoid sending unknown initial volume
+
+rtsp_record_reply() sends impl->volume after RECORD succeeds. Before
+channel volume properties have been received, impl is zero-initialized, so
+this sends 0 dB and can unexpectedly raise the receiver to full volume.
+
+Track whether a channel volume is known and gate all remote volume requests
+on that state. Keep the RECORD-time request so reconnecting a stream
+reasserts its previously known volume.
+
+Fixes: e3d715dfdf17478a3d5c2e4372f36c1f38ce4836 ("module-raop: only send volume when recording")
+
+Index: pipewire/src/modules/module-raop-sink.c
+===================================================================
+--- pipewire.orig/src/modules/module-raop-sink.c
++++ pipewire/src/modules/module-raop-sink.c
+@@ -267,6 +267,7 @@ struct impl {
+ 	unsigned int connected:1;
+ 	unsigned int ready:1;
+ 	unsigned int recording:1;
++	unsigned int volume_valid:1;
+ 
+ 	bool mute;
+ 	float volume;
+@@ -820,7 +821,7 @@ static int rtsp_log_reply_status(void *d
+ 
+ static int rtsp_send_volume(struct impl *impl)
+ {
+-	if (!impl->recording)
++	if (!impl->recording || !impl->volume_valid)
+ 		return 0;
+ 
+ 	char header[128], volstr[64];
+@@ -1617,6 +1618,7 @@ static void stream_props_changed(struct
+ 				volume /= n_vols;
+ 				volume = SPA_CLAMPF(powf(volume, 1.0f / POW_VALUE18F) * 30 - 30, VOLUME_MIN, VOLUME_MAX);
+ 				impl->volume = volume;
++				impl->volume_valid = true;
+ 
+ 				rtsp_send_volume(impl);
+ 				spa_pod_builder_prop(&b, SPA_PROP_softVolumes, 0);

@@ -1,0 +1,152 @@
+From 30ff8da174121567c06a576bf2a83e71779ee991 Mon Sep 17 00:00:00 2001
+From: Viorel Cernateanu <vrilutza@gmail.com>
+Date: Sat, 1 Aug 2026 09:55:07 +0300
+Subject: [PATCH] gstpipewiresrc: do not recycle a pool buffer with the loop
+ lock held
+
+buffer_recycle() takes GST_OBJECT_LOCK (data->pool) and then
+pw_thread_loop_lock(). gst_pipewire_src_create() holds the loop lock across
+dequeue_buffer(), so any recycle that runs from in there takes the two in the
+opposite order and can deadlock against a consumer recycling a buffer from
+another thread.
+
+That is reachable today with use-bufferpool=false: only the sharing path adds
+gst_buffer_add_parent_buffer_meta(), so without it the gst_buffer_unref() at the
+end of dequeue_buffer() drops the last reference and buffer_recycle() runs
+inline, on the streaming thread, under the loop lock.
+
+Keep the reference instead and drop it once create() has released the loop lock,
+which puts the two locks back in the order every other caller uses. The pool
+buffer still goes back immediately: what is deferred is the rest of create(),
+which does no waiting.
+
+I hit this with a patch of my own that made the copying path reachable by
+default, on a MacBookPro14,1 with GNOME Snapshot as the consumer: the GStreamer
+streaming task sat in buffer_recycle() waiting for GST_OBJECT_LOCK (pool) while
+GTK's render thread held that lock inside buffer_recycle() and waited for the
+loop lock, having got there through gdk_dmabuf_texture_dispose(). Ten runs out
+of fifty-six froze. I have not reproduced it with use-bufferpool=false alone,
+since I have no consumer here that both sets it and recycles off-thread, so for
+that configuration this is read from the code rather than measured.
+
+The comment already in buffer_recycle() about queues with min-threshold-buffers
+describes the same hazard from another direction.
+
+dequeue_buffer() can also let go of a buffer it has already taken off the pool:
+when every chunk is empty gst_buffer_get_size() is zero, it drops the buffer and
+returns NULL, and create() goes back round the loop to wait for the next one.
+Release the deferred buffer there as well, before waiting -- otherwise the next
+dequeue overwrites the pointer, that buffer is never recycled, and the producer
+loses it for good.
+
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index 224e2f0e8..2831f9b5f 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -539,6 +539,24 @@ gst_pipewire_src_init (GstPipeWireSrc * src)
+   src->transform_value = UINT32_MAX;
+ }
+ 
++/* Drop a pool buffer whose last reference we hold, once the loop lock is not
++ * held any more. buffer_recycle() takes GST_OBJECT_LOCK (pool) first and the
++ * loop lock second; gst_pipewire_src_create() holds the loop lock across
++ * dequeue_buffer(). Releasing the last reference from in there takes those two
++ * in the opposite order from every other caller, which deadlocks against a
++ * consumer recycling a buffer from another thread. */
++static void
++release_pool_buffer (GstPipeWireSrc *pwsrc)
++{
++  GstBuffer *buf = pwsrc->buf_to_release;
++
++  if (buf == NULL)
++    return;
++
++  pwsrc->buf_to_release = NULL;
++  gst_buffer_unref (buf);
++}
++
+ static gboolean
+ buffer_recycle (GstMiniObject *obj)
+ {
+@@ -884,9 +902,16 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
+       GST_BUFFER_FLAG_SET (buf, GST_BUFFER_FLAG_CORRUPTED);
+     }
+   }
+-  if (pwsrc->use_bufferpool != USE_BUFFERPOOL_NO)
++  if (pwsrc->use_bufferpool != USE_BUFFERPOOL_NO) {
++    /* the meta keeps a reference, so this is not the last one and the recycle
++     * happens later, from whichever thread drops it */
+     gst_buffer_add_parent_buffer_meta (buf, data->buf);
+-  gst_buffer_unref (data->buf);
++    gst_buffer_unref (data->buf);
++  } else {
++    /* without the meta this *is* the last reference: leave it to the caller to
++     * drop once the loop lock is released, see release_pool_buffer() */
++    pwsrc->buf_to_release = data->buf;
++  }
+ 
+   if (gst_buffer_get_size(buf) == 0)
+   {
+@@ -1650,6 +1675,15 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
+         break;
+       }
+     }
++    if (pwsrc->buf_to_release != NULL) {
++      /* dequeue_buffer() took a buffer off the pool and then dropped it. Hand
++       * it back to the producer before waiting for the next one, or the next
++       * dequeue overwrites the pointer and the buffer is never recycled. */
++      pw_thread_loop_unlock (pwsrc->stream->core->loop);
++      release_pool_buffer (pwsrc);
++      pw_thread_loop_lock (pwsrc->stream->core->loop);
++      continue;
++    }
+     timeout = FALSE;
+     if (pwsrc->keepalive_time > 0) {
+       if (!have_abstime) {
+@@ -1666,6 +1700,7 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
+     }
+   }
+   pw_thread_loop_unlock (pwsrc->stream->core->loop);
++  release_pool_buffer (pwsrc);
+ 
+   *buffer = buf;
+ 
+@@ -1705,21 +1740,25 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
+ not_negotiated:
+   {
+     pw_thread_loop_unlock (pwsrc->stream->core->loop);
++    release_pool_buffer (pwsrc);
+     return GST_FLOW_NOT_NEGOTIATED;
+   }
+ streaming_eos:
+   {
+     pw_thread_loop_unlock (pwsrc->stream->core->loop);
++    release_pool_buffer (pwsrc);
+     return GST_FLOW_EOS;
+   }
+ streaming_error:
+   {
+     pw_thread_loop_unlock (pwsrc->stream->core->loop);
++    release_pool_buffer (pwsrc);
+     return GST_FLOW_ERROR;
+   }
+ streaming_stopped:
+   {
+     pw_thread_loop_unlock (pwsrc->stream->core->loop);
++    release_pool_buffer (pwsrc);
+     return GST_FLOW_FLUSHING;
+   }
+ }
+diff --git a/src/gst/gstpipewiresrc.h b/src/gst/gstpipewiresrc.h
+index 4b0f57e0e..7e4813cde 100644
+--- a/src/gst/gstpipewiresrc.h
++++ b/src/gst/gstpipewiresrc.h
+@@ -54,6 +54,7 @@ struct _GstPipeWireSrc {
+ 
+   /*< private >*/
+   gint n_buffers;
++  GstBuffer *buf_to_release;
+   gint use_bufferpool;
+   gint min_buffers;
+   gint max_buffers;
+
