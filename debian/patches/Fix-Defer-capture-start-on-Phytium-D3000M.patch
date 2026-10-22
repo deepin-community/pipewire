@@ -1,0 +1,177 @@
+BugLink: https://pms.uniontech.com/task-view-385831.html
+BugLink: https://pms.uniontech.com/bug-view-378981.html
+
+Port of debian/patches/deepin-task385831-Defer-capture-start-on-Phytium-D3000M.patch
+from PulseAudio: the initial snd_pcm_start() for capture is suppressed and
+re-issued once a stream is actually recording.
+
+The flag is delivered as the PULSE_DEFER_CAPTURE_START udev property, which is
+mapped to the api.alsa.defer-capture-start node property. It is set by the
+machine-specific udev rule distributed by the os-config package on matching
+machines, and can also be provided through WirePlumber's monitor.alsa.rules.
+---
+--- a/spa/plugins/alsa/alsa-acp-device.c
++++ b/spa/plugins/alsa/alsa-acp-device.c
+@@ -161,7 +161,7 @@
+ 	char codecs[512];
+ 	struct spa_device_object_info info;
+ 	struct acp_card *card = this->card;
+-	const char *stream, *card_id, *bus;
++	const char *stream, *card_id, *bus, *defer_start;
+ 	struct spa_strbuf b;
+ 
+ 	info = SPA_DEVICE_OBJECT_INFO_INIT();
+@@ -177,7 +177,7 @@
+ 
+ 	info.change_mask = SPA_DEVICE_OBJECT_CHANGE_MASK_PROPS;
+ 
+-	items = alloca((dev->props.n_items + 12) * sizeof(*items));
++	items = alloca((dev->props.n_items + 13) * sizeof(*items));
+ 	n_items = 0;
+ 
+ 	snprintf(card_index, sizeof(card_index), "%d", card->index);
+@@ -218,6 +218,11 @@
+ 	snprintf(routes, sizeof(routes), "%d", dev->n_ports);
+ 	items[n_items++] = SPA_DICT_ITEM_INIT("device.routes", routes);
+ 
++	/* Card-level machine workaround. It is picked up by the PCM source
++	 * and defers the initial capture start, see alsa-pcm.c */
++	if ((defer_start = acp_dict_lookup(&card->props, "api.alsa.defer-capture-start")) != NULL)
++		items[n_items++] = SPA_DICT_ITEM_INIT("api.alsa.defer-capture-start", defer_start);
++
+ 	acp_dict_for_each(it, &dev->props)
+ 		items[n_items++] = SPA_DICT_ITEM_INIT(it->key, it->value);
+ 
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -228,6 +228,8 @@
+ 		spa_scnprintf(state->props.media_class, sizeof(state->props.media_class), "%s", s);
+ 	} else if (spa_streq(k, "api.alsa.split.parent")) {
+ 		state->is_split_parent = true;
++	} else if (spa_streq(k, "api.alsa.defer-capture-start")) {
++		state->defer_capture_start = spa_atob(s);
+ 	} else if (spa_streq(k, "api.alsa.skip-formats-before-s16")) {
+ 		state->skip_formats_before_s16 = spa_atob(s);
+ 		fmt_change++;
+@@ -3458,12 +3460,55 @@
+ 	return total_frames;
+ }
+ 
++/* Machine-specific workaround (e.g. Phytium D3000M): issuing
++ * SNDRV_PCM_IOCTL_START during power-on initialization of the codec can
++ * make the HDA-to-USB communication hang. The initial start is therefore
++ * suppressed (see spa_alsa_start()) and re-issued here instead, once this
++ * node is actually running, which means a stream is really recording. */
++static int defer_start_capture(struct state *state)
++{
++	int res;
++	snd_pcm_state_t st;
++
++	if (SPA_LIKELY(!state->defer_capture_start ||
++			state->stream != SND_PCM_STREAM_CAPTURE))
++		return 0;
++	/* never start the capture before a stream is recording */
++	if (SPA_UNLIKELY(!state->started))
++		return 0;
++
++	/* linked PCM streams are started as a whole by the link partner,
++	 * do_start() does not issue SNDRV_PCM_IOCTL_START for them either */
++	if (state->linked) {
++		state->alsa_started = true;
++		return 0;
++	}
++
++	st = snd_pcm_state(state->hndl);
++	if (st != SND_PCM_STATE_PREPARED)
++		return 0;
++
++	spa_log_info(state->log, "%s: [385831] starting deferred capture", state->name);
++
++	if (SPA_UNLIKELY((res = snd_pcm_start(state->hndl)) < 0)) {
++		spa_log_error(state->log, "%s: [385831] snd_pcm_start: %s",
++				state->name, snd_strerror(res));
++		return res;
++	}
++	state->alsa_started = true;
++	state->alsa_sync = true;
++	spa_dll_init(&state->dll);
++	return 0;
++}
++
+ static int alsa_read_sync(struct state *state, uint64_t current_time)
+ {
+ 	int res, suppressed;
+ 	snd_pcm_uframes_t avail, delay, target, max_read;
+ 	bool following = state->following;
+ 
++	if (SPA_UNLIKELY((res = defer_start_capture(state)) < 0))
++		return res;
+ 	if (SPA_UNLIKELY(!state->alsa_started))
+ 		return 0;
+ 
+@@ -3587,6 +3632,10 @@
+ 
+ int spa_alsa_read(struct state *state)
+ {
++	int res;
++
++	if (SPA_UNLIKELY((res = defer_start_capture(state)) < 0))
++		return res;
+ 	if (state->following && state->rt.driver == NULL) {
+ 		uint64_t current_time = state->position->clock.nsec;
+ 		alsa_read_sync(state, current_time);
+@@ -3856,6 +3905,9 @@
+ 			if (!state->disable_tsched)
+ 				set_timeout(state, state->next_time);
+ 		}
++		/* the node is running now, so a stream is really recording:
++		 * issue the deferred capture start (see spa_alsa_start()) */
++		defer_start_capture(state);
+ 	} else {
+ 		if (rt->driver) {
+ 			spa_list_remove(&rt->driver_link);
+@@ -3960,7 +4012,12 @@
+ 	/* start capture now. We should have some data when the timer or IRQ
+ 	 * goes off later */
+ 	if (state->stream == SND_PCM_STREAM_CAPTURE) {
+-		if ((err = do_start(state)) < 0)
++		/* On cards with defer_capture_start the initial start is
++		 * suppressed and postponed to defer_start_capture(), so that no
++		 * SNDRV_PCM_IOCTL_START is issued while nobody is recording. */
++		if (state->defer_capture_start)
++			spa_log_info(state->log, "%s: [385831] capture start deferred", state->name);
++		else if ((err = do_start(state)) < 0)
+ 			return err;
+ 	}
+ 
+--- a/spa/plugins/alsa/alsa-pcm.h
++++ b/spa/plugins/alsa/alsa-pcm.h
+@@ -237,6 +237,7 @@
+ 	unsigned int is_batch:1;
+ 	unsigned int force_quantum:1;
+ 	unsigned int use_period_size_min_as_headroom:1;
++	unsigned int defer_capture_start:1;
+ 	unsigned int skip_formats_before_s16:1;
+ 
+ 	uint64_t iec958_codecs;
+--- a/spa/plugins/alsa/alsa-udev.c
++++ b/spa/plugins/alsa/alsa-udev.c
+@@ -501,7 +501,7 @@
+ 	if (num_pcm_devices > 0) {
+ 		struct spa_device_object_info info;
+ 		char *cn = NULL, *cln = NULL;
+-		struct spa_dict_item items[26];
++		struct spa_dict_item items[27];
+ 		unsigned int n_items = 0;
+ 
+ 		card->pcm_device_id = calc_pcm_device_id(card);
+@@ -541,6 +541,9 @@
+ 		if ((str = udev_device_get_property_value(udev_device, "ACP_IGNORE_DB")) && *str)
+ 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_API_ALSA_IGNORE_DB, str);
+ 
++		if ((str = udev_device_get_property_value(udev_device, "PULSE_DEFER_CAPTURE_START")) && *str)
++			items[n_items++] = SPA_DICT_ITEM_INIT("api.alsa.defer-capture-start", str);
++
+ 		if ((str = udev_device_get_property_value(udev_device, "SOUND_CLASS")) && *str)
+ 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_CLASS, str);
+ 
