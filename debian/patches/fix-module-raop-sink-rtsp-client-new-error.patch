@@ -1,0 +1,28 @@
+From 4abf320c6d3b3a0f83f8c493a2cec3636a0325fb Mon Sep 17 00:00:00 2001
+From: Christian Glombek <c.glombek@cosa.systems>
+Date: Tue, 20 Oct 2026 18:59:06 +0200
+Subject: [PATCH] module-raop-sink: return an error when pw_rtsp_client_new
+ fails
+
+The error path returned res, which is still 0 at that point, so a failed
+client allocation reported success after impl had already been destroyed.
+
+Assisted-by: LLM
+
+diff --git a/src/modules/module-raop-sink.c b/src/modules/module-raop-sink.c
+index 63cee9bc6..10f941651 100644
+--- a/src/modules/module-raop-sink.c
++++ b/src/modules/module-raop-sink.c
+@@ -4753,8 +4753,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	impl->headers = pw_properties_new(NULL, NULL);
+ 
+ 	impl->rtsp = pw_rtsp_client_new(impl->loop, NULL, 0);
+-	if (impl->rtsp == NULL)
++	if (impl->rtsp == NULL) {
++		res = -errno;
+ 		goto error;
++	}
+ 
+ 	pw_rtsp_client_add_listener(impl->rtsp, &impl->rtsp_listener,
+ 			&rtsp_events, impl);
+
