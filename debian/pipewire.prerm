@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Clean up all filter-chain.service symlinks and state files before
+# the package is replaced, so that downgrade to a version with a
+# different WantedBy directive starts from a clean slate.
+if [ "$1" = "upgrade" ] || [ "$1" = "failed-upgrade" ] ; then
+	rm -f /etc/systemd/user/default.target.wants/filter-chain.service
+	rm -f /etc/systemd/user/pipewire.service.wants/filter-chain.service
+	rm -f /var/lib/systemd/deb-systemd-user-helper-enabled/default.target.wants/filter-chain.service
+	rm -f /var/lib/systemd/deb-systemd-user-helper-enabled/pipewire.service.wants/filter-chain.service
+	rm -f /var/lib/systemd/deb-systemd-user-helper-enabled/filter-chain.service.dsh-also
+fi
+
+#DEBHELPER#
