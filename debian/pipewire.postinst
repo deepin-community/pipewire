@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+# Handle migration of filter-chain.service WantedBy from default.target
+# to pipewire.service.
+#
+# deb-systemd-helper --user enable does not properly handle a WantedBy
+# transition: it skips creating the new symlink if the per-link state
+# file already exists, and the "enable" path is not taken when the old
+# state is out of sync.  Clean up the stale state so the auto-generated
+# deb-systemd-helper snippet (or our explicit symlink) works correctly.
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	# Remove stale symlink from the old WantedBy=default.target
+	rm -f /etc/systemd/user/default.target.wants/filter-chain.service
+
+	# Remove stale per-link state files so deb-systemd-helper will
+	# not skip symlink creation on the next enable.
+	rm -f /var/lib/systemd/deb-systemd-user-helper-enabled/default.target.wants/filter-chain.service
+	rm -f /var/lib/systemd/deb-systemd-user-helper-enabled/pipewire.service.wants/filter-chain.service
+
+	# Remove the dsh-also state file so was-enabled returns true
+	# (empty entries), causing the enable path to be taken.
+	rm -f /var/lib/systemd/deb-systemd-user-helper-enabled/filter-chain.service.dsh-also
+fi
+
+#DEBHELPER#
