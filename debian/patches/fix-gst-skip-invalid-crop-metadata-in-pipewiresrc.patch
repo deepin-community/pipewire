@@ -1,0 +1,40 @@
+From e95cad05efaf056179f97b3cca0e2c56e0182d29 Mon Sep 17 00:00:00 2001
+From: Charles <charles05@canonical.com>
+Date: Tue, 21 Apr 2026 20:16:19 +0100
+Subject: [PATCH] gst: skip invalid crop metadata in pipewiresrc
+
+META_VideoCrop is present on every buffer negotiated through the
+adapter, even when the producer never sets a meaningful crop
+region. Before commit c634ef961, gst_buffer_get_video_crop_meta
+returned NULL on new GstBuffers so the zero values were never
+applied. After that commit, gst_buffer_add_video_crop_meta always
+succeeds, and an invalid crop produces black frames.
+
+Without this, the following produces black frames,
+
+Producer:
+
+gst-launch-1.0 videotestsrc is-live=true ! \
+  video/x-raw,format=I420,width=1280,height=720,framerate=24/1 ! \
+  pipewiresink mode=provide \
+  stream-properties="properties,media.class=Video/Source,media.role=Camera" \
+  client-name=VirtualCam
+
+Consumer:
+
+gst-launch-1.0 pipewiresrc path=<id> ! videoconvert ! autovideosink
+
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index c0e98a9fb..757c92d9b 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -781,7 +781,7 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
+   }
+ 
+   crop = data->crop;
+-  if (crop) {
++  if (crop && spa_meta_region_is_valid(crop)) {
+     GstVideoCropMeta *meta = gst_buffer_add_video_crop_meta(buf);
+     if (meta) {
+       meta->x = crop->region.position.x;
+

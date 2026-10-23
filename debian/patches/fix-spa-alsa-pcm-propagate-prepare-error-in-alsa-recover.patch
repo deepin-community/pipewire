@@ -1,0 +1,38 @@
+From b9115d9d804e44c8688c45c8f19c3b2bd2e5a76f Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Tue, 28 Jul 2026 20:18:39 +0800
+Subject: [PATCH] spa: alsa: pcm: propagate prepare error in alsa_recover
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+do_prepare() calls snd_pcm_prepare() to configure hardware buffers.
+If it fails, snd_pcm_start() operates on unconfigured hardware.
+
+Only the driver prepare failure is fatal: it provides the clock
+source for the entire pipeline. Follower prepare failures are
+non-fatal by design — if one follower fails, the driver and other
+followers can still recover. do_drop() errors can be ignored
+because snd_pcm_prepare resets the hardware anyway.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index d2c10ac74..6e9501332 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -2889,7 +2889,14 @@ recover:
+ 			check_position_config(follower, false);
+ 		}
+ 	}
+-	do_prepare(driver);
++	if (do_prepare(driver) < 0) {
++		/* Driver is the clock source; starting it unprepared
++		 * breaks the entire pipeline. do_drop errors are
++		 * ignored (prepare can reset the hardware). Follower
++		 * errors are non-fatal by design. */
++		update_sources(state, true);
++		return -EIO;
++	}
+ 	spa_list_for_each(follower, &driver->rt.followers, rt.driver_link) {
+ 		if (follower != driver && follower->linked)
+ 			do_prepare(follower);
+

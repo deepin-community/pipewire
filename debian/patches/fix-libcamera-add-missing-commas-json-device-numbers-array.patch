@@ -1,0 +1,22 @@
+From 78a53b3c8de032c401d9b853f2c3901e36626e96 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=88=98=E4=BD=B3=E5=92=8C?= <liujiahe@uniontech.com>
+Date: Mon, 6 Jul 2026 10:37:33 +0800
+Subject: [PATCH] fix(libcamera): add missing commas to JSON device numbers
+ array
+
+Signed-off-by: liujiahe <liujiahe@uniontech.com>
+
+diff --git a/spa/plugins/libcamera/libcamera-device.cpp b/spa/plugins/libcamera/libcamera-device.cpp
+index 1f96e0352..dde01a0d5 100644
+--- a/spa/plugins/libcamera/libcamera-device.cpp
++++ b/spa/plugins/libcamera/libcamera-device.cpp
+@@ -284,7 +284,7 @@ int emit_info(struct impl *impl, bool full)
+ 		/* encode device numbers into a json array */
+ 		s << "[ ";
+ 		for (const auto& devid : device_numbers)
+-			s << devid << ' ';
++			s << devid << ', ';
+ 		s << ']';
+ 
+ 		devids = std::move(s).str();
+

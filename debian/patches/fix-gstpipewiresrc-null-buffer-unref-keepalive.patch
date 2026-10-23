@@ -1,0 +1,35 @@
+From 6c25924b481a862f5d08adb6b5e67f8b134a6d93 Mon Sep 17 00:00:00 2001
+From: "Victor C." <34163765+vicajilau@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 07:28:34 +0200
+Subject: [PATCH] gstpipewiresrc: fix NULL gst_buffer_unref() on first buffer
+ with keepalive-time
+
+gst_pipewire_src_create() unconditionally unrefs the previous
+last_buffer when replacing it, without checking whether it's NULL.
+On the very first buffer received with keepalive-time > 0 (or
+resend-last=true), last_buffer is still NULL (never yet set), so
+this becomes gst_buffer_unref(NULL), tripping the assertion inside
+gst_mini_object_unref().
+
+Regressed in e6a5951a4 ("gst: fix compilation on older GStreamer"),
+which replaced the NULL-safe gst_buffer_take() with a manual
+old/new swap that dropped the NULL check gst_buffer_take() provided
+internally.
+
+Fixes: e6a5951a4 ("gst: fix compilation on older GStreamer")
+
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index dbb5f289a..414a9ae08 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -1630,7 +1630,8 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
+ 
+           old = pwsrc->last_buffer;
+           pwsrc->last_buffer = gst_buffer_copy (buf);
+-          gst_buffer_unref (old);
++          if (old != NULL)
++            gst_buffer_unref (old);
+           gst_buffer_add_parent_buffer_meta (pwsrc->last_buffer, buf);
+ 
+           clock = gst_element_get_clock (GST_ELEMENT_CAST (pwsrc));
+
