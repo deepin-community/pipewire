@@ -1,0 +1,36 @@
+From 797dbd3d40eac1a4eaf47c619331be6cf5f582cb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Barnab=C3=A1s=20P=C5=91cze?= <pobrn@protonmail.com>
+Date: Tue, 12 May 2026 20:46:37 +0200
+Subject: [PATCH] spa: param: spa_{param_dict,tag}_info_parse(): update size as
+ well
+
+In both functions the loop can break early, meaning that the true number
+of valid items is `n`, and that should be reflected in the updated `*dict`.
+
+diff --git a/spa/include/spa/param/dict-utils.h b/spa/include/spa/param/dict-utils.h
+index 7dec70837..da7c8facf 100644
+--- a/spa/include/spa/param/dict-utils.h
++++ b/spa/include/spa/param/dict-utils.h
+@@ -109,7 +109,7 @@ spa_param_dict_info_parse(const struct spa_param_dict_info *info, size_t size,
+ 		items[n].key = key;
+ 		items[n].value = value;
+ 	}
+-	dict->items = items;
++	*dict = SPA_DICT_INIT(items, n);
+ 	spa_pod_parser_pop(&prs, &f[0]);
+ 	return 0;
+ }
+diff --git a/spa/include/spa/param/tag-utils.h b/spa/include/spa/param/tag-utils.h
+index 335cb9559..583a7ab4e 100644
+--- a/spa/include/spa/param/tag-utils.h
++++ b/spa/include/spa/param/tag-utils.h
+@@ -96,7 +96,7 @@ spa_tag_info_parse(const struct spa_tag_info *info, struct spa_dict *dict, struc
+ 		items[n].key = key;
+ 		items[n].value = value;
+ 	}
+-	dict->items = items;
++	*dict = SPA_DICT_INIT(items, n);
+ 	spa_pod_parser_pop(&prs, &f[0]);
+ 	return 0;
+ }
+

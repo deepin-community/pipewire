@@ -1,0 +1,80 @@
+From 7a8e493844cd13f1f93fe8073961220879cc489c Mon Sep 17 00:00:00 2001
+From: Viorel Cernateanu <vrilutza@gmail.com>
+Date: Thu, 30 Jul 2026 23:45:02 +0300
+Subject: [PATCH] spa: v4l2: do not walk past the buffers the caller provided
+
+spa_v4l2_use_buffers() iterates up to reqbuf.count over buffers[], which is the
+array of n_buffers entries the caller passed in, so b->outbuf = buffers[i] reads
+past the end of it whenever VIDIOC_REQBUFS hands out more buffers than were
+asked for. port->n_buffers is then set to that larger count as well, so
+everything downstream of it keeps looking at entries that were never provided.
+port_use_buffers() rejects n_buffers > MAX_BUFFERS, but nothing bounds
+reqbuf.count, so a driver returning more than MAX_BUFFERS would walk past
+port->buffers[] too.
+
+Getting more than requested is documented behaviour, not a driver bug:
+
+  "the driver will attempt to allocate the requested number of buffers and it
+   stores the actual number allocated in the count field. It can be smaller
+   than the number requested, even zero, when the driver runs out of free
+   memory. A larger number is also possible when the driver requires more
+   buffers to function correctly."
+                    -- Documentation/userspace-api/media/v4l/vidioc-reqbufs.rst
+
+And it is reachable rather than theoretical. The range this plugin advertises
+for SPA_PARAM_Buffers is RANGE(SPA_MIN(4, max_buffers), 1, max_buffers), so a
+peer can negotiate fewer than four. On a MacBookPro14,1 with the facetimehd
+driver, VIDIOC_REQBUFS returns four buffers for any request below four, at every
+resolution the sensor offers:
+
+	requested   granted
+	        1         4
+	        2         4
+	        3         4
+	        4         4
+
+Use the count the caller gave us, and log the discrepancy at warn so it is
+visible on devices where it happens. The extra buffers are left alone, which is
+the best that can be done here: the caller owns the array and there is nowhere
+to put them.
+
+Note what this does not claim to fix: if the driver needed those extra buffers
+to function, using fewer may not work well, as the same paragraph of the
+documentation implies. That is a separate question from reading outside the
+array.
+
+Tested on the machine above. This exact path is not exercised there -- the
+device supports EXPBUF, so PipeWire takes the allocation path through
+mmap_init(), whose loop is already bounded by n_buffers -- so the fix itself is
+from reading the code; only the driver behaviour that triggers it is measured.
+
+diff --git a/spa/plugins/v4l2/v4l2-utils.c b/spa/plugins/v4l2/v4l2-utils.c
+index df5b0e185..ad6ddace5 100644
+--- a/spa/plugins/v4l2/v4l2-utils.c
++++ b/spa/plugins/v4l2/v4l2-utils.c
+@@ -1815,8 +1815,14 @@ static int spa_v4l2_use_buffers(struct impl *this, struct spa_buffer **buffers,
+ 				this->props.device, reqbuf.count, n_buffers);
+ 		return -ENOMEM;
+ 	}
++	if (reqbuf.count > n_buffers) {
++		/* The driver is allowed to hand out more buffers than asked for, but we
++		 * only have n_buffers of them to attach the extra ones to. */
++		spa_log_warn(this->log, "'%s' provided %d buffers, using %d",
++				this->props.device, reqbuf.count, n_buffers);
++	}
+ 
+-	for (i = 0; i < reqbuf.count; i++) {
++	for (i = 0; i < n_buffers; i++) {
+ 		struct buffer *b;
+ 
+ 		b = &port->buffers[i];
+@@ -1889,7 +1895,7 @@ static int spa_v4l2_use_buffers(struct impl *this, struct spa_buffer **buffers,
+ 
+ 		spa_v4l2_buffer_recycle(this, i);
+ 	}
+-	port->n_buffers = reqbuf.count;
++	port->n_buffers = n_buffers;
+ 
+ 	return 0;
+ }
+

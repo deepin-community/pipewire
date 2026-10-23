@@ -1,0 +1,21 @@
+From 25203c5293040c4f3b248293759c3df77dd78f43 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 9 Jun 2026 09:23:10 +0200
+Subject: [PATCH] acp: avoid segfault when removing a card
+
+Fixes #5255
+
+diff --git a/spa/plugins/alsa/acp/alsa-util.c b/spa/plugins/alsa/acp/alsa-util.c
+index 0a6da94f4..6a74bd25c 100644
+--- a/spa/plugins/alsa/acp/alsa-util.c
++++ b/spa/plugins/alsa/acp/alsa-util.c
+@@ -1723,7 +1723,7 @@ static int mixer_class_event(snd_mixer_class_t *class, unsigned int mask,
+ 	// assertion in alsa-lib since the list is not empty.
+         _helem = snd_mixer_elem_get_private(melem);
+         *_helem = NULL;
+-        snd_mixer_elem_detach(melem, helem);
++        snd_mixer_elem_remove(melem);
+     } else if (mask & SND_CTL_EVENT_MASK_ADD) {
+         snd_ctl_elem_iface_t iface = snd_hctl_elem_get_interface(helem);
+         if (iface == SND_CTL_ELEM_IFACE_CARD || iface == SND_CTL_ELEM_IFACE_PCM) {
+

@@ -1,0 +1,31 @@
+From 718675fc4ed158b585cb2c86b0dc5689e1041eb0 Mon Sep 17 00:00:00 2001
+From: Sangchul Lee <sangchul1011@gmail.com>
+Date: Sun, 2 Aug 2026 22:48:22 +0900
+Subject: [PATCH] pipewiresrc: fix PTS/DTS unit mismatch in delay
+
+b->time is in nanoseconds and pwsrc->delay is in frames. Subtracting
+them without unit conversion causes the capture latency compensation
+to be almost zero. Convert delay to nanoseconds to properly reflect
+the true capture PTS and DTS.
+
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index 414a9ae08..224e2f0e8 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -766,8 +766,13 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
+     }
+     GST_BUFFER_OFFSET (buf) = h->seq;
+   } else {
+-    GST_BUFFER_PTS (buf) = b->time - pwsrc->delay;
+-    GST_BUFFER_DTS (buf) = b->time - pwsrc->delay;
++    gint64 delay_ns = 0;
++    /* We cannot reuse pwsrc->min_latency here because time.delay can be negative.
++     * PTS/DTS needs to be shifted forward when delay is negative. */
++    if (time.rate.denom != 0)
++      delay_ns = time.delay * (gint64)GST_SECOND * time.rate.num / time.rate.denom;
++    GST_BUFFER_PTS (buf) = b->time - delay_ns;
++    GST_BUFFER_DTS (buf) = b->time - delay_ns;
+   }
+ 
+   if (pwsrc->media_type == SPA_MEDIA_TYPE_video) {
+
