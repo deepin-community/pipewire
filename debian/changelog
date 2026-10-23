@@ -1,3 +1,26 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Integrate backport PRs #43, #47-#80 (35 PRs) as quilt patches:
+    CVE-2026-14324, gst/deviceprovider teardown, device-provider metadata
+    listener, jack race fix, spa-libcamera buffer validation,
+    gstpipewiresrc wait_negotiated, raop pending message unlink,
+    audioconvert filter-graph sync, gstpipewiresrc NULL buffer unref,
+    spa opus audio info type, module-rtp device_delay scaling,
+    acp segfault on card removal, netjack2 timeout rearm,
+    gstpipewiresrc pool buffer recycle, alsa-acp route param updates,
+    client-node mix clearing, acp Pro Audio/Off profiles,
+    portal.rt disable, filter-graph softVolume passthrough,
+    pipewiresrc PTS/DTS unit fix, jack object data leak,
+    libcamera JSON commas, module-raop initial volume,
+    spa param dict/tag parse size, spa-v4l2 buffer bounds,
+    pipewiresrc loop unlock, pipewiresrc caps negotiation,
+    bluez5 A2DP endpoint caps, spa-alsa-pcm prepare error,
+    alsa period_size rounding, spa-alsa HDMI AC3 ports,
+    gst crop metadata skip, module-rtp sess.ts-direct,
+    gst pipewiresink stream errors, combine-stream compensate samples.
+
+ -- lensup-merger <lensup-merger@uniontech.com>  Thu, 23 Oct 2026 15:30:00 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration
