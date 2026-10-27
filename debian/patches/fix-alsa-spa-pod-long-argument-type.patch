@@ -1,0 +1,21 @@
+From 577dcda14942b68eb10aa8f7966d6d825b54265c Mon Sep 17 00:00:00 2001
+From: Viorel Cernateanu <vrilutza@gmail.com>
+Date: Sat, 24 Oct 2026 09:46:22 +0300
+Subject: [PATCH] alsa: fix argument type for SPA_POD_Long
+
+Use 0LL instead of 0 in SPA_POD_Long to ensure correct argument types
+for ALSA INTEGER64 controls and prevent SIGSEGV on 32-bit systems.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index f48fd4513..f6b9575ee 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -313,7 +313,7 @@ static struct spa_pod *enum_bind_ctl_propinfo(struct state *state, uint32_t idx,
+ 					SPA_TYPE_OBJECT_PropInfo, SPA_PARAM_PropInfo,
+ 					SPA_PROP_INFO_name, SPA_POD_String(param_name),
+ 					SPA_PROP_INFO_description, SPA_POD_String(param_desc),
+-					SPA_PROP_INFO_type, SPA_POD_Long(0),
++					SPA_PROP_INFO_type, SPA_POD_Long(0LL),
+ 					SPA_PROP_INFO_params, SPA_POD_Bool(true));
+ 			break;
+
