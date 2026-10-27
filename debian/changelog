@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Fix incorrect volume scaling by changing props.volume type from double to float
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 27 Oct 2026 12:02:07 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration
