@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Fix avb argument type for Long in choice range to prevent SIGSEGV on 32-bit architectures
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 27 Oct 2026 12:11:15 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration
