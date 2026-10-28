@@ -1,0 +1,35 @@
+From 10c6ec62736224f2b6e79133d7ecd02cf4aab545 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Barnab=C3=A1s=20P=C5=91cze?= <pobrn@protonmail.com>
+Date: Tue, 27 Oct 2026 21:44:56 +0100
+Subject: [PATCH] pipewire: module-adapter: only check property list if
+ available
+
+If the `spa_node_info::change_mask` does not contain `SPA_NODE_CHANGE_MASK_PROPS`
+then the `props` member should be ignored as it contains no updates
+and may be `NULL`.
+
+Similar checks are already done in other listeners, e.g. `impl-node.c:node_info()`.
+
+For example, the audioconvert node will not signal `SPA_NODE_CHANGE_MASK_PROPS`
+and consequently leaves `props` as `NULL`. This can lead to a NULL dereference,
+e.g.
+
+  pw-cli create-node adapter factory.name=audio.convert
+
+Fixes #5549
+
+diff --git a/src/modules/module-adapter/adapter.c b/src/modules/module-adapter/adapter.c
+index 6d2614f08..e049ccc4d 100644
+--- a/src/modules/module-adapter/adapter.c
++++ b/src/modules/module-adapter/adapter.c
+@@ -114,7 +114,8 @@ static void info_event(void *data, const struct spa_node_info *info)
+ {
+ 	struct info_data *d = data;
+ 
+-	pw_properties_update(d->props, info->props);
++	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS)
++		pw_properties_update(d->props, info->props);
+ 
+ 	d->max_input_ports = info->max_input_ports;
+ 	d->max_output_ports = info->max_output_ports;
+
