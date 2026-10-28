@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Move the mix output buffer to input io so it can be recycled upstream
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 28 Oct 2026 10:44:09 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration
