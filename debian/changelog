@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Only recycle valid buffers to avoid out-of-bounds access on invalid buffer_id
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 28 Oct 2026 10:42:21 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration
