@@ -1,0 +1,30 @@
+From 8f8a51320514e472ef8d914260d195fb28846caf Mon Sep 17 00:00:00 2001
+From: zuozhiwei <zuozhiwei@kylinos.cn>
+Date: Thu, 6 Aug 2026 10:42:24 +0800
+Subject: [PATCH] filter-graph: fix bq_raw closest-rate coefficient selection
+
+b3eb2eabb renamed SampleRate to rate, but the closest-match compare
+became labs(rate - rate) which is always 0. With the JSON entry rate
+also shadowing the instantiate parameter, multi-rate coefficient
+tables always kept the last entry instead of the nearest graph rate.
+Compare against impl->rate, which holds the graph sample rate.
+
+diff --git a/spa/plugins/filter-graph/plugin_builtin.c b/spa/plugins/filter-graph/plugin_builtin.c
+index 34a24bb..e69e205 100644
+--- a/spa/plugins/filter-graph/plugin_builtin.c
++++ b/spa/plugins/filter-graph/plugin_builtin.c
+@@ -425,8 +425,9 @@ static void *bq_instantiate(const struct spa_fga_plugin *plugin, const struct sp
+ 						spa_log_warn(impl->log, "biquads: ignoring coefficients key: '%s'", key);
+ 					}
+ 				}
+-				if (labs((long)rate - (long)SampleRate) <
+-				    labs((long)best_rate - (long)SampleRate)) {
++				/* impl->rate is the graph rate; local rate shadows the param */
++				if (labs((long)rate - (long)impl->rate) <
++				    labs((long)best_rate - (long)impl->rate)) {
+ 					best_rate = rate;
+ 					bq_raw_update(impl, b0, b1, b2, a0, a1, a2);
+ 				}
+
+-- 
+2.49.0

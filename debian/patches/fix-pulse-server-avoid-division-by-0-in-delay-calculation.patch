@@ -1,0 +1,23 @@
+From 707e5e2643ad2e816e347b57c5713fce45e93a5e Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 4 Jun 2026 21:13:09 +0200
+Subject: [PATCH] pulse-server: avoid division by 0 in delay calculation
+
+When we are not yet negotiated and the rate is not yet stored in the
+stream sample spec, use a 0 delay instead of dividing by 0.
+
+Index: repo/src/modules/module-protocol-pulse/pulse-server.c
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/pulse-server.c
++++ repo/src/modules/module-protocol-pulse/pulse-server.c
+@@ -1312,7 +1312,9 @@ do_process_done(struct spa_loop *loop,
+ 	int32_t avail;
+ 
+ 	stream->timestamp = pd->pwt.now;
+-	stream->delay = pd->pwt.buffered * SPA_USEC_PER_SEC / stream->ss.rate;
++	stream->delay = 0;
++	if (stream->ss.rate > 0)
++		stream->delay += pd->pwt.buffered * SPA_USEC_PER_SEC / stream->ss.rate;
+ 	if (pd->pwt.rate.denom > 0)
+ 		stream->delay += pd->pwt.delay * SPA_USEC_PER_SEC * pd->pwt.rate.num / pd->pwt.rate.denom;
+ 

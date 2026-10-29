@@ -1,0 +1,115 @@
+From 62e98466fa17dcb75148fc61656c1cf12f40ab17 Mon Sep 17 00:00:00 2001
+From: Julian Bouzas <julian.bouzas@collabora.com>
+Date: Wed, 24 Jun 2026 10:52:49 -0400
+Subject: [PATCH] conf: fix matching of property values with colons
+
+Use spa_json_begin_array() instead of the relaxed variant when parsing
+property values in pw_conf_find_match().
+
+This prevents plain string values containing ':' (such as object.path)
+from being incorrectly tokenized while preserving support for actual
+JSON array properties.
+
+This backport also bundles the prerequisite upstream commit f19514070
+"conf: recurse into arrays before matching" (Wim Taymans), which
+introduced array-value matching in pw_conf_find_match(); without it the
+1.6.x base lacks the array-parsing path this fix corrects. The combined
+result matches the upstream post-fix behaviour: array-element matching
+that does not mis-tokenise colon-containing string values.
+
+diff --git a/doc/dox/config/pipewire.conf.5.md b/doc/dox/config/pipewire.conf.5.md
+index 617f047..d2bdef2 100644
+--- a/doc/dox/config/pipewire.conf.5.md
++++ b/doc/dox/config/pipewire.conf.5.md
+@@ -486,6 +486,7 @@ The general rules object follows the following pattern:
+             {
+                 # <key> = <value>
+                 # all keys must match the value. ! negates. ~ starts regex.
++                # if <value> is an array, matching is done on its elements.
+                 #application.process.binary = "teams"
+                 #application.name = "~speech-dispatcher.*"
+ 
+@@ -603,6 +604,19 @@ matches = [
+ ]
+ ```
+ 
++When the value is an array, the match is performed on the array elements until
++one succeeds. For example:
++
++```css
++matches = [
++  {
++    pipewire.sec.gids = 42
++  }
++]
++```
++
++Matches `pipewire.sec.gids = [ 10, 20, 42, 1000 ]`.
++
+ 
+ # CONTEXT PROPERTIES RULES  @IDX@ pipewire.conf context.properties.rules
+ 
+diff --git a/src/pipewire/conf.c b/src/pipewire/conf.c
+index c29d456..0184737 100644
+--- a/src/pipewire/conf.c
++++ b/src/pipewire/conf.c
+@@ -631,12 +631,12 @@ static int load_module(struct pw_context *context, const char *key, const char *
+ SPA_EXPORT
+ bool pw_conf_find_match(struct spa_json *arr, const struct spa_dict *props, bool condition)
+ {
+-	struct spa_json it[1];
++	struct spa_json it[2];
+ 	const char *as = arr->cur;
+ 	int az = (int)(arr->end - arr->cur), r, count = 0;
+ 
+ 	while ((r = spa_json_enter_object(arr, &it[0])) > 0) {
+-		char key[256], val[1024];
++		char key[256], val[1024], v[1024];
+ 		const char *str, *value;
+ 		int match = 0, fail = 0;
+ 		int len;
+@@ -682,6 +682,7 @@ bool pw_conf_find_match(struct spa_json *arr, const struct spa_dict *props, bool
+ 				if (is_null && str == NULL)
+ 					success = !success;
+ 			} else {
++				regex_t preg;
+ 				/* only unescape string once or again after modifier */
+ 				if (!parse_string) {
+ 					memmove(val, value+skip, len-skip);
+@@ -693,21 +694,30 @@ bool pw_conf_find_match(struct spa_json *arr, const struct spa_dict *props, bool
+ 				}
+ 
+ 				if (reg) {
+-					regex_t preg;
+ 					int res;
+ 					if ((res = regcomp(&preg, val, REG_EXTENDED | REG_NOSUB)) != 0) {
+ 						char errbuf[1024];
+ 						regerror(res, &preg, errbuf, sizeof(errbuf));
+ 						pw_log_warn("invalid regex %s: %s in '%.*s'",
+ 								val, errbuf, az, as);
+-					} else {
+-						if (regexec(&preg, str, 0, NULL, 0) == 0)
++						reg = false;
++					}
++				}
++				if (spa_json_begin_array(&it[1], str, strlen(str)) > 0) {
++					while (spa_json_get_string(&it[1], v, sizeof(v)) > 0) {
++						if ((reg && regexec(&preg, v, 0, NULL, 0) == 0) ||
++								spa_streq(v, val)) {
+ 							success = !success;
+-						regfree(&preg);
++							break;
++						}
+ 					}
+-				} else if (strcmp(str, val) == 0) {
+-					success = !success;
+ 				}
++				else if ((reg && regexec(&preg, str, 0, NULL, 0) == 0) ||
++						spa_streq(str, val))
++					success = !success;
++
++				if (reg)
++					regfree(&preg);
+ 			}
+ 			if (success) {
+ 				match++;

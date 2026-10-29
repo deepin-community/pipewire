@@ -1,0 +1,83 @@
+From a389a553e3ea7c21ff7b3cb9d5ac11023d5e54e8 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 22 Jun 2026 13:05:32 +0200
+Subject: [PATCH] filter-graph: use pffft aligned alloc in all cases
+
+Always use the pffft aligned alloc function. The fftw alloc function
+only aligns to 16 bytes and the AVX code uses stores that rely on an
+alignment of 32 bytes. The pffft alloc alignes to 64 bytes.
+
+Fixes #5320
+
+Index: repo/spa/plugins/filter-graph/audio-dsp-c.c
+===================================================================
+--- repo.orig/spa/plugins/filter-graph/audio-dsp-c.c
++++ repo/spa/plugins/filter-graph/audio-dsp-c.c
+@@ -14,9 +14,8 @@
+ 
+ #ifdef HAVE_FFTW
+ #include <fftw3.h>
+-#else
+-#include "pffft.h"
+ #endif
++#include "pffft.h"
+ #include "audio-dsp-impl.h"
+ 
+ void dsp_clear_c(void *obj, float * SPA_RESTRICT dst, uint32_t n_samples)
+@@ -252,14 +251,14 @@ void *dsp_fft_new_c(void *obj, uint32_t
+ 	if (info == NULL)
+ 		return NULL;
+ 
+-	rdata = fftwf_alloc_real(size * 2);
+-	cdata = fftwf_alloc_complex(size + 1);
++	rdata = spa_fga_dsp_fft_memalloc(obj, size * 2, true);
++	cdata = spa_fga_dsp_fft_memalloc(obj, size + 1, false);
+ 
+ 	info->plan_r2c = fftwf_plan_dft_r2c_1d(size, rdata, cdata, FFTW_ESTIMATE);
+ 	info->plan_c2r = fftwf_plan_dft_c2r_1d(size, cdata, rdata, FFTW_ESTIMATE);
+ 
+-	fftwf_free(rdata);
+-	fftwf_free(cdata);
++	spa_fga_dsp_fft_memfree(obj, rdata);
++	spa_fga_dsp_fft_memfree(obj, cdata);
+ 
+ 	return info;
+ #else
+@@ -281,35 +280,18 @@ void dsp_fft_free_c(void *obj, void *fft
+ 
+ void *dsp_fft_memalloc_c(void *obj, uint32_t size, bool real)
+ {
+-#ifdef HAVE_FFTW
+-	if (real)
+-		return fftwf_alloc_real(size);
+-	else
+-		return fftwf_alloc_complex(size);
+-#else
+-	if (real)
+-		return pffft_aligned_malloc(size * sizeof(float));
+-	else
+-		return pffft_aligned_malloc(size * 2 * sizeof(float));
+-#endif
++	uint32_t asize = real ? size : size * 2;
++	return pffft_aligned_malloc(asize * sizeof(float));
+ }
+ 
+ void dsp_fft_memfree_c(void *obj, void *data)
+ {
+-#ifdef HAVE_FFTW
+-	fftwf_free(data);
+-#else
+ 	pffft_aligned_free(data);
+-#endif
+ }
+ 
+ void dsp_fft_memclear_c(void *obj, void *data, uint32_t size, bool real)
+ {
+-#ifdef HAVE_FFTW
+ 	spa_fga_dsp_clear(obj, data, real ? size : size * 2);
+-#else
+-	spa_fga_dsp_clear(obj, data, real ? size : size * 2);
+-#endif
+ }
+ 
+ void dsp_fft_run_c(void *obj, void *fft, int direction,

@@ -1,0 +1,112 @@
+From b41d117609ffa2dcb9c80adecdf0a84934e5b076 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 1 Jun 2026 10:34:40 +0200
+Subject: [PATCH] impl-port: make suspend go from INIT -> CONFIGURE
+
+Bring the port to INIT before going to CONFIGURE when we do the suspend
+logic.
+
+This is to ensure that there always is a state change to emit the state
+change notification. This was, the link can detect the suspend case and
+cancel any pending results.
+
+One of the problem with suspend is that the state changes on the ports
+are done from different places; the port and link. This causes issues
+like:
+
+1. do_negotiate calls pw_port_set_param(Format,..) with the negotiated
+   format. This returns async and the link queues a complete_ready
+   callback.
+2. The node is suspended, pw_impl_port_set_param(Format, NULL) is called
+   to clear the port format. This bypasses the link.
+3. The reply from step 2 arrives and triggers complete_ready, this
+   brings the port state to READY and the link state to ALLOCATING.
+4. The link continues allocating and sets buffers on the port. This then
+   fails because the last format set was NULL.
+
+Ideally all port states should be managed in one place and the async
+port state changes should be kept in the port itself as well but this
+will need some more work.
+
+Fixes #3547
+
+
+Backport-Adapted-for: 1.6.4
+The upstream commit modifies pw_impl_port_suspend() in src/pipewire/impl-port.c,
+which does not exist in the 1.6.4 codebase. In 1.6.4 the suspend logic is inline
+in suspend_node() in src/pipewire/impl-node.c (it directly assigns
+p->state = PW_IMPL_PORT_STATE_CONFIGURE without notifying links). This backport
+applies the same fix intent against the 1.6.4 structure:
+
+  - src/pipewire/impl-link.c: applied verbatim (all referenced symbols exist in
+    1.6.4); only one context line differs (1.6.4 resets this->prepared, while the
+    upstream base also resets this->preparing, which is an unrelated change).
+  - src/pipewire/impl-node.c: the suspend loop now brings each port to INIT first
+    and then calls pw_impl_port_update_state(..., CONFIGURE, ...), so the
+    INIT -> CONFIGURE state change is emitted and links can cancel pending
+    results (mirroring the upstream impl-port.c change).
+
+diff --git a/src/pipewire/impl-link.c b/src/pipewire/impl-link.c
+index a7ea65c..ee19370 100644
+--- a/src/pipewire/impl-link.c
++++ b/src/pipewire/impl-link.c
+@@ -1046,15 +1046,28 @@ static void port_state_changed(struct pw_impl_link *this, struct pw_impl_port *p
+ 		struct pw_impl_port *other, enum pw_impl_port_state old,
+ 		enum pw_impl_port_state state, const char *error)
+ {
++	struct impl *impl = SPA_CONTAINER_OF(this, struct impl, this);
++	struct port_info *info;
++
+ 	pw_log_debug("%p: port %p old:%d -> state:%d prepared:%d preparing:%d",
+ 			this, port, old, state, this->prepared, this->preparing);
+ 
++	if (port == impl->output.port)
++		info = &impl->output;
++	else
++		info = &impl->input;
++
+ 	switch (state) {
+ 	case PW_IMPL_PORT_STATE_ERROR:
+ 		link_update_state(this, PW_LINK_STATE_ERROR, -EIO, error ? strdup(error) : NULL);
+ 		break;
+ 	case PW_IMPL_PORT_STATE_INIT:
+ 	case PW_IMPL_PORT_STATE_CONFIGURE:
++		if (old == PW_IMPL_PORT_STATE_INIT) {
++			port_set_busy_id(this, info, SPA_ID_INVALID, SPA_ID_INVALID);
++			pw_work_queue_cancel(impl->work, info, SPA_ID_INVALID);
++			old = PW_IMPL_PORT_STATE_READY;
++		}
+ 		if (this->prepared || state < old) {
+ 			this->prepared = false;
+ 			link_update_state(this, PW_LINK_STATE_INIT, 0, NULL);
+diff --git a/src/pipewire/impl-node.c b/src/pipewire/impl-node.c
+index a8f65b0..79a57a3 100644
+--- a/src/pipewire/impl-node.c
++++ b/src/pipewire/impl-node.c
+@@ -554,16 +554,22 @@ static int suspend_node(struct pw_impl_node *this)
+ 		if ((res = pw_impl_port_set_param(p, SPA_PARAM_Format, 0, NULL)) < 0)
+ 			pw_log_warn("%p: error unset format input: %s",
+ 					this, spa_strerror(res));
+-		/* force CONFIGURE in case of async */
+-		p->state = PW_IMPL_PORT_STATE_CONFIGURE;
++		/* force CONFIGURE in case of async, bring port to INIT first so the
++		 * INIT -> CONFIGURE state change is emitted and links can cancel
++		 * pending results */
++		p->state = PW_IMPL_PORT_STATE_INIT;
++		pw_impl_port_update_state(p, PW_IMPL_PORT_STATE_CONFIGURE, 0, NULL);
+ 	}
+ 
+ 	spa_list_for_each(p, &this->output_ports, link) {
+ 		if ((res = pw_impl_port_set_param(p, SPA_PARAM_Format, 0, NULL)) < 0)
+ 			pw_log_warn("%p: error unset format output: %s",
+ 					this, spa_strerror(res));
+-		/* force CONFIGURE in case of async */
+-		p->state = PW_IMPL_PORT_STATE_CONFIGURE;
++		/* force CONFIGURE in case of async, bring port to INIT first so the
++		 * INIT -> CONFIGURE state change is emitted and links can cancel
++		 * pending results */
++		p->state = PW_IMPL_PORT_STATE_INIT;
++		pw_impl_port_update_state(p, PW_IMPL_PORT_STATE_CONFIGURE, 0, NULL);
+ 	}
+ 
+ 	node_update_state(this, PW_NODE_STATE_SUSPENDED, 0, NULL);
