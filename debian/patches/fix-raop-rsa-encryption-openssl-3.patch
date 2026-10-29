@@ -1,0 +1,48 @@
+From 0b591bc175d8232b1576c2aed46c644331eb80ba Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 20 Jul 2026 14:44:49 +0200
+Subject: [PATCH] raop: fix RSA encryption for OpenSSL >= 3
+
+For EVP_PKEY_encrypt, outlen is an in/out parameter: on input it must be
+the capacity of the out buffer. Because it is left uninitialized, OpenSSL
+can read garbage, which can result in an "output buffer too small" error.
+
+Pass the size of the output buffer in rsa_encrypt() and use it to
+initialize the in/out size parameter for EVP_PKEY_encrypt().
+
+The OpenSSL < 3 branch assumes the enc data is at least RSA_size() bytes
+in size, which we could also check here now later.
+
+Fixes #5370
+
+Index: repo/src/modules/module-raop-sink.c
+===================================================================
+--- repo.orig/src/modules/module-raop-sink.c
++++ repo/src/modules/module-raop-sink.c
+@@ -1111,7 +1111,7 @@ static inline void swap_bytes(uint8_t *d
+ 		SPA_SWAP(data[i], data[j]);
+ }
+ 
+-static int rsa_encrypt(uint8_t *data, int len, uint8_t *enc)
++static int rsa_encrypt(uint8_t *data, int len, uint8_t *enc, size_t enc_max)
+ {
+ 	uint8_t modulus[256];
+ 	uint8_t exponent[8];
+@@ -1134,7 +1134,7 @@ static int rsa_encrypt(uint8_t *data, in
+ 	EVP_PKEY_CTX *ctx = NULL;
+ 	OSSL_PARAM params[5];
+ 	int err = 0;
+-	size_t size;
++	size_t size = enc_max;
+ 
+ #if __BYTE_ORDER == __LITTLE_ENDIAN
+ 	swap_bytes(modulus, msize);
+@@ -1256,7 +1256,7 @@ static int rtsp_do_announce(struct impl
+ 		base64_encode(rac, sizeof(rac), sac, '\0');
+ 		pw_properties_set(impl->headers, "Apple-Challenge", sac);
+ 
+-		rsa_len = rsa_encrypt(impl->aes_key, 16, rsakey);
++		rsa_len = rsa_encrypt(impl->aes_key, 16, rsakey, sizeof(rsakey));
+ 		if (rsa_len < 0)
+ 			return -rsa_len;
+ 

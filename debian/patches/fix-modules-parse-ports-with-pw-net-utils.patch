@@ -1,0 +1,207 @@
+From 5fe2ffc4ab673df4d646a0b5b6439bdf6fe693e0 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 20 Jul 2026 14:28:04 +0200
+Subject: [PATCH] modules: parse ports with pw_net_* utils
+
+Parse some of the provided port values with the pw_net helpers so that
+invalid port values are rejected properly instead of wrapping around the
+uint16_t value.
+
+diff --git a/src/modules/module-roc-sink.c b/src/modules/module-roc-sink.c
+index 39ca2bc..1c2bc1f 100644
+--- a/src/modules/module-roc-sink.c
++++ b/src/modules/module-roc-sink.c
+@@ -24,6 +24,7 @@
+ #include <pipewire/impl.h>
+ 
+ #include "module-roc/common.h"
++#include "network-utils.h"
+ 
+ /** \page page_module_roc_sink ROC sink
+  *
+@@ -469,23 +470,14 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 		goto out;
+ 	}
+ 
+-	if ((str = pw_properties_get(props, "remote.source.port")) != NULL) {
+-		data->remote_source_port = pw_properties_parse_int(str);
+-	} else {
+-		data->remote_source_port = PW_ROC_DEFAULT_SOURCE_PORT;
+-	}
++	str = pw_properties_get(props, "remote.source.port");
++	data->remote_source_port = pw_net_parse_port(str, PW_ROC_DEFAULT_SOURCE_PORT);
+ 
+-	if ((str = pw_properties_get(props, "remote.repair.port")) != NULL) {
+-		data->remote_repair_port = pw_properties_parse_int(str);
+-	} else {
+-		data->remote_repair_port = PW_ROC_DEFAULT_REPAIR_PORT;
+-	}
++	str = pw_properties_get(props, "remote.repair.port");
++	data->remote_repair_port = pw_net_parse_port(str, PW_ROC_DEFAULT_REPAIR_PORT);
+ 
+-	if ((str = pw_properties_get(props, "remote.control.port")) != NULL) {
+-		data->remote_control_port = pw_properties_parse_int(str);
+-	} else {
+-		data->remote_control_port = PW_ROC_DEFAULT_CONTROL_PORT;
+-	}
++	str = pw_properties_get(props, "remote.control.port");
++	data->remote_control_port = pw_net_parse_port(str, PW_ROC_DEFAULT_CONTROL_PORT);
+ 
+ 	if ((str = pw_properties_get(props, "fec.code")) != NULL) {
+ 		if (pw_roc_parse_fec_encoding(&data->fec_code, str)) {
+diff --git a/src/modules/module-roc-source.c b/src/modules/module-roc-source.c
+index 2173c6a..ec9cfc9 100644
+--- a/src/modules/module-roc-source.c
++++ b/src/modules/module-roc-source.c
+@@ -24,6 +24,7 @@
+ #include <pipewire/impl.h>
+ 
+ #include "module-roc/common.h"
++#include "network-utils.h"
+ 
+ /** \page page_module_roc_source ROC source
+  *
+@@ -503,23 +504,14 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 		data->local_ip = strdup(PW_ROC_DEFAULT_IP);
+ 	}
+ 
+-	if ((str = pw_properties_get(props, "local.source.port")) != NULL) {
+-		data->local_source_port = pw_properties_parse_int(str);
+-	} else {
+-		data->local_source_port = PW_ROC_DEFAULT_SOURCE_PORT;
+-	}
++	str = pw_properties_get(props, "local.source.port");
++	data->local_source_port = pw_net_parse_port(str, PW_ROC_DEFAULT_SOURCE_PORT);
+ 
+-	if ((str = pw_properties_get(props, "local.repair.port")) != NULL) {
+-		data->local_repair_port = pw_properties_parse_int(str);
+-	} else {
+-		data->local_repair_port = PW_ROC_DEFAULT_REPAIR_PORT;
+-	}
++	str = pw_properties_get(props, "local.repair.port");
++	data->local_repair_port = pw_net_parse_port(str, PW_ROC_DEFAULT_REPAIR_PORT);
+ 
+-	if ((str = pw_properties_get(props, "local.control.port")) != NULL) {
+-		data->local_control_port = pw_properties_parse_int(str);
+-	} else {
+-		data->local_control_port = PW_ROC_DEFAULT_CONTROL_PORT;
+-	}
++	str = pw_properties_get(props, "local.control.port");
++	data->local_control_port = pw_net_parse_port(str, PW_ROC_DEFAULT_CONTROL_PORT);
+ 
+ 	if ((str = pw_properties_get(props, "sess.latency.msec")) != NULL) {
+ 		data->sess_latency_msec = pw_properties_parse_int(str);
+diff --git a/src/modules/module-rtp-sap.c b/src/modules/module-rtp-sap.c
+index c734758..8fd85c9 100644
+--- a/src/modules/module-rtp-sap.c
++++ b/src/modules/module-rtp-sap.c
+@@ -1164,7 +1164,7 @@ static struct session *session_new_announce(struct impl *impl, struct node *node
+ 
+ 	if ((str = pw_properties_get(props, "rtp.destination.port")) == NULL)
+ 		goto error_free;
+-	if (!spa_atou32(str, &port, 0))
++	if ((port = pw_net_parse_port(str, 0)) == 0)
+ 		goto error_free;
+ 	sdp->dst_port = port;
+ 
+diff --git a/src/modules/module-rtp-session.c b/src/modules/module-rtp-session.c
+index 63470c5..2d18eee 100644
+--- a/src/modules/module-rtp-session.c
++++ b/src/modules/module-rtp-session.c
+@@ -1753,7 +1753,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	str = pw_properties_get(props, "local.ifname");
+ 	impl->ifname = str ? strdup(str) : NULL;
+ 
+-	port = pw_properties_get_uint32(props, "control.port", DEFAULT_CONTROL_PORT);
++	str = pw_properties_get(props, "control.port");
++	port = pw_net_parse_port(str, DEFAULT_CONTROL_PORT);
+ 	if ((str = pw_properties_get(props, "control.ip")) == NULL)
+ 		str = DEFAULT_CONTROL_IP;
+ 
+diff --git a/src/modules/module-rtp-source.c b/src/modules/module-rtp-source.c
+index 8f911c6..7d0e959 100644
+--- a/src/modules/module-rtp-source.c
++++ b/src/modules/module-rtp-source.c
+@@ -962,10 +962,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	str = pw_properties_get(props, "local.ifname");
+ 	impl->ifname = str ? strdup(str) : NULL;
+ 
+-	impl->src_port = pw_properties_get_uint32(props, "source.port", 0);
+-	if (impl->src_port == 0) {
++	str = pw_properties_get(props, "source.port");
++	if ((impl->src_port = pw_net_parse_port(str, 0)) == 0) {
+ 		res = -EINVAL;
+-		pw_log_error("invalid source.port");
++		pw_log_error("invalid source.port '%s'", str);
+ 		goto out;
+ 	}
+ 	if ((str = pw_properties_get(props, "source.ip")) == NULL)
+diff --git a/src/modules/module-vban-recv.c b/src/modules/module-vban-recv.c
+index 2ee7243..32af033 100644
+--- a/src/modules/module-vban-recv.c
++++ b/src/modules/module-vban-recv.c
+@@ -711,8 +711,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	str = pw_properties_get(props, "local.ifname");
+ 	impl->ifname = str ? strdup(str) : NULL;
+ 
+-	impl->src_port = pw_properties_get_uint32(props, "source.port", DEFAULT_SOURCE_PORT);
+-	if (impl->src_port == 0) {
++	if ((str = pw_properties_get(props, "source.port")) == NULL)
++		str = SPA_STRINGIFY(DEFAULT_SOURCE_PORT);
++	if ((impl->src_port = pw_net_parse_port(str, 0)) == 0) {
+ 		pw_log_error("invalid source.port");
+ 		goto out;
+ 	}
+diff --git a/src/modules/module-vban-send.c b/src/modules/module-vban-send.c
+index a3ea7c7..01c6116 100644
+--- a/src/modules/module-vban-send.c
++++ b/src/modules/module-vban-send.c
+@@ -446,7 +446,12 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 		goto out;
+ 	}
+ 
+-	impl->dst_port = pw_properties_get_uint32(props, "destination.port", DEFAULT_PORT);
++	if ((str = pw_properties_get(props, "destination.port")) == NULL)
++		str = SPA_STRINGIFY(DEFAULT_PORT);
++	if ((impl->dst_port = pw_net_parse_port(str, 0)) == 0) {
++		pw_log_error("invalid destination.port");
++		goto out;
++	}
+ 	if ((str = pw_properties_get(props, "destination.ip")) == NULL)
+ 		str = DEFAULT_DESTINATION_IP;
+ 	if ((res = pw_net_parse_address(str, impl->dst_port, &impl->dst_addr, &impl->dst_len)) < 0) {
+diff --git a/src/modules/network-utils.h b/src/modules/network-utils.h
+index 6ff80dd..34a4ec3 100644
+--- a/src/modules/network-utils.h
++++ b/src/modules/network-utils.h
+@@ -13,6 +13,7 @@
+ #include <sys/un.h>
+ 
+ #include <spa/utils/string.h>
++#include <spa/utils/json-core.h>
+ 
+ #ifdef __FreeBSD__
+ #define ifr_ifindex ifr_index
+@@ -51,11 +52,21 @@ static inline int pw_net_parse_address(const char *address, uint16_t port,
+ static inline uint16_t pw_net_parse_port(const char *str, uint16_t def)
+ {
+ 	uint32_t val;
+-	if (spa_atou32(str, &val, 0) && val <= 65535u)
++	if (str != NULL && spa_atou32(str, &val, 0) && val <= UINT16_MAX)
+ 		return val;
+ 	return def;
+ }
+ 
++static inline int pw_net_parse_port_json(const char *str, int len, uint16_t *port)
++{
++	int value;
++	if (spa_json_parse_int(str, len, &value) <= 0 ||
++	    value <= 0 || value > UINT16_MAX)
++		return -EINVAL;
++	*port = value;
++	return 0;
++}
++
+ static inline int pw_net_parse_address_port(const char *address,
+ 		const char *default_address, uint16_t default_port,
+ 		struct sockaddr_storage *addr, socklen_t *len)

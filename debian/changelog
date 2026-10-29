@@ -1,3 +1,23 @@
+pipewire (1.6.4-1deepin27) unstable; urgency=medium
+
+  * Integrate backport PRs #83, #84, #86-#93, #97-#99, #101-#103,
+    #106-#110 (21 PRs) as quilt patches:
+    raop RSA encryption openssl-3, module-rtp SSRC network byte order,
+    pw-cli errno error codes, spa-alsa recheck ACP profile on HDMI ELD,
+    bluez5 multiple profile registration, modules parse ports pw-net-utils,
+    spa atomic load_once/store_once macros, pulse-server division-by-0 delay,
+    conf matching property value colons, filter-graph BQ raw closest rate,
+    filter-graph pffft aligned alloc, spa-alsa ACP CPU spin on poll hangup,
+    impl-port suspend init configure, pulse-server sibling message starve,
+    gst clamp fraction, spa-v4l2 compound controls, bluez5 AAC decoder
+    heap overflow, netjack2 max channels check, pulse-server block arbitrary
+    filter-graphs, alsa clear output log, raop loop add io error handling.
+    PR #87 required conflict resolution in alsa-mixer.h (recheck function
+    declaration added); PR #101 had fuzz 1 in pulse-server.c (context
+    refreshed). All patches applied and verified.
+
+ -- zhaochengyi <zhaochengyi@uniontech.com>  Wed, 29 Oct 2026 18:30:00 +0800
+
 pipewire (1.6.4-1deepin26) unstable; urgency=medium
 
   * Integrate backport PRs #43, #47-#80 (35 PRs) as quilt patches:

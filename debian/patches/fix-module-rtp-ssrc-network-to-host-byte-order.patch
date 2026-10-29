@@ -1,0 +1,91 @@
+From 222c8753d1f9766baf2a7d66302379da0ee2eaf1 Mon Sep 17 00:00:00 2001
+From: Carlos Rafael Giani <crg7475@mailbox.org>
+Date: Fri, 12 Jun 2026 10:37:15 +0200
+Subject: [PATCH] module-rtp: Convert received packet SSRC from network to host byte order
+
+Backport of upstream commit 222c8753. In our version the received-packet
+SSRC validation still lives in the three rtp_*_receive() implementations
+(audio.c, midi.c, opus.c) rather than the consolidated rtp_stream_receive_packet()
+in stream.c, so the ntohl() conversion is applied in all three places.
+
+diff --git a/src/modules/module-rtp/audio.c b/src/modules/module-rtp/audio.c
+index e03ae7c..7781429 100644
+--- a/src/modules/module-rtp/audio.c
++++ b/src/modules/module-rtp/audio.c
+@@ -344,9 +344,11 @@ static int rtp_audio_receive(struct impl *impl, uint8_t *buffer, ssize_t len,
+ 	if (hlen > len)
+ 		goto invalid_len;
+ 
+-	if (impl->have_ssrc && impl->ssrc != hdr->ssrc)
++	uint32_t packet_ssrc = ntohl(hdr->ssrc);
++
++	if (impl->have_ssrc && impl->ssrc != packet_ssrc)
+ 		goto unexpected_ssrc;
+-	impl->ssrc = hdr->ssrc;
++	impl->ssrc = packet_ssrc;
+ 	impl->have_ssrc = !impl->ignore_ssrc;
+ 
+ 	seq = ntohs(hdr->sequence_number);
+@@ -479,7 +481,7 @@ unexpected_ssrc:
+ 		/* We didn't have a configured SSRC, and there's more than one SSRC on
+ 		 * this address/port pair */
+ 		pw_log_warn("unexpected SSRC (expected %u != %u)", impl->ssrc,
+-			hdr->ssrc);
++			packet_ssrc);
+ 	}
+ 	return -EINVAL;
+ }
+diff --git a/src/modules/module-rtp/midi.c b/src/modules/module-rtp/midi.c
+index 1237f66..f18cdeb 100644
+--- a/src/modules/module-rtp/midi.c
++++ b/src/modules/module-rtp/midi.c
+@@ -327,9 +327,11 @@ static int rtp_midi_receive(struct impl *impl, uint8_t *buffer, ssize_t len,
+ 	if (hlen >= len)
+ 		goto invalid_len;
+ 
+-	if (impl->have_ssrc && impl->ssrc != hdr->ssrc)
++	uint32_t packet_ssrc = ntohl(hdr->ssrc);
++
++	if (impl->have_ssrc && impl->ssrc != packet_ssrc)
+ 		goto unexpected_ssrc;
+-	impl->ssrc = hdr->ssrc;
++	impl->ssrc = packet_ssrc;
+ 	impl->have_ssrc = !impl->ignore_ssrc;
+ 
+ 	seq = ntohs(hdr->sequence_number);
+@@ -362,7 +364,7 @@ unexpected_ssrc:
+ 		/* We didn't have a configured SSRC, and there's more than one SSRC on
+ 		* this address/port pair */
+ 		pw_log_warn("unexpected SSRC (expected %u != %u)",
+-			impl->ssrc, hdr->ssrc);
++			impl->ssrc, packet_ssrc);
+ 	}
+ 	return -EINVAL;
+ }
+diff --git a/src/modules/module-rtp/opus.c b/src/modules/module-rtp/opus.c
+index 9175d4a..197327b 100644
+--- a/src/modules/module-rtp/opus.c
++++ b/src/modules/module-rtp/opus.c
+@@ -122,9 +122,11 @@ static int rtp_opus_receive(struct impl *impl, uint8_t *buffer, ssize_t len,
+ 	if (hlen > len)
+ 		goto invalid_len;
+ 
+-	if (impl->have_ssrc && impl->ssrc != hdr->ssrc)
++	uint32_t packet_ssrc = ntohl(hdr->ssrc);
++
++	if (impl->have_ssrc && impl->ssrc != packet_ssrc)
+ 		goto unexpected_ssrc;
+-	impl->ssrc = hdr->ssrc;
++	impl->ssrc = packet_ssrc;
+ 	impl->have_ssrc = !impl->ignore_ssrc;
+ 
+ 	seq = ntohs(hdr->sequence_number);
+@@ -207,7 +209,7 @@ unexpected_ssrc:
+ 		/* We didn't have a configured SSRC, and there's more than one SSRC on
+ 		* this address/port pair */
+ 		pw_log_warn("unexpected SSRC (expected %u != %u)",
+-			impl->ssrc, hdr->ssrc);
++			impl->ssrc, packet_ssrc);
+ 	}
+ 	return -EINVAL;
+ }
