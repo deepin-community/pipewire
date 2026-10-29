@@ -1,3 +1,10 @@
+pipewire (1.6.4-1deepin26) unstable; urgency=medium
+
+  * Defer ALSA capture start on Phytium D3000M. Ported from the PulseAudio
+    workaround: only defer the start until a stream is actually recording.
+
+ -- qaqland <anguoli@uniontech.com>  Thu, 22 Oct 2026 16:30:00 +0800
+
 pipewire (1.6.4-1deepin25) unstable; urgency=medium
 
   * Clean up stale state for filter-chain WantedBy migration
