@@ -53,3 +53,4 @@ fix-gst-skip-invalid-crop-metadata-in-pipewiresrc.patch
 fix-module-rtp-copy-sess-ts-direct-and-docs.patch
 fix-gst-dont-make-stream-errors-fatal-pipewiresink-provide.patch
 fix-combine-stream-incorrect-compensate-samples-restart.patch
+fix-jack-use-loop-locked-instead-of-blocking-invoke.patch
