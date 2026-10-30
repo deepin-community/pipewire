@@ -1,0 +1,34 @@
+From f6b60cbd0e57ac76dd01eee4e9b6c6c8caa1d85d Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 29 Oct 2026 17:28:45 +0100
+Subject: [PATCH] jack: use _loop_locked() instead of blocking _invoke()
+
+We don't actually need to run the code on the data thread, we just need
+to make sure we have the lock, just like the other parts of the code
+that adds the source and target_links.
+
+Fixes #5552
+
+diff --git a/pipewire-jack/src/pipewire-jack.c b/pipewire-jack/src/pipewire-jack.c
+index 2ab82285c..2e7a54739 100644
+--- a/pipewire-jack/src/pipewire-jack.c
++++ b/pipewire-jack/src/pipewire-jack.c
+@@ -2274,7 +2274,8 @@ static void clean_transport(struct client *c)
+ 	/* We assume the data-loop is unlocked now and can process our
+ 	 * clean function. This is reasonable, the cleanup function is run when
+ 	 * closing the client, which should join the data-thread. */
+-	pw_data_loop_invoke(c->loop, do_clean_transport, 1, NULL, 0, true, c);
++	pw_loop_locked(c->loop->loop,
++			do_clean_transport, SPA_ID_INVALID, NULL, 0, c);
+ 
+ 	spa_list_consume(l, &c->links, link) {
+ 		spa_list_remove(&l->link);
+@@ -3460,7 +3461,7 @@ static int impl_join(void *object,
+ 		struct spa_thread *thread, void **retval)
+ {
+ 	struct client *c = (struct client *) object;
+-	pw_log_info("join thread");
++	pw_log_info("join thread %p", thread);
+ 	return spa_thread_utils_join(c->context.old_thread_utils, thread, retval);
+ }
+
