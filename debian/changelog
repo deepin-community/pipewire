@@ -1,3 +1,21 @@
+pipewire (1.6.4-1deepin28) unstable; urgency=medium
+
+  * Integrate backport PRs #111-#131 (21 PRs) as quilt patches: bluez5
+    F_GETFL/F_SETFL fix, vulkan mmap failure handling, audioconvert
+    strbuf channel names, rtp-sap out-of-bound read, bluez5
+    RegisterApplication support, modules NULL deref fix, bluez5 HFP
+    send_with_reply fix (backend-native.c hunks already covered by
+    existing patches, refreshed), alsa-plugin allocation errors, stream
+    buffer_id check, audioconvert hist_mem reuse, filter-graph lv2 port
+    limits, jack NULL pointer derefs, filter-graph overflow guard, rtp
+    ringbuffer overflow, remote-node memory offset checks, avb MAAP
+    packet send, modules buffer cleanup on alloc failure, connection
+    large message rejection, modules capture rate assignment, modules
+    invalid input and 0 division protection, pulse-server path traversal
+    rejection in echo-cancel.
+
+ -- jiabowen <jiabowen@uniontech.com>  Tue, 03 Nov 2026 10:51:23 +0800
+
 pipewire (1.6.4-1deepin27) unstable; urgency=medium
 
   * Integrate backport PRs #83, #84, #86-#93, #97-#99, #101-#103,

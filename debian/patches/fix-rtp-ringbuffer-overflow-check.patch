@@ -1,0 +1,25 @@
+From cda2e2ee178cb3b3c0f740e5e5849bba9c6b9d28 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 4 May 2026 10:26:30 +0200
+Subject: [PATCH] rtp: fix ringbuffer overflow check
+
+We write raw samples to the ringbuffer from the opus decode function so
+compare the available space to the max amount of samples we can decode,
+which is 2880 as passed to opus_decode.
+
+diff --git a/src/modules/module-rtp/opus.c b/src/modules/module-rtp/opus.c
+index 9175d4a31..19e1e55cb 100644
+--- a/src/modules/module-rtp/opus.c
++++ b/src/modules/module-rtp/opus.c
+@@ -167,8 +167,8 @@ static int rtp_opus_receive(struct impl *impl, uint8_t *buffer, ssize_t len,
+ 				write, expected_write);
+ 	}
+ 
+-	if (filled + plen > BUFFER_SIZE2 / stride) {
+-		pw_log_debug("capture overrun %u + %zd > %u", filled, plen,
++	if (filled + 2880 > (int32_t)(BUFFER_SIZE2 / stride)) {
++		pw_log_debug("capture overrun %u + %d > %u", filled, 2880,
+ 				BUFFER_SIZE2 / stride);
+ 		impl->have_sync = false;
+ 	} else {
+

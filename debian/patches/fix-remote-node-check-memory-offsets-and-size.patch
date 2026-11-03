@@ -1,0 +1,44 @@
+From 47deb7524764ad823cc54b96085c13795d2f73b0 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 4 May 2026 09:20:13 +0200
+Subject: [PATCH] remote-node: check memory offsets and size
+
+Check that the metadata, chunks and optionally the buffer data fit in
+the memory.
+
+diff --git a/src/modules/module-client-node/remote-node.c b/src/modules/module-client-node/remote-node.c
+index 2c50218a3..ef656b992 100644
+--- a/src/modules/module-client-node/remote-node.c
++++ b/src/modules/module-client-node/remote-node.c
+@@ -667,10 +667,19 @@ client_node_port_use_buffers(void *_data,
+ 		for (j = 0; j < b->n_metas; j++) {
+ 			struct spa_meta *m = &b->metas[j];
+ 			memcpy(m, &buffers[i].buffer->metas[j], sizeof(struct spa_meta));
++			if (offset + m->size > mm->size) {
++				res = -EINVAL;
++				goto error_exit_cleanup;
++			}
+ 			m->data = SPA_PTROFF(mm->ptr, offset, void);
+ 			offset += SPA_ROUND_UP_N(m->size, 8);
+ 		}
+ 
++		if (offset + sizeof(struct spa_chunk) * b->n_datas > mm->size) {
++			res = -EINVAL;
++			goto error_exit_cleanup;
++		}
++
+ 		for (j = 0; j < b->n_datas; j++) {
+ 			struct spa_data *d = &b->datas[j];
+ 
+@@ -701,6 +710,10 @@ client_node_port_use_buffers(void *_data,
+ 						j, bm->id, bm->fd, d->maxsize, d->flags);
+ 			} else if (d->type == SPA_DATA_MemPtr) {
+ 				int offs = SPA_PTR_TO_INT(d->data);
++				if (offs < 0 || (uint32_t)offs + d->maxsize > mm->size) {
++					res = -EINVAL;
++					goto error_exit_cleanup;
++				}
+ 				d->data = SPA_PTROFF(mm->ptr, offs, void);
+ 				d->fd = -1;
+ 				pw_log_debug(" data %d id:%u -> mem:%p offs:%d maxsize:%d flags:%08x",
+
