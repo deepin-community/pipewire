@@ -1,0 +1,90 @@
+From 782986baa18f078dbd9a5579851916aa9cd14321 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 4 May 2026 13:42:14 +0200
+Subject: [PATCH] filter-graph: guard against overflow of graph input/output
+
+
+Index: pipewire/spa/plugins/filter-graph/filter-graph.c
+===================================================================
+--- pipewire.orig/spa/plugins/filter-graph/filter-graph.c
++++ pipewire/spa/plugins/filter-graph/filter-graph.c
+@@ -1902,9 +1902,11 @@ static int setup_graph(struct graph *gra
+ 	spa_log_info(impl->log, "using %d instances %d %d", n_hndl, n_input, n_output);
+ 
+ 	graph->n_input = 0;
+-	graph->input = calloc(n_input * 16 * n_hndl, sizeof(struct graph_port));
++	uint32_t input_count = n_input * 16 * n_hndl;
++	graph->input = calloc(input_count, sizeof(struct graph_port));
+ 	graph->n_output = 0;
+-	graph->output = calloc(n_output * n_hndl, sizeof(struct graph_port));
++	uint32_t output_count = n_output * n_hndl;
++	graph->output = calloc(output_count, sizeof(struct graph_port));
+ 
+ 	/* now collect all input and output ports for all the handles. */
+ 	for (i = 0; i < n_hndl; i++) {
+@@ -1912,6 +1914,10 @@ static int setup_graph(struct graph *gra
+ 			desc = first->desc;
+ 			d = desc->desc;
+ 			for (j = 0; j < desc->n_input; j++) {
++				if (graph->n_input >= input_count) {
++					res = -ENOSPC;
++					goto error;
++				}
+ 				gp = &graph->input[graph->n_input++];
+ 				spa_log_info(impl->log, "input port %s[%d]:%s",
+ 						first->name, i, d->ports[desc->input[j]].name);
+@@ -1924,6 +1930,10 @@ static int setup_graph(struct graph *gra
+ 			for (n = 0; n < graph->n_input_names; n++) {
+ 				pname = graph->input_names[n];
+ 				if (spa_streq(pname, "null")) {
++					if (graph->n_input >= input_count) {
++						res = -ENOSPC;
++						goto error;
++					}
+ 					gp = &graph->input[graph->n_input++];
+ 					gp->desc = NULL;
+ 					spa_log_info(impl->log, "ignore input port %d", graph->n_input);
+@@ -1959,6 +1969,10 @@ static int setup_graph(struct graph *gra
+ 							spa_list_for_each(link, &p->link_list, output_link) {
+ 								struct port *peer = link->input;
+ 
++								if (graph->n_input >= input_count) {
++									res = -ENOSPC;
++									goto error;
++								}
+ 								spa_log_info(impl->log, "copy input port %s[%d]:%s",
+ 									port->node->name, i,
+ 									d->ports[port->p].name);
+@@ -1977,6 +1991,10 @@ static int setup_graph(struct graph *gra
+ 						port->node->disabled = disabled;
+ 					}
+ 					if (!disabled) {
++						if (graph->n_input >= input_count) {
++							res = -ENOSPC;
++							goto error;
++						}
+ 						spa_log_info(impl->log, "input port %s[%d]:%s",
+ 							port->node->name, i, d->ports[port->p].name);
+ 						port->external = graph->n_input;
+@@ -1994,6 +2012,10 @@ static int setup_graph(struct graph *gra
+ 			desc = last->desc;
+ 			d = desc->desc;
+ 			for (j = 0; j < desc->n_output; j++) {
++				if (graph->n_output >= output_count) {
++					res = -ENOSPC;
++					goto error;
++				}
+ 				gp = &graph->output[graph->n_output++];
+ 				spa_log_info(impl->log, "output port %s[%d]:%s",
+ 						last->name, i, d->ports[desc->output[j]].name);
+@@ -2005,6 +2027,10 @@ static int setup_graph(struct graph *gra
+ 		} else {
+ 			for (n = 0; n < graph->n_output_names; n++) {
+ 				pname = graph->output_names[n];
++				if (graph->n_output >= output_count) {
++					res = -ENOSPC;
++					goto error;
++				}
+ 				gp = &graph->output[graph->n_output];
+ 				if (spa_streq(pname, "null")) {
+ 					gp->desc = NULL;

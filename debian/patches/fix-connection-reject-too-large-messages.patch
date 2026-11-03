@@ -1,0 +1,29 @@
+From f29d7875cf51472aba6cbc3d78ba7d1d0aaa62ff Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 1 May 2026 13:04:02 +0200
+Subject: [PATCH] connection: reject too large messages
+
+Instead of silently truncating the message size in the header, simply
+reject the complete message.
+
+diff --git a/src/modules/module-protocol-native/connection.c b/src/modules/module-protocol-native/connection.c
+index 584ca9c17..44eb798c2 100644
+--- a/src/modules/module-protocol-native/connection.c
++++ b/src/modules/module-protocol-native/connection.c
+@@ -704,11 +704,14 @@ pw_protocol_native_connection_end(struct pw_protocol_native_connection *conn,
+ 	struct buffer *buf = &impl->out;
+ 	int res;
+ 
++	if (size > 0xffffff)
++		return -ENOSPC;
++
+ 	if ((p = connection_ensure_size(conn, buf, impl->hdr_size + size)) == NULL)
+ 		return -errno;
+ 
+ 	p[0] = buf->msg.id;
+-	p[1] = (buf->msg.opcode << 24) | (size & 0xffffff);
++	p[1] = (buf->msg.opcode << 24) | size;
+ 	if (impl->version >= 3) {
+ 		p[2] = buf->msg.seq;
+ 		p[3] = buf->msg.n_fds;
+

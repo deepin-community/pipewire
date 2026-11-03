@@ -1,0 +1,21 @@
+From aa6fa6bdc3cae27b399d3de13766cf7dd29cd35b Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 5 May 2026 16:39:27 +0200
+Subject: [PATCH] modules: make sure we don't deref potential NULL
+
+
+diff --git a/src/modules/module-client-node/client-node.c b/src/modules/module-client-node/client-node.c
+index 5b4b4351b..670fb3d5c 100644
+--- a/src/modules/module-client-node/client-node.c
++++ b/src/modules/module-client-node/client-node.c
+@@ -524,7 +524,8 @@ do_update_port(struct impl *impl,
+ 			port->info = *info;
+ 			if (info->props) {
+ 				port->properties = pw_properties_new_dict(info->props);
+-				port->info.props = &port->properties->dict;
++				if (port->properties != NULL)
++					port->info.props = &port->properties->dict;
+ 			}
+ 			port->info.n_params = 0;
+ 			port->info.params = NULL;
+

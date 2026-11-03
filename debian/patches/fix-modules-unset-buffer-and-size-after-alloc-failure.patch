@@ -1,0 +1,22 @@
+From ceb80723a904dc884913bf94dbf2a6199e942483 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 1 May 2026 13:02:00 +0200
+Subject: [PATCH] modules: unset buffer and size after alloc failure
+
+Set the buffer_data to NULL and the size to 0 after we free the
+buffer in realloc failure to avoid problems later.
+
+diff --git a/src/modules/module-protocol-native/connection.c b/src/modules/module-protocol-native/connection.c
+index 15c739428..584ca9c17 100644
+--- a/src/modules/module-protocol-native/connection.c
++++ b/src/modules/module-protocol-native/connection.c
+@@ -144,6 +144,8 @@ static void *connection_ensure_size(struct pw_protocol_native_connection *conn,
+ 		if (np == NULL) {
+ 			res = -errno;
+ 			free(buf->buffer_data);
++			buf->buffer_data = NULL;
++			buf->buffer_size = 0;
+ 			buf->buffer_maxsize = 0;
+ 			spa_hook_list_call(&conn->listener_list,
+ 					struct pw_protocol_native_connection_events,
+
