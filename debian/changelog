@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin29) unstable; urgency=medium
+
+  * security: add per-client operation count limit (MAX_OPERATIONS 64) in PulseAudio protocol to prevent memory exhaustion from flooding clients
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 04 Nov 2026 15:42:44 +0800
+
 pipewire (1.6.4-1deepin28) unstable; urgency=medium
 
   * Integrate backport PRs #111-#131 (21 PRs) as quilt patches: bluez5

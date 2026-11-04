@@ -95,3 +95,4 @@ fix-connection-reject-too-large-messages.patch
 fix-modules-capture-rate-assignment-logical-not.patch
 fix-modules-protect-against-invalid-input-and-0-division.patch
 fix-echo-cancel-reject-path-traversal-aec-method.patch
+fix-protocol-pulse-add-per-client-operation-count-limit.patch
