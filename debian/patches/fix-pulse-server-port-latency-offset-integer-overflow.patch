@@ -1,0 +1,32 @@
+From 890c06117a5f93d7eff8df73953ff3769950baca Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 18:19:03 +0200
+Subject: [PATCH] security: fix integer overflow in port latency offset
+ conversion
+
+Client-supplied int64_t offset was multiplied by 1000 without overflow
+check. Use spa_overflow_mul to detect and reject values that would
+overflow.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+Note (backport to 1.6.4): spa/utils/overflow.h and the spa_overflow_mul
+macro do not exist in this series (they were added upstream by a separate
+SPA commit after 1.6.4), so use __builtin_mul_overflow directly, which is
+exactly what spa_overflow_mul expands to upstream. The include line of
+the original commit is dropped accordingly.
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index 59610ef..d9dc471 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -3161,7 +3161,8 @@ static int do_set_port_latency_offset(struct client *client, uint32_t command, u
+ 	if (port_name == NULL)
+ 		return -EINVAL;
+ 
+-	value = offset * 1000;  /* to nsec */
++	if (__builtin_mul_overflow(offset, (int64_t)1000, &value))
++		return -EINVAL;
+ 
+ 	if ((card = select_object(manager, &sel)) == NULL)
+ 		return -ENOENT;

@@ -1,0 +1,43 @@
+From c38a32e2e1df472ecaf3ba583c9b598a985806e1 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 17:24:52 +0200
+Subject: [PATCH] security: fix NULL pointer dereference in LADSPA sink/source
+ modules
+
+When sink_name/source_name is not provided, pw_properties_get for
+PW_KEY_NODE_NAME returns NULL, which is then passed to
+pw_properties_setf as a %s argument.
+
+Add NULL check before calling pw_properties_setf.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c b/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c
+index 049433add..c831ba92e 100644
+--- a/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c
++++ b/src/modules/module-protocol-pulse/modules/module-ladspa-sink.c
+@@ -215,7 +215,8 @@ static int module_ladspa_sink_prepare(struct module * const module)
+ 
+ 	if ((str = pw_properties_get(capture_props, PW_KEY_NODE_DESCRIPTION)) == NULL) {
+ 		str = pw_properties_get(capture_props, PW_KEY_NODE_NAME);
+-		pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION,
++		if (str != NULL)
++			pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION,
+ 					"%s Sink", str);
+ 	} else {
+ 		pw_properties_set(props, PW_KEY_NODE_DESCRIPTION, str);
+diff --git a/src/modules/module-protocol-pulse/modules/module-ladspa-source.c b/src/modules/module-protocol-pulse/modules/module-ladspa-source.c
+index 94b3c428c..393a0124a 100644
+--- a/src/modules/module-protocol-pulse/modules/module-ladspa-source.c
++++ b/src/modules/module-protocol-pulse/modules/module-ladspa-source.c
+@@ -215,7 +215,8 @@ static int module_ladspa_source_prepare(struct module * const module)
+ 
+ 	if ((str = pw_properties_get(playback_props, PW_KEY_NODE_DESCRIPTION)) == NULL) {
+ 		str = pw_properties_get(playback_props, PW_KEY_NODE_NAME);
+-		pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION,
++		if (str != NULL)
++			pw_properties_setf(props, PW_KEY_NODE_DESCRIPTION,
+ 					"%s Source", str);
+ 	} else {
+ 		pw_properties_set(props, PW_KEY_NODE_DESCRIPTION, str);
+

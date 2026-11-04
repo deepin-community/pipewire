@@ -1,0 +1,28 @@
+From d3e1be8b6eeac83170cc68cf40ddcb9f1a100c3d Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 17:08:17 +0200
+Subject: [PATCH] security: fix division by zero in PulseAudio
+ set_stream_buffer_attr
+
+A client can create a stream with invalid sample_spec (rate=0) via
+format_info negotiation, then send SET_STREAM_BUFFER_ATTR before
+negotiation completes. fix_playback_buffer_attr divides by ss.rate,
+crashing the daemon. Reject buffer attr changes on streams that
+have not completed format negotiation.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index a5b384121..516b04237 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -4593,7 +4593,7 @@ static int do_set_stream_buffer_attr(struct client *client, uint32_t command, ui
+ 			commands[command].name, tag, channel);
+ 
+ 	stream = pw_map_lookup(&client->streams, channel);
+-	if (stream == NULL)
++	if (stream == NULL || stream->create_tag != SPA_ID_INVALID)
+ 		return -ENOENT;
+ 
+ 	if (command == COMMAND_SET_PLAYBACK_STREAM_BUFFER_ATTR) {
+

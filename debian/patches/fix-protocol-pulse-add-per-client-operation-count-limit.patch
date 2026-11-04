@@ -1,0 +1,76 @@
+From 138e30df383ac579f6bd0f2b0288db2024a41711 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 17:16:44 +0200
+Subject: [PATCH] security: add per-client operation count limit in PulseAudio
+ protocol
+
+There was no limit on pending operations per client. Commands like
+SET_SINK_VOLUME each allocate an operation that persists until a
+manager sync completes. A client flooding these commands can exhaust
+server memory. Add a MAX_OPERATIONS (64) limit per client.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+Index: repo/src/modules/module-protocol-pulse/client.h
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/client.h
++++ repo/src/modules/module-protocol-pulse/client.h
+@@ -80,6 +80,7 @@ struct client {
+ 	struct spa_list out_messages;
+ 
+ 	struct spa_list operations;
++	uint32_t n_operations;
+ 
+ 	struct spa_list pending_samples;
+ 
+Index: repo/src/modules/module-protocol-pulse/defs.h
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/defs.h
++++ repo/src/modules/module-protocol-pulse/defs.h
+@@ -32,6 +32,8 @@
+ #define MIN_BUFFERS     1u
+ #define MAX_BUFFERS     4u
+ 
++#define MAX_OPERATIONS		64u
++
+ #define MAXLENGTH		(4u*1024*1024) /* 4MB */
+ 
+ /* pulseaudio has a 128 char limit for this but we can allow more */
+Index: repo/src/modules/module-protocol-pulse/operation.c
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/operation.c
++++ repo/src/modules/module-protocol-pulse/operation.c
+@@ -8,6 +8,7 @@
+ #include <pipewire/log.h>
+ 
+ #include "client.h"
++#include "defs.h"
+ #include "log.h"
+ #include "manager.h"
+ #include "operation.h"
+@@ -19,6 +20,9 @@ int operation_new_cb(struct client *clie
+ {
+ 	struct operation *o;
+ 
++	if (client->n_operations >= MAX_OPERATIONS)
++		return -ENOSPC;
++
+ 	if ((o = calloc(1, sizeof(*o))) == NULL)
+ 		return -errno;
+ 
+@@ -28,6 +32,7 @@ int operation_new_cb(struct client *clie
+ 	o->data = data;
+ 
+ 	spa_list_append(&client->operations, &o->link);
++	client->n_operations++;
+ 	pw_manager_sync(client->manager);
+ 
+ 	pw_log_debug("client %p [%s]: new operation tag:%u", client, client->name, tag);
+@@ -42,6 +47,7 @@ int operation_new(struct client *client,
+ 
+ void operation_free(struct operation *o)
+ {
++	o->client->n_operations--;
+ 	spa_list_remove(&o->link);
+ 	free(o);
+ }

@@ -1,0 +1,26 @@
+From 2af9e879a7f4b95f0297be4f055ab8b61b74a14f Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 11:59:55 +0200
+Subject: [PATCH] netjack2: use peer params name and follower_name
+
+peer->params.name and peer->params.follower_name are null-terminated
+by nj2_session_params_ntoh, whereas the raw params->name from the network
+packet had no such guarantee.
+
+diff --git a/src/modules/module-netjack2-manager.c b/src/modules/module-netjack2-manager.c
+index f046f71df..ec9b6cf2f 100644
+--- a/src/modules/module-netjack2-manager.c
++++ b/src/modules/module-netjack2-manager.c
+@@ -1003,9 +1003,9 @@ static int handle_follower_available(struct impl *impl, struct nj2_session_param
+ 	nj2_session_params_ntoh(&peer->params, params);
+ 
+ 	pw_properties_setf(follower->source.props, PW_KEY_NODE_DESCRIPTION, "%s NETJACK2 from %s",
+-			params->name, params->follower_name);
++			peer->params.name, peer->params.follower_name);
+ 	pw_properties_setf(follower->sink.props, PW_KEY_NODE_DESCRIPTION, "%s NETJACK2 to %s",
+-			params->name, params->follower_name);
++			peer->params.name, peer->params.follower_name);
+ 
+ 	peer->params.mtu = impl->mtu;
+ 	peer->params.id = follower->id;
+

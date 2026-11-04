@@ -1,0 +1,28 @@
+From 9c1bc64af48dd7ce39485a2782f498ec43f80a14 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 16:42:59 +0200
+Subject: [PATCH] security: add missing NULL check after message_alloc in
+ PulseAudio server
+
+message_alloc can return NULL on allocation failure but the result
+was not checked, causing the next do_read call to misinterpret
+the NULL as a protocol error instead of an OOM condition.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/server.c b/src/modules/module-protocol-pulse/server.c
+index f011d61db..1f04532e2 100644
+--- a/src/modules/module-protocol-pulse/server.c
++++ b/src/modules/module-protocol-pulse/server.c
+@@ -274,6 +274,10 @@ static int do_read(struct client *client)
+ 			message_free(client->message, false, false);
+ 
+ 		client->message = message_alloc(impl, channel, length);
++		if (client->message == NULL) {
++			res = -ENOMEM;
++			goto exit;
++		}
+ 	} else if (client->message &&
+ 	    client->in_index >= client->message->length + sizeof(client->desc)) {
+ 		struct message * const msg = client->message;
+

@@ -1,0 +1,29 @@
+From 6d2600c09d711a4d9663836067e2b48f50a701b9 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 18:24:13 +0200
+Subject: [PATCH] security: fix one-byte OOB read in module_args_add_props
+
+A trailing backslash in a module argument string would cause the
+escape handling to advance past the null terminator, reading one
+byte out of bounds on the next loop iteration.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/module.c b/src/modules/module-protocol-pulse/module.c
+index 2b47d93e9..35b5c9952 100644
+--- a/src/modules/module-protocol-pulse/module.c
++++ b/src/modules/module-protocol-pulse/module.c
+@@ -147,8 +147,11 @@ void module_args_add_props(struct pw_properties *props, const char *str)
+ 		for (e = p; *p ;) {
+ 			if (*p == f)
+ 				break;
+-			if (*p == '\\')
++			if (*p == '\\') {
+ 				p++;
++				if (*p == '\0')
++					break;
++			}
+ 			*e++ = *p++;
+ 		}
+ 		if (*p != '\0')
+
