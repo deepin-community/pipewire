@@ -1,0 +1,75 @@
+From 6ea673b68a6ad57cdf0f3de3d1c4085d5c4520da Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 17:02:03 +0200
+Subject: [PATCH] security: fix issues in pulse module core files
+
+- volume.c: add spa_pod_is_object check before casting param to
+  spa_pod_object, preventing out-of-bounds reads on malformed pods
+- manager.c: add NULL check for p->param in has_param before
+  dereferencing via SPA_POD_SIZE
+- snap-policy.c: check strings1[1] and strings2[1] for NULL before
+  passing to g_str_equal, fixing wrong operand order
+- format.c: use map->channels consistently in format_build_param
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/format.c b/src/modules/module-protocol-pulse/format.c
+index 56f164469..ac531f89d 100644
+--- a/src/modules/module-protocol-pulse/format.c
++++ b/src/modules/module-protocol-pulse/format.c
+@@ -633,11 +633,11 @@ const struct spa_pod *format_build_param(struct spa_pod_builder *b, uint32_t id,
+ 			SPA_FORMAT_AUDIO_channels,      SPA_POD_Int(spec->channels), 0);
+ 
+ 		if (map && map->channels == spec->channels) {
+-			uint32_t positions[spec->channels];
+-			channel_map_to_positions(map, positions, spec->channels);
++			uint32_t positions[map->channels];
++			channel_map_to_positions(map, positions, map->channels);
+                         spa_pod_builder_add(b, SPA_FORMAT_AUDIO_position,
+                                 SPA_POD_Array(sizeof(uint32_t), SPA_TYPE_Id,
+-                                        spec->channels, positions), 0);
++                                        map->channels, positions), 0);
+                 }
+         }
+         return spa_pod_builder_pop(b, &f);
+diff --git a/src/modules/module-protocol-pulse/manager.c b/src/modules/module-protocol-pulse/manager.c
+index 72d51b020..9e42ddc3e 100644
+--- a/src/modules/module-protocol-pulse/manager.c
++++ b/src/modules/module-protocol-pulse/manager.c
+@@ -124,6 +124,8 @@ static struct pw_manager_param *add_param(struct spa_list *params,
+ static bool has_param(struct spa_list *param_list, struct pw_manager_param *p)
+ {
+ 	struct pw_manager_param *t;
++	if (p->param == NULL)
++		return false;
+ 	spa_list_for_each(t, param_list, link) {
+ 		if (p->id == t->id &&
+ 		   SPA_POD_SIZE(p->param) == SPA_POD_SIZE(t->param) &&
+diff --git a/src/modules/module-protocol-pulse/snap-policy.c b/src/modules/module-protocol-pulse/snap-policy.c
+index 774763f9a..2238c91d7 100644
+--- a/src/modules/module-protocol-pulse/snap-policy.c
++++ b/src/modules/module-protocol-pulse/snap-policy.c
+@@ -33,7 +33,7 @@ static gboolean check_is_same_snap(gchar *snap1, gchar *snap2)
+ 	strings1 = g_strsplit(snap1, ".", 3);
+ 	strings2 = g_strsplit(snap2, ".", 3);
+ 
+-	if (g_str_equal(strings1[1], strings2[1]) && (strings1[1] != NULL)) {
++	if (strings1[1] != NULL && strings2[1] != NULL && g_str_equal(strings1[1], strings2[1])) {
+ 		return TRUE;
+ 	}
+ 	return FALSE;
+diff --git a/src/modules/module-protocol-pulse/volume.c b/src/modules/module-protocol-pulse/volume.c
+index e53f967ec..c124b227f 100644
+--- a/src/modules/module-protocol-pulse/volume.c
++++ b/src/modules/module-protocol-pulse/volume.c
+@@ -32,6 +32,9 @@ int volume_parse_param(const struct spa_pod *param, struct volume_info *info, bo
+ 	struct spa_pod_object *obj = (struct spa_pod_object *) param;
+ 	struct spa_pod_prop *prop;
+ 
++	if (!spa_pod_is_object(param))
++		return -EINVAL;
++
+ 	SPA_POD_OBJECT_FOREACH(obj, prop) {
+ 		switch (prop->key) {
+ 		case SPA_PROP_volume:
+

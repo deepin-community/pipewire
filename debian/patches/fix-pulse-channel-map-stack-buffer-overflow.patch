@@ -1,0 +1,27 @@
+From d23ec56f0d16cc57621a19118db5a5acc673f0b2 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 15:49:50 +0200
+Subject: [PATCH] security: fix stack buffer overflow in PulseAudio channel map
+ parsing
+
+format_info_to_spec parses the format.channel_map property without
+checking against CHANNELS_MAX (64) before writing to map->map[].
+A client supplying more than 64 channel names overflows the stack-
+allocated channel_map buffer.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/format.c b/src/modules/module-protocol-pulse/format.c
+index 24ef024f9..ead37932d 100644
+--- a/src/modules/module-protocol-pulse/format.c
++++ b/src/modules/module-protocol-pulse/format.c
+@@ -879,6 +879,8 @@ int format_info_to_spec(const struct format_info *info, struct sample_spec *ss,
+ 			return -EINVAL;
+ 		while ((*str == '\"' || *str == ',') &&
+ 		    (len = strcspn(++str, "\",")) > 0) {
++			if (map->channels >= CHANNELS_MAX)
++				return -EINVAL;
+ 			map->map[map->channels++] = channel_paname2id(str, len);
+ 			str += len;
+ 		}
+

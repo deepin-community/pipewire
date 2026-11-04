@@ -1,3 +1,26 @@
+pipewire (1.6.4-1deepin29) unstable; urgency=medium
+
+  * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
+    CLOSED) as quilt patches: LADSPA NULL deref fix, pulse core security
+    issues, impl-link copy error handling, IEC958 OOB read fix, combine-
+    sink buffer over-read, simple-protocol-tcp JSON injection, pulse
+    message_get unknown tag rejection, module-args OOB read, cmd NULL
+    check after strndup, operation counter leak fix, pulse-server port
+    latency integer overflow, reply message_alloc NULL checks, native-
+    protocol-tcp JSON injection, LADSPA JSON injection, pulse zero-
+    channel volume rejection, stream sample rate validation, division-by-
+    zero in set_stream_buffer_attr, JSON injection in do_set_default,
+    pulse-server message_alloc NULL check, per-client stream limit,
+    stream-restore JSON injection, handle_memblock NULL deref, channel
+    map stack buffer overflow, MAX_PERMISSIONS alloca stack usage
+    reduction, rtp-midi unchecked write_event return, alsa-udev alloca
+    size bound, netjack2 max followers limit, netjack2 sync_wait error
+    handling, netjack2 opus encoded length validation, pw_split_strv
+    NULL checks, netjack2 peer params name, per-client operation count
+    limit (P0 security fix from upstream commit 138e30df).
+
+ -- jiabowen <jiabowen@uniontech.com>  Wed, 04 Nov 2026 16:48:54 +0800
+
 pipewire (1.6.4-1deepin28) unstable; urgency=medium
 
   * Integrate backport PRs #111-#131 (21 PRs) as quilt patches: bluez5

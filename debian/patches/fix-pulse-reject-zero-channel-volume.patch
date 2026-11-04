@@ -1,0 +1,27 @@
+From bc4e1a989c60f06e955da2c24a1f9aef41af3a9d Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 17:23:43 +0200
+Subject: [PATCH] security: reject zero-channel volume in PulseAudio message
+ parsing
+
+read_cvolume accepted channels=0, creating a degenerate zero-length
+volume array that is passed to pw_stream_set_control and SPA pod
+building. Reject zero channels alongside the existing CHANNELS_MAX
+upper bound check.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index 2244918a0..770f2226e 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -215,7 +215,7 @@ static int read_cvolume(struct message *m, struct volume *vol)
+ 
+ 	if ((res = read_u8(m, &vol->channels)) < 0)
+ 		return res;
+-	if (vol->channels > CHANNELS_MAX)
++	if (vol->channels == 0 || vol->channels > CHANNELS_MAX)
+ 		return -EINVAL;
+ 	for (i = 0; i < vol->channels; i ++) {
+ 		if ((res = read_volume(m, &vol->values[i])) < 0)
+

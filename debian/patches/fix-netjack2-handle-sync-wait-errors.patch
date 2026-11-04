@@ -1,0 +1,28 @@
+From 739e2d11073aafd8c8a52ba36a94ff19a211aa6d Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 13:56:11 +0200
+Subject: [PATCH] netjack2: handle sync_wait errors
+
+netjack2_driver_sync_wait can return an negative value on error, don't
+do any processing in that case instead of wrapping around the negative
+value into a huge unsigned int and breaking things..
+
+diff --git a/src/modules/module-netjack2-driver.c b/src/modules/module-netjack2-driver.c
+index 40ad33eab..1a2281db2 100644
+--- a/src/modules/module-netjack2-driver.c
++++ b/src/modules/module-netjack2-driver.c
+@@ -676,11 +676,11 @@ on_data_io(void *data, int fd, uint32_t mask)
+ 	}
+ 	if (mask & SPA_IO_IN) {
+ 		bool source_running, sink_running;
+-		uint32_t nframes;
++		int32_t nframes;
+ 		uint64_t nsec;
+ 
+ 		nframes = netjack2_driver_sync_wait(&impl->peer);
+-		if (nframes == 0)
++		if (nframes <= 0)
+ 			return;
+ 
+ 		nsec = get_time_nsec(impl);
+

@@ -1,0 +1,47 @@
+From 1b8962d7c22d8bfdd7238033d4487cfdc51d532c Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 17:52:19 +0200
+Subject: [PATCH] security: fix JSON injection in native-protocol-tcp address
+
+The listen address was inserted into JSON without escaping. Build the
+address string first, then encode it with spa_json_encode_string to
+prevent injection of arbitrary JSON keys.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-native-protocol-tcp.c b/src/modules/module-protocol-pulse/modules/module-native-protocol-tcp.c
+index 6700ad458..1d0fbb5ab 100644
+--- a/src/modules/module-protocol-pulse/modules/module-native-protocol-tcp.c
++++ b/src/modules/module-protocol-pulse/modules/module-native-protocol-tcp.c
+@@ -2,6 +2,7 @@
+ /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+ /* SPDX-License-Identifier: MIT */
+ 
++#include <spa/utils/json.h>
+ #include <pipewire/pipewire.h>
+ 
+ #include "../module.h"
+@@ -78,6 +79,7 @@ static int module_native_protocol_tcp_prepare(struct module * const module)
+ 	struct module_native_protocol_tcp_data * const d = module->user_data;
+ 	struct pw_properties * const props = module->props;
+ 	const char *port, *listen, *auth;
++	char address[1024], encoded[1024];
+ 	FILE *f;
+ 	char *args;
+ 	size_t size;
+@@ -95,9 +97,12 @@ static int module_native_protocol_tcp_prepare(struct module * const module)
+ 	if (f == NULL)
+ 		return -errno;
+ 
++	snprintf(address, sizeof(address), "tcp:%s%s%s",
++			listen ? listen : "", listen ? ":" : "", port);
++	spa_json_encode_string(encoded, sizeof(encoded), address);
++
+ 	fprintf(f, "[ { ");
+-	fprintf(f, " \"address\": \"tcp:%s%s%s\" ",
+-			   listen ? listen : "", listen ? ":" : "", port);
++	fprintf(f, " \"address\": %s ", encoded);
+ 	if (auth && module_args_parse_bool(auth))
+ 		fprintf(f, " \"client.access\": \"unrestricted\" ");
+ 	fprintf(f, "} ]");
+

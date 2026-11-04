@@ -1,0 +1,40 @@
+From 390874e7c3f9185fb0182eb2c8ee25d086c3ee05 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 09:15:36 +0200
+Subject: [PATCH] security: fix JSON injection in simple-protocol-tcp address
+
+The listen address was inserted into a JSON array without escaping.
+Build the address string first, then encode it with
+spa_json_encode_string.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-simple-protocol-tcp.c b/src/modules/module-protocol-pulse/modules/module-simple-protocol-tcp.c
+index 4ca4156c2..852cd87ab 100644
+--- a/src/modules/module-protocol-pulse/modules/module-simple-protocol-tcp.c
++++ b/src/modules/module-protocol-pulse/modules/module-simple-protocol-tcp.c
+@@ -2,6 +2,7 @@
+ /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans <wim.taymans@gmail.com> */
+ /* SPDX-License-Identifier: MIT */
+ 
++#include <spa/utils/json.h>
+ #include <pipewire/impl.h>
+ #include <pipewire/pipewire.h>
+ 
+@@ -169,8 +170,13 @@ static int module_simple_protocol_tcp_prepare(struct module * const module)
+ 		port = "4711";
+ 	listen = pw_properties_get(props, "listen");
+ 
+-	pw_properties_setf(module_props, "server.address", "[ \"tcp:%s%s%s\" ]",
+-			listen ? listen : "", listen ? ":" : "", port);
++	{
++		char address[1024], encoded[1024];
++		snprintf(address, sizeof(address), "tcp:%s%s%s",
++				listen ? listen : "", listen ? ":" : "", port);
++		spa_json_encode_string(encoded, sizeof(encoded), address);
++		pw_properties_setf(module_props, "server.address", "[ %s ]", encoded);
++	}
+ 
+ 	d->module = module;
+ 	d->module_props = module_props;
+

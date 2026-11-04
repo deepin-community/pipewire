@@ -1,0 +1,27 @@
+From 0ae17566f2d5475af738b47cbfe33ac716d17cea Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 09:14:08 +0200
+Subject: [PATCH] security: reject unknown tags in message_get to prevent
+ va_arg desync
+
+The switch in message_get had no default case. An unrecognized tag byte
+from a malicious client would skip the switch body without consuming
+the va_arg parameter, desynchronizing all subsequent argument reads
+and causing undefined behavior.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index 770f2226e..cbf5cb577 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -361,6 +361,8 @@ int message_get(struct message *m, ...)
+ 			if ((res = read_format_info(m, va_arg(va, struct format_info*))) < 0)
+ 				goto done;
+ 			break;
++		default:
++			goto invalid;
+ 		}
+ 	}
+ 	res = 0;
+
