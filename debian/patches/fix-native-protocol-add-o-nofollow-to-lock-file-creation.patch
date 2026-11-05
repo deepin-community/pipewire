@@ -1,0 +1,32 @@
+From 95ef466b9bd7d46eeb4690eb89cfa87885f6855f Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 14:12:09 +0200
+Subject: [PATCH] security: add O_NOFOLLOW to native protocol lock file
+ creation
+
+File and Resource Handling: Medium
+
+The lock_socket() function opens the lock file without O_NOFOLLOW. If an
+attacker places a symlink at the lock file path, open() follows it and
+creates or truncates a file at the symlink target with the caller's
+privileges. While the lock path is typically in a user-owned runtime
+directory, adding O_NOFOLLOW is a low-cost defense-in-depth measure that
+prevents symlink attacks in case the directory permissions are
+misconfigured or the path is influenced by untrusted input.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-native.c b/src/modules/module-protocol-native.c
+index c393316e1..c2401fe37 100644
+--- a/src/modules/module-protocol-native.c
++++ b/src/modules/module-protocol-native.c
+@@ -776,7 +776,7 @@ static int lock_socket(struct server *s)
+ 
+ 	snprintf(s->lock_addr, sizeof(s->lock_addr), "%s%s", s->addr.sun_path, LOCK_SUFFIX);
+ 
+-	s->fd_lock = open(s->lock_addr, O_CREAT | O_CLOEXEC,
++	s->fd_lock = open(s->lock_addr, O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+ 			  (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP));
+ 
+ 	if (s->fd_lock < 0) {
+
