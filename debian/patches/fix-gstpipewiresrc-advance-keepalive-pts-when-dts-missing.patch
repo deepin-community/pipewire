@@ -1,0 +1,33 @@
+From 2604cfebeabae8589132e6b1d406575c22e6abac Mon Sep 17 00:00:00 2001
+From: greyxp1 <greyxp999@gmail.com>
+Date: Sat, 31 Oct 2026 12:02:05 -0400
+Subject: [PATCH] gstpipewiresrc: advance keepalive PTS when DTS is missing
+
+A raw buffer can have a valid PTS without a DTS. Advance its PTS by the
+elapsed clock time instead of replacing it with the absolute clock time,
+which can make GstBaseSrc wait far into the future. Only advance DTS when
+it is valid.
+
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index fee4d5f3a..72a939691 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -1786,14 +1786,14 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
+ 
+     if (GST_CLOCK_TIME_IS_VALID (current_clock_time) &&
+         GST_CLOCK_TIME_IS_VALID (pwsrc->last_buffer_clock_time) &&
+-        GST_CLOCK_TIME_IS_VALID (GST_BUFFER_PTS (*buffer)) &&
+-        GST_CLOCK_TIME_IS_VALID (GST_BUFFER_DTS (*buffer))) {
++        GST_CLOCK_TIME_IS_VALID (GST_BUFFER_PTS (*buffer))) {
+       GstClockTime diff;
+ 
+       diff = current_clock_time - pwsrc->last_buffer_clock_time;
+ 
+       GST_BUFFER_PTS (*buffer) += diff;
+-      GST_BUFFER_DTS (*buffer) += diff;
++      if (GST_CLOCK_TIME_IS_VALID (GST_BUFFER_DTS (*buffer)))
++        GST_BUFFER_DTS (*buffer) += diff;
+     } else {
+       GST_BUFFER_PTS (*buffer) = GST_BUFFER_DTS (*buffer) = current_clock_time;
+     }
+
