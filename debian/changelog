@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * modules: remove socket and timer before stream destroy (backport upstream 49675a2c: remove the timer and socket sources safely with the data loop locked before destroying the stream in module-pipe-tunnel, so callbacks cannot use the destroyed stream)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 05 Nov 2026 12:04:59 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
