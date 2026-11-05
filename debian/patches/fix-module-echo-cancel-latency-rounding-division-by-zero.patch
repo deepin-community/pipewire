@@ -1,0 +1,30 @@
+From 4c56228f425571ca7fb35ce646fa3ee6fcbf3cdc Mon Sep 17 00:00:00 2001
+From: thestarfarer <astarfarer@proton.me>
+Date: Sat, 31 Oct 2026 21:05:04 +0600
+Subject: [PATCH] module-echo-cancel: fix latency rounding no-op and division
+ by zero
+
+The requested node.latency was never snapped to the AEC block size, so
+the streams and the canceller ran at mismatched rates, dropping one
+block per ring lap as periodic silence and xruns. Latencies below one
+block divided by zero.
+
+Fixes: #5559
+
+diff --git a/src/modules/module-echo-cancel.c b/src/modules/module-echo-cancel.c
+index 18e1a2a2d..01c42c2e1 100644
+--- a/src/modules/module-echo-cancel.c
++++ b/src/modules/module-echo-cancel.c
+@@ -1616,7 +1616,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 			if (sscanf(str, "%u/%u", &req_num, &req_denom) == 2 &&
+ 			    req_denom != 0) {
+ 				factor = (req_num * denom) / (req_denom * num);
+-				new_num = req_num / factor * factor;
++				/* snap the requested latency down to a multiple of
++				 * the canceller block size, in req_denom units */
++				if (factor > 0)
++					new_num = factor * num * req_denom / denom;
+ 			}
+ 		}
+ 		if (factor == 0 || new_num == 0) {
+
