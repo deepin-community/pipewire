@@ -1,0 +1,25 @@
+From 8b8a9b2c6091964e64765722345691ab230caba9 Mon Sep 17 00:00:00 2001
+From: Torkel Niklasson <torkel@axis.com>
+Date: Mon, 2 Nov 2026 11:52:44 +0100
+Subject: [PATCH] impl-link: drop stale data when activating a link
+
+Data left in the link io at deactivation was delivered as new data on
+the next activation for an async consumer.
+
+Fixes #5564
+
+diff --git a/src/pipewire/impl-link.c b/src/pipewire/impl-link.c
+index 44f3bf778..ff5eb91d0 100644
+--- a/src/pipewire/impl-link.c
++++ b/src/pipewire/impl-link.c
+@@ -829,6 +829,9 @@ int pw_impl_link_activate(struct pw_impl_link *this)
+ 		io_size = sizeof(struct spa_io_buffers);
+ 	}
+ 
++	this->io[0].status = SPA_STATUS_NEED_DATA;
++	this->io[1].status = SPA_STATUS_NEED_DATA;
++
+ 	if ((res = port_set_io(this, &impl->input, io_type, this->io, io_size)) < 0)
+ 		goto error;
+ 	if ((res = port_set_io(this, &impl->output, io_type, this->io, io_size)) < 0)
+

@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * impl-link: drop stale data when activating a link (backport upstream 8b8a9b2c)
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 05 Nov 2026 11:57:03 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
