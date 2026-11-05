@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * Fix format conversion failure on 32-bit architectures (i386/armhf): allocate 64-bit DRM modifier keys dynamically instead of truncating them into pointers
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 05 Nov 2026 11:56:50 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
