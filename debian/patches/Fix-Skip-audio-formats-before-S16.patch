@@ -20,30 +20,36 @@
  	} else
  		return 0;
  
-@@ -1751,6 +1754,9 @@
+@@ -1751,6 +1754,10 @@
  	struct spa_pod_choice *choice;
  
  	hndl = state->hndl;
 +	bool skip_before_s16 = state->skip_formats_before_s16;
++	bool retry_formats = skip_before_s16;
 +	if (skip_before_s16)
-+		spa_log_info(state->log, "%s: skip audio formats before S16", state->name);
++		spa_log_info(state->log, "[361545] %s: skip audio formats before S16", state->name);
  	snd_pcm_hw_params_alloca(&params);
  	CHECK(snd_pcm_hw_params_any(hndl, params), "Broken configuration: no configurations available");
  
-@@ -1797,6 +1803,22 @@
+@@ -1793,10 +1800,27 @@
+ 	choice = (struct spa_pod_choice*)spa_pod_builder_frame(b, &f[1]);
+ 
+ 	j = 0;
++retry:
+ 	SPA_FOR_EACH_ELEMENT_VAR(format_info, fi) {
  		if (fi->format == SND_PCM_FORMAT_UNKNOWN)
  			continue;
  
 +		if (skip_before_s16) {
 +			if (fi->spa_format != SPA_AUDIO_FORMAT_S16_LE &&
 +			    fi->spa_format != SPA_AUDIO_FORMAT_S16_BE) {
-+				spa_log_info(state->log, "%s: skip format %s",
++				spa_log_info(state->log, "[361545] %s: skip format %s",
 +						state->name,
 +						spa_debug_type_find_short_name(
 +							spa_type_audio_format, fi->spa_format));
 +				continue;
 +			}
-+			spa_log_info(state->log, "%s: reached %s, stop skipping",
++			spa_log_info(state->log, "[361545] %s: reached %s, stop skipping",
 +					state->name,
 +					spa_debug_type_find_short_name(
 +						spa_type_audio_format, fi->spa_format));
@@ -53,3 +59,22 @@
  		if (snd_pcm_format_mask_test(fmask, fi->format)) {
  			if ((snd_pcm_access_mask_test(amask, SND_PCM_ACCESS_MMAP_NONINTERLEAVED) ||
  			    snd_pcm_access_mask_test(amask, SND_PCM_ACCESS_RW_NONINTERLEAVED)) &&
+@@ -1815,6 +1839,18 @@
+ 			}
+ 		}
+ 	}
++
++	/* Some devices only support formats before S16 (e.g. S24) and would be
++	 * left with no format at all, so retry without the filtering. Nothing
++	 * was added to the choice when j == 0, no need to reset the builder. */
++	if (j == 0 && retry_formats) {
++		spa_log_info(state->log, "[361545] %s: skipping formats before S16 would leave "
++				"no usable format, not skipping", state->name);
++		retry_formats = false;
++		skip_before_s16 = false;
++		goto retry;
++	}
++
+ 	if (j > 1)
+ 		choice->body.type = SPA_CHOICE_Enum;
+ 	spa_pod_builder_pop(b, &f[1]);

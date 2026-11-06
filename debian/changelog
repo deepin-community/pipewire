@@ -1,3 +1,11 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
+    formats before S16 (e.g. S24): retry the format enumeration without the
+    filter when nothing is left, so such cards keep working.
+
+ -- qaqland <anguoli@uniontech.com>  Fri, 06 Nov 2026 16:57:00 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
