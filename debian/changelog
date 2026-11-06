@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * Fix crash and overflow bugs in network-facing modules: filter-chain NULL pointer deref on dequeue failure, zeroconf-discover NULL checks for malformed mDNS announcements, raop-sink net.mtu cap to 9000 (VLA stack overflow), rtp-sap SDP i= line over-read and fd leak
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 06 Nov 2026 14:48:19 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
