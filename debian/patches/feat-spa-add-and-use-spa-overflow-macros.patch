@@ -1,0 +1,537 @@
+From 0f8d5c6e570407b5225a4427facbf42d8824a7e0 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 15:54:15 +0200
+Subject: [PATCH] spa: add and use spa_overflow macros
+
+diff --git a/spa/include/spa/utils/overflow.h b/spa/include/spa/utils/overflow.h
+new file mode 100644
+index 0000000..1028fd7
+--- /dev/null
++++ b/spa/include/spa/utils/overflow.h
+@@ -0,0 +1,40 @@
++/* Simple Plugin API */
++/* SPDX-FileCopyrightText: Copyright © 2026 Wim Taymans */
++/* SPDX-License-Identifier: MIT */
++
++#ifndef SPA_UTILS_OVERFLOW_H
++#define SPA_UTILS_OVERFLOW_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * \brief Check for addition overflow
++ *
++ * Computes \a a + \a b and stores the result in \a *res.
++ * \return true if the addition overflowed, false otherwise
++ */
++#define spa_overflow_add(a, b, res)	__builtin_add_overflow(a, b, res)
++
++/**
++ * \brief Check for subtraction overflow
++ *
++ * Computes \a a - \a b and stores the result in \a *res.
++ * \return true if the subtraction overflowed, false otherwise
++ */
++#define spa_overflow_sub(a, b, res)	__builtin_sub_overflow(a, b, res)
++
++/**
++ * \brief Check for multiplication overflow
++ *
++ * Computes \a a * \a b and stores the result in \a *res.
++ * \return true if the multiplication overflowed, false otherwise
++ */
++#define spa_overflow_mul(a, b, res)	__builtin_mul_overflow(a, b, res)
++
++#ifdef __cplusplus
++} /* extern "C" */
++#endif
++
++#endif /* SPA_UTILS_OVERFLOW_H */
+diff --git a/spa/plugins/audioconvert/resample-native.c b/spa/plugins/audioconvert/resample-native.c
+index 3604c5b..0875bf4 100644
+--- a/spa/plugins/audioconvert/resample-native.c
++++ b/spa/plugins/audioconvert/resample-native.c
+@@ -5,6 +5,7 @@
+ #include <errno.h>
+ 
+ #include <spa/param/audio/format.h>
++#include <spa/utils/overflow.h>
+ 
+ #include "resample-native-impl.h"
+ #ifndef RESAMPLE_DISABLE_PRECOMP
+@@ -470,8 +471,9 @@ int resample_native_init(struct resample *r)
+ 	struct native_data *d;
+ 	const struct quality *q;
+ 	double scale, cutoff;
+-	uint32_t i, n_taps, n_phases, filter_size, in_rate, out_rate, gcd, filter_stride;
+-	uint32_t history_stride, history_size, oversample;
++	uint32_t i, n_taps, n_phases, in_rate, out_rate, gcd, filter_stride;
++	uint32_t history_stride, oversample;
++	size_t filter_size, history_size, alloc_size;
+ 	struct resample_config *c = &r->config;
+ #ifndef RESAMPLE_DISABLE_PRECOMP
+ 	struct resample_config def = { 0 };
+@@ -515,17 +517,21 @@ int resample_native_init(struct resample *r)
+ 	n_phases *= oversample;
+ 
+ 	filter_stride = SPA_ROUND_UP_N(n_taps * sizeof(float), 64);
+-	filter_size = filter_stride * (n_phases + 1);
++	if (spa_overflow_mul((size_t)filter_stride, (size_t)(n_phases + 1), &filter_size))
++		return -ENOMEM;
+ 
+ 	history_stride = SPA_ROUND_UP_N(2 * n_taps * sizeof(float), 64);
+-	history_size = r->channels * history_stride;
++	if (spa_overflow_mul((size_t)r->channels, (size_t)history_stride, &history_size))
++		return -ENOMEM;
+ 
+-	d = calloc(1, sizeof(struct native_data) +
+-			filter_size +
+-			history_size +
+-			(r->channels * sizeof(float*)) +
+-			64);
++	alloc_size = sizeof(struct native_data);
++	if (spa_overflow_add(alloc_size, filter_size, &alloc_size) ||
++	    spa_overflow_add(alloc_size, history_size, &alloc_size) ||
++	    spa_overflow_add(alloc_size, (size_t)r->channels * sizeof(float*), &alloc_size) ||
++	    spa_overflow_add(alloc_size, (size_t)64, &alloc_size))
++		return -ENOMEM;
+ 
++	d = calloc(1, alloc_size);
+ 	if (d == NULL)
+ 		return -errno;
+ 
+diff --git a/spa/plugins/audioconvert/resample-peaks.c b/spa/plugins/audioconvert/resample-peaks.c
+index aade771..3ceef6c 100644
+--- a/spa/plugins/audioconvert/resample-peaks.c
++++ b/spa/plugins/audioconvert/resample-peaks.c
+@@ -6,6 +6,7 @@
+ #include <errno.h>
+ 
+ #include <spa/param/audio/format.h>
++#include <spa/utils/overflow.h>
+ 
+ #include "peaks-ops.h"
+ #include "resample.h"
+@@ -113,7 +114,12 @@ int resample_peaks_init(struct resample *r)
+ 	r->free = impl_peaks_free;
+ 	r->update_rate = impl_peaks_update_rate;
+ 
+-	d = calloc(1, sizeof(struct peaks_data) + sizeof(float) * r->channels);
++	size_t alloc_size;
++	if (spa_overflow_mul(sizeof(float), (size_t)r->channels, &alloc_size) ||
++	    spa_overflow_add(alloc_size, sizeof(struct peaks_data), &alloc_size))
++		return -ENOMEM;
++
++	d = calloc(1, alloc_size);
+ 	if (d == NULL)
+ 		return -errno;
+ 
+diff --git a/spa/plugins/bluez5/decode-buffer.h b/spa/plugins/bluez5/decode-buffer.h
+index 03cfae9..776c2a0 100644
+--- a/spa/plugins/bluez5/decode-buffer.h
++++ b/spa/plugins/bluez5/decode-buffer.h
+@@ -39,6 +39,7 @@
+ #include <bluetooth/bluetooth.h>
+ 
+ #include <spa/utils/defs.h>
++#include <spa/utils/overflow.h>
+ #include <spa/support/log.h>
+ 
+ #include "rate-control.h"
+@@ -107,9 +108,12 @@ static inline int spa_bt_decode_buffer_init(struct spa_bt_decode_buffer *this, s
+ 	this->frame_size = frame_size;
+ 	this->rate = rate;
+ 	this->log = log;
+-	this->buffer_reserve = this->frame_size * reserve;
+-	this->buffer_size = this->frame_size * quantum_limit * 2;
+-	this->buffer_size += this->buffer_reserve;
++	if (spa_overflow_mul(this->frame_size, reserve, &this->buffer_reserve))
++		return -ENOMEM;
++	if (spa_overflow_mul(this->frame_size, quantum_limit, &this->buffer_size) ||
++	    spa_overflow_mul(this->buffer_size, 2u, &this->buffer_size) ||
++	    spa_overflow_add(this->buffer_size, this->buffer_reserve, &this->buffer_size))
++		return -ENOMEM;
+ 	this->corr = 1.0;
+ 	this->prev_match_rate = 1.0;
+ 	this->target = 0;
+diff --git a/spa/plugins/bluez5/telephony.c b/spa/plugins/bluez5/telephony.c
+index 12e859a..7cc36da 100644
+--- a/spa/plugins/bluez5/telephony.c
++++ b/spa/plugins/bluez5/telephony.c
+@@ -12,6 +12,7 @@
+ 
+ #include <spa/utils/list.h>
+ #include <spa/utils/string.h>
++#include <spa/utils/overflow.h>
+ 
+ #define PW_TELEPHONY_SERVICE "org.pipewire.Telephony"
+ 
+@@ -1100,10 +1101,11 @@ telephony_ag_new(struct spa_bt_telephony *telephony, size_t user_data_size)
+ {
+ 	struct impl *impl = SPA_CONTAINER_OF(telephony, struct impl, this);
+ 	struct agimpl *agimpl;
++	size_t alloc_size;
+ 
+-	spa_assert(user_data_size < SIZE_MAX - sizeof(*agimpl));
++	spa_assert(!spa_overflow_add(sizeof(*agimpl), user_data_size, &alloc_size));
+ 
+-	agimpl = calloc(1, sizeof(*agimpl) + user_data_size);
++	agimpl = calloc(1, alloc_size);
+ 	if (agimpl == NULL)
+ 		return NULL;
+ 
+@@ -1334,10 +1336,11 @@ struct spa_bt_telephony_call *
+ telephony_call_new(struct spa_bt_telephony_ag *ag, size_t user_data_size)
+ {
+ 	struct callimpl *callimpl;
++	size_t alloc_size;
+ 
+-	spa_assert(user_data_size < SIZE_MAX - sizeof(*callimpl));
++	spa_assert(!spa_overflow_add(sizeof(*callimpl), user_data_size, &alloc_size));
+ 
+-	callimpl = calloc(1, sizeof(*callimpl) + user_data_size);
++	callimpl = calloc(1, alloc_size);
+ 	if (callimpl == NULL)
+ 		return NULL;
+ 
+diff --git a/spa/plugins/filter-graph/plugin_builtin.c b/spa/plugins/filter-graph/plugin_builtin.c
+index 34a24bb..fb587bf 100644
+--- a/spa/plugins/filter-graph/plugin_builtin.c
++++ b/spa/plugins/filter-graph/plugin_builtin.c
+@@ -19,6 +19,7 @@
+ #include <spa/utils/json.h>
+ #include <spa/utils/result.h>
+ #include <spa/utils/cleanup.h>
++#include <spa/utils/overflow.h>
+ #include <spa/support/cpu.h>
+ #include <spa/support/log.h>
+ #include <spa/plugins/audioconvert/resample.h>
+@@ -1301,7 +1302,13 @@ static void *delay_instantiate(const struct spa_fga_plugin *plugin, const struct
+ 	spa_log_info(impl->log, "max-delay:%f seconds rate:%lu samples:%d latency:%f",
+ 			max_delay, impl->rate, impl->buffer_samples, impl->latency);
+ 
+-	impl->buffer = calloc(impl->buffer_samples * 2 + 64, sizeof(float));
++	size_t buf_count;
++	if (spa_overflow_mul((size_t)impl->buffer_samples, (size_t)2, &buf_count) ||
++	    spa_overflow_add(buf_count, (size_t)64, &buf_count)) {
++		delay_cleanup(impl);
++		return NULL;
++	}
++	impl->buffer = calloc(buf_count, sizeof(float));
+ 	if (impl->buffer == NULL) {
+ 		delay_cleanup(impl);
+ 		return NULL;
+diff --git a/src/modules/module-echo-cancel.c b/src/modules/module-echo-cancel.c
+index 390563d..1ff8240 100644
+--- a/src/modules/module-echo-cancel.c
++++ b/src/modules/module-echo-cancel.c
+@@ -28,6 +28,7 @@
+ #include <spa/support/plugin.h>
+ #include <spa/utils/json.h>
+ #include <spa/utils/names.h>
++#include <spa/utils/overflow.h>
+ #include <spa/utils/result.h>
+ #include <spa/utils/ringbuffer.h>
+ #include <spa/utils/string.h>
+@@ -1179,9 +1180,16 @@ static int setup_streams(struct impl *impl)
+ 
+ 	spa_pod_dynamic_builder_clean(&b);
+ 
+-	impl->rec_ringsize = sizeof(float) * impl->max_buffer_size * impl->rec_info.rate / 1000;
+-	impl->play_ringsize = sizeof(float) * ((impl->max_buffer_size * impl->play_info.rate / 1000) + impl->buffer_delay);
+-	impl->out_ringsize = sizeof(float) * impl->max_buffer_size * impl->out_info.rate / 1000;
++	if (spa_overflow_mul(impl->max_buffer_size, impl->rec_info.rate / 1000, &impl->rec_ringsize) ||
++	    spa_overflow_mul(impl->rec_ringsize, (uint32_t)sizeof(float), &impl->rec_ringsize))
++		return -ENOMEM;
++	if (spa_overflow_mul(impl->max_buffer_size, impl->play_info.rate / 1000, &impl->play_ringsize) ||
++	    spa_overflow_add(impl->play_ringsize, impl->buffer_delay, &impl->play_ringsize) ||
++	    spa_overflow_mul(impl->play_ringsize, (uint32_t)sizeof(float), &impl->play_ringsize))
++		return -ENOMEM;
++	if (spa_overflow_mul(impl->max_buffer_size, impl->out_info.rate / 1000, &impl->out_ringsize) ||
++	    spa_overflow_mul(impl->out_ringsize, (uint32_t)sizeof(float), &impl->out_ringsize))
++		return -ENOMEM;
+ 	for (i = 0; i < impl->rec_info.channels; i++)
+ 		impl->rec_buffer[i] = malloc(impl->rec_ringsize);
+ 	for (i = 0; i < impl->play_info.channels; i++)
+diff --git a/src/modules/module-filter-chain.c b/src/modules/module-filter-chain.c
+index 2535169..99b040f 100644
+--- a/src/modules/module-filter-chain.c
++++ b/src/modules/module-filter-chain.c
+@@ -15,6 +15,7 @@
+ 
+ #include <spa/param/latency-utils.h>
+ #include <spa/param/tag-utils.h>
++#include <spa/utils/overflow.h>
+ #include <spa/param/audio/raw-json.h>
+ #include <spa/pod/dynamic.h>
+ #include <spa/filter-graph/filter-graph.h>
+@@ -1720,7 +1721,13 @@ static int setup_streams(struct impl *impl)
+ 		res = -ENOMEM;
+ 		goto done;
+ 	}
+-	if ((params = calloc(n_params+1, sizeof(struct spa_pod*))) == NULL) {
++	size_t params_alloc;
++	if (spa_overflow_add((size_t)n_params, (size_t)1, &params_alloc) ||
++	    spa_overflow_mul(params_alloc, sizeof(struct spa_pod*), &params_alloc)) {
++		res = -ENOMEM;
++		goto done;
++	}
++	if ((params = calloc(1, params_alloc)) == NULL) {
+ 		res = -errno;
+ 		goto done;
+ 	}
+diff --git a/src/modules/module-loopback.c b/src/modules/module-loopback.c
+index 5b34834..191290c 100644
+--- a/src/modules/module-loopback.c
++++ b/src/modules/module-loopback.c
+@@ -16,6 +16,7 @@
+ #include <spa/utils/string.h>
+ #include <spa/utils/json.h>
+ #include <spa/utils/ringbuffer.h>
++#include <spa/utils/overflow.h>
+ #include <spa/param/latency-utils.h>
+ #include <spa/param/audio/raw-json.h>
+ #include <spa/debug/types.h>
+@@ -577,14 +578,21 @@ static void recalculate_buffer(struct impl *impl)
+ 		uint32_t delay = (uint32_t)(impl->rate * impl->target_delay);
+ 		void *data;
+ 
+-		impl->buffer_size = (delay + (1u<<15)) * 4;
+-		data = realloc(impl->buffer_data, impl->buffer_size * impl->channels);
+-		if (data == NULL) {
+-			pw_log_warn("can't allocate delay buffer, delay disabled: %m");
++		if (spa_overflow_add(delay, 1u << 15, &impl->buffer_size) ||
++		    spa_overflow_mul(impl->buffer_size, 4u, &impl->buffer_size)) {
++			pw_log_warn("delay too large, delay disabled");
+ 			impl->buffer_size = 0;
+ 			free(impl->buffer_data);
++			impl->buffer_data = NULL;
++		} else {
++			data = realloc(impl->buffer_data, (size_t)impl->buffer_size * impl->channels);
++			if (data == NULL) {
++				pw_log_warn("can't allocate delay buffer, delay disabled: %m");
++				impl->buffer_size = 0;
++				free(impl->buffer_data);
++			}
++			impl->buffer_data = data;
+ 		}
+-		impl->buffer_data = data;
+ 		spa_ringbuffer_init(&impl->buffer);
+ 	} else {
+ 		impl->buffer_size = 0;
+diff --git a/src/modules/module-netjack2/peer.c b/src/modules/module-netjack2/peer.c
+index 7547cc5..51c2729 100644
+--- a/src/modules/module-netjack2/peer.c
++++ b/src/modules/module-netjack2/peer.c
+@@ -1,5 +1,6 @@
+ 
+ #include <spa/utils/endian.h>
++#include <spa/utils/overflow.h>
+ #include <spa/control/ump-utils.h>
+ 
+ #ifdef HAVE_OPUS_CUSTOM
+@@ -138,14 +139,23 @@ static int netjack2_init(struct netjack2_peer *peer)
+ 
+ 	peer->empty = calloc(peer->quantum_limit, sizeof(float));
+ 
+-	peer->midi_size = peer->params.period_size * sizeof(float) *
+-		SPA_MAX(peer->params.send_midi_channels, peer->params.recv_midi_channels);
++	if (spa_overflow_mul(peer->params.period_size, (uint32_t)sizeof(float), &peer->midi_size) ||
++	    spa_overflow_mul(peer->midi_size,
++			SPA_MAX(peer->params.send_midi_channels, peer->params.recv_midi_channels),
++			&peer->midi_size)) {
++		errno = EINVAL;
++		goto error_errno;
++	}
+ 	peer->midi_data = calloc(1, peer->midi_size);
+ 
+ 	if (peer->params.sample_encoder == NJ2_ENCODER_INT) {
+-		peer->max_encoded_size = peer->params.period_size * sizeof(int16_t);
+-		peer->encoded_size = peer->max_encoded_size *
+-			SPA_MAX(peer->params.send_audio_channels, peer->params.recv_audio_channels);
++		if (spa_overflow_mul(peer->params.period_size, (uint32_t)sizeof(int16_t), &peer->max_encoded_size) ||
++		    spa_overflow_mul(peer->max_encoded_size,
++				SPA_MAX(peer->params.send_audio_channels, peer->params.recv_audio_channels),
++				&peer->encoded_size)) {
++			errno = EINVAL;
++			goto error_errno;
++		}
+ 		if ((peer->encoded_data = calloc(1, peer->encoded_size)) == NULL)
+ 			goto error_errno;
+ 	} else if (peer->params.sample_encoder == NJ2_ENCODER_OPUS) {
+@@ -153,8 +163,12 @@ static int netjack2_init(struct netjack2_peer *peer)
+ 		int32_t i;
+ 		peer->max_encoded_size = (peer->params.kbps * peer->params.period_size * 1024) /
+ 			(peer->params.sample_rate * 8) + sizeof(uint16_t);
+-		peer->encoded_size = peer->max_encoded_size *
+-			SPA_MAX(peer->params.send_audio_channels, peer->params.recv_audio_channels);
++		if (spa_overflow_mul(peer->max_encoded_size,
++				SPA_MAX(peer->params.send_audio_channels, peer->params.recv_audio_channels),
++				&peer->encoded_size)) {
++			errno = EINVAL;
++			goto error_errno;
++		}
+ 		if ((peer->encoded_data = calloc(1, peer->encoded_size)) == NULL)
+ 			goto error_errno;
+ 		if ((peer->opus_config = opus_custom_mode_create(peer->params.sample_rate,
+@@ -774,7 +788,8 @@ static int netjack2_recv_midi(struct netjack2_peer *peer, struct nj2_packet_head
+ 	sub_cycle = ntohl(header->sub_cycle);
+ 	peer->sync.num_packets = ntohl(header->num_packets);
+ 	max_size = peer->params.mtu - sizeof(*header);
+-	offset = max_size * sub_cycle;
++	if (spa_overflow_mul(max_size, sub_cycle, &offset))
++		return -EOVERFLOW;
+ 
+ 	data += sizeof(*header);
+ 	len -= sizeof(*header);
+diff --git a/src/pipewire/array.h b/src/pipewire/array.h
+index 4af60a9..be0d6d1 100644
+--- a/src/pipewire/array.h
++++ b/src/pipewire/array.h
+@@ -8,6 +8,7 @@
+ #include <errno.h>
+ 
+ #include <spa/utils/defs.h>
++#include <spa/utils/overflow.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -111,7 +112,8 @@ PW_API_ARRAY int pw_array_ensure_size(struct pw_array *arr, size_t size)
+ 	size_t alloc, need;
+ 
+ 	alloc = arr->alloc;
+-	need = arr->size + size;
++	if (SPA_UNLIKELY(spa_overflow_add(arr->size, size, &need)))
++		return -ENOMEM;
+ 
+ 	if (SPA_UNLIKELY(alloc < need)) {
+ 		void *data;
+diff --git a/src/pipewire/buffers.c b/src/pipewire/buffers.c
+index db1a015..23d2848 100644
+--- a/src/pipewire/buffers.c
++++ b/src/pipewire/buffers.c
+@@ -6,6 +6,7 @@
+ #include <spa/pod/iter.h>
+ #include <spa/param/param.h>
+ #include <spa/buffer/alloc.h>
++#include <spa/utils/overflow.h>
+ #include <spa/debug/types.h>
+ 
+ #include "pipewire/keys.h"
+@@ -71,7 +72,12 @@ static int alloc_buffers(struct pw_mempool *pool,
+         spa_buffer_alloc_fill_info(&info, n_metas, metas, n_datas, datas, data_aligns);
+ 
+ 	/* allocate the skeleton, depending on SHARED flag, meta/chunk/data is included */
+-	buffers = calloc(1, info.max_align + n_buffers * (sizeof(struct spa_buffer *) + info.skel_size));
++	size_t skel_alloc;
++	if (spa_overflow_mul((size_t)n_buffers, sizeof(struct spa_buffer *) + info.skel_size, &skel_alloc) ||
++	    spa_overflow_add(skel_alloc, (size_t)info.max_align, &skel_alloc))
++		return -ENOMEM;
++
++	buffers = calloc(1, skel_alloc);
+ 	if (buffers == NULL)
+ 		return -errno;
+ 
+@@ -80,12 +86,18 @@ static int alloc_buffers(struct pw_mempool *pool,
+ 
+ 	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_SHARED)) {
+ 		/* For shared data we use MemFd for meta/chunk/data */
++		size_t mem_alloc;
++		if (spa_overflow_mul((size_t)n_buffers, (size_t)info.mem_size, &mem_alloc)) {
++			free(buffers);
++			return -ENOMEM;
++		}
++
+ 		m = pw_mempool_alloc(pool,
+ 				PW_MEMBLOCK_FLAG_READWRITE |
+ 				PW_MEMBLOCK_FLAG_SEAL |
+ 				PW_MEMBLOCK_FLAG_MAP,
+ 				SPA_DATA_MemFd,
+-				n_buffers * info.mem_size);
++				mem_alloc);
+ 		if (m == NULL) {
+ 			free(buffers);
+ 			return -errno;
+diff --git a/src/pipewire/mem.h b/src/pipewire/mem.h
+index 0c3ce73..864e426 100644
+--- a/src/pipewire/mem.h
++++ b/src/pipewire/mem.h
+@@ -5,6 +5,7 @@
+ #ifndef PIPEWIRE_MEM_H
+ #define PIPEWIRE_MEM_H
+ 
++#include <spa/utils/overflow.h>
+ #include <pipewire/properties.h>
+ 
+ struct spa_hook;
+@@ -184,14 +185,15 @@ PW_API_MEM int pw_map_range_init(struct pw_map_range *range,
+ 				     uint32_t offset, uint32_t size,
+ 				     uint32_t page_size)
+ {
++	uint32_t sum, tmp;
+ 	range->offset = SPA_ROUND_DOWN_N(offset, page_size);
+ 	range->start = offset - range->offset;
+-	if (size > UINT32_MAX - range->start)
++	if (spa_overflow_add(range->start, size, &sum))
+ 		return -EOVERFLOW;
+ 	/* Check that rounding up to page_size won't overflow */
+-	if (range->start + size > UINT32_MAX - (page_size - 1))
++	if (spa_overflow_add(sum, page_size - 1, &tmp))
+ 		return -EOVERFLOW;
+-	range->size = SPA_ROUND_UP_N(range->start + size, page_size);
++	range->size = SPA_ROUND_UP_N(sum, page_size);
+ 	return 0;
+ }
+ 
+diff --git a/src/pipewire/utils.c b/src/pipewire/utils.c
+index 103058a..0cd8788 100644
+--- a/src/pipewire/utils.c
++++ b/src/pipewire/utils.c
+@@ -14,6 +14,7 @@
+ #include <time.h>
+ 
+ #include <spa/utils/json.h>
++#include <spa/utils/overflow.h>
+ #include <spa/debug/log.h>
+ 
+ #include <pipewire/array.h>
+@@ -368,6 +369,11 @@ void* pw_reallocarray(void *ptr, size_t nmemb, size_t size)
+ #ifdef HAVE_REALLOCARRAY
+ 	return reallocarray(ptr, nmemb, size);
+ #else
+-	return realloc(ptr, nmemb * size);
++	size_t total;
++	if (spa_overflow_mul(nmemb, size, &total)) {
++		errno = ENOMEM;
++		return NULL;
++	}
++	return realloc(ptr, total);
+ #endif
+ }
+diff --git a/src/tools/dsffile.c b/src/tools/dsffile.c
+index 757962e..3ed8752 100644
+--- a/src/tools/dsffile.c
++++ b/src/tools/dsffile.c
+@@ -10,6 +10,7 @@
+ #include <math.h>
+ 
+ #include <spa/utils/string.h>
++#include <spa/utils/overflow.h>
+ 
+ #include "dsffile.h"
+ 
+@@ -95,7 +96,11 @@ static int read_fmt(struct dsf_file *f)
+ 	if (size > s)
+ 		f_skip(f, size - s);
+ 
+-	f->buffer = calloc(1, f->info.blocksize * f->info.channels);
++	size_t buf_size;
++	if (f->info.blocksize == 0 || f->info.channels == 0 ||
++	    spa_overflow_mul((size_t)f->info.channels, (size_t)f->info.blocksize, &buf_size))
++		return -EINVAL;
++	f->buffer = calloc(1, buf_size);
+ 	if (f->buffer == NULL)
+ 		return -errno;
+ 

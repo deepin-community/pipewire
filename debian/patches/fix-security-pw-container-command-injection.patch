@@ -1,0 +1,48 @@
+From 15c32c66f0f5ffa29cf9e1534ede75a62918e5e2 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 16:12:26 +0200
+Subject: [PATCH] security: fix command injection via system() in pw-container
+
+Input Validation: High
+
+system() passes its argument to /bin/sh -c, which interprets shell
+metacharacters (;, |, &&, $(), etc.). If pw-container is invoked by
+another program with untrusted input, this allows arbitrary command
+execution. Replace with fork()+execvp() which executes the command
+directly without shell interpretation, and passes all remaining
+arguments to the child process.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/tools/pw-container.c b/src/tools/pw-container.c
+index 02b7c8815..fa39b3450 100644
+--- a/src/tools/pw-container.c
++++ b/src/tools/pw-container.c
+@@ -11,6 +11,7 @@
+ #include <locale.h>
+ #include <fcntl.h>
+ #include <sys/socket.h>
++#include <sys/wait.h>
+ 
+ #include <spa/utils/result.h>
+ #include <spa/utils/string.h>
+@@ -283,7 +284,17 @@ int main(int argc, char *argv[])
+ 	}
+ 
+ 	if (optind < argc) {
+-		system(argv[optind++]);
++		pid_t pid = fork();
++		if (pid < 0) {
++			fprintf(stderr, "can't fork: %m\n");
++			return -1;
++		}
++		if (pid == 0) {
++			execvp(argv[optind], &argv[optind]);
++			fprintf(stderr, "can't exec %s: %m\n", argv[optind]);
++			_exit(127);
++		}
++		waitpid(pid, NULL, 0);
+ 	} else {
+ 		fprintf(stdout, "new socket: %s\n", temp);
+ 		pw_main_loop_run(data.loop);
+

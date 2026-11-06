@@ -1,0 +1,57 @@
+From 382533da96907887744856b078fa2de4b300a976 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 28 Apr 2026 13:19:29 +0200
+Subject: [PATCH] security: add missing NULL checks after strdup in
+ impl-metadata
+
+Memory Safety: Medium
+
+The set_item() function called strdup() for key, type, and value
+without checking the return values. If any strdup() fails due to
+memory exhaustion, the NULL pointer would be stored in the item
+struct and later dereferenced when the metadata is accessed or
+logged.
+
+Fix by checking strdup() return values and cleaning up on failure.
+Change set_item() to return an error code so callers can handle
+allocation failures.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/pipewire/impl-metadata.c b/src/pipewire/impl-metadata.c
+index bb330881e..850bfebe6 100644
+--- a/src/pipewire/impl-metadata.c
++++ b/src/pipewire/impl-metadata.c
+@@ -43,12 +43,18 @@ static void clear_item(struct item *item)
+ 	spa_zero(*item);
+ }
+ 
+-static void set_item(struct item *item, uint32_t subject, const char *key, const char *type, const char *value)
++static int set_item(struct item *item, uint32_t subject, const char *key, const char *type, const char *value)
+ {
+ 	item->subject = subject;
+ 	item->key = strdup(key);
+ 	item->type = type ? strdup(type) : NULL;
+ 	item->value = strdup(value);
++	if (item->key == NULL || item->value == NULL ||
++	    (type != NULL && item->type == NULL)) {
++		clear_item(item);
++		return -ENOMEM;
++	}
++	return 0;
+ }
+ 
+ static int change_item(struct item *item, const char *type, const char *value)
+@@ -181,7 +187,10 @@ static int impl_set_property(void *object,
+ 		item = pw_array_add(&this->storage, sizeof(*item));
+ 		if (item == NULL)
+ 			return -errno;
+-		set_item(item, subject, key, type, value);
++		if (set_item(item, subject, key, type, value) < 0) {
++			pw_array_remove(&this->storage, item);
++			return -ENOMEM;
++		}
+ 		changed++;
+ 		pw_log_info("%p: add id:%d key:%s type:%s value:%s", this,
+ 				subject, key, type, value);
+

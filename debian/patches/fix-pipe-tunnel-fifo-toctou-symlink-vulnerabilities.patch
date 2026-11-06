@@ -1,0 +1,62 @@
+From b2bdd653385267c636826cc44348762d920d1ed7 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 18:06:20 +0200
+Subject: [PATCH] security: fix TOCTOU and symlink vulnerabilities in
+ pipe-tunnel FIFO
+
+File and Resource Handling: High
+
+The pipe-tunnel module creates FIFOs and then adjusts their
+permissions using chmod() on the path. Between mkfifo() and
+chmod(), an attacker with write access to the directory (e.g.,
+/tmp with the default hardcoded paths) can delete the FIFO and
+replace it with a symlink to a target file. The chmod(0666) then
+changes permissions on the symlink target, allowing the attacker
+to make arbitrary files world-readable/writable.
+
+Fix by:
+1. Adding O_NOFOLLOW to the open() call so symlinks are rejected
+   at open time rather than followed.
+2. Moving the permission change from chmod() (path-based, follows
+   symlinks) to fchmod() (fd-based, operates on the already-opened
+   and validated file descriptor), and doing it after the fstat
+   S_ISFIFO check confirms we opened an actual FIFO.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-pipe-tunnel.c b/src/modules/module-pipe-tunnel.c
+index 62de8717c..8bfac4036 100644
+--- a/src/modules/module-pipe-tunnel.c
++++ b/src/modules/module-pipe-tunnel.c
+@@ -618,16 +618,9 @@ static int create_fifo(struct impl *impl)
+ 			goto error;
+ 		}
+ 	} else {
+-		/*
+-		 * Our umask is 077, so the pipe won't be created with the
+-		 * requested permissions. Let's fix the permissions with chmod().
+-		 */
+-		if (chmod(filename, 0666) < 0)
+-			pw_log_warn("chmod('%s'): %s", filename, spa_strerror(-errno));
+-
+ 		do_unlink_fifo = true;
+ 	}
+-	if ((fd = open(filename, O_RDWR | O_CLOEXEC | O_NONBLOCK, 0)) < 0) {
++	if ((fd = open(filename, O_RDWR | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW, 0)) < 0) {
+ 		res = -errno;
+ 		pw_log_error("open('%s'): %s", filename, spa_strerror(res));
+ 		goto error;
+@@ -644,6 +637,12 @@ static int create_fifo(struct impl *impl)
+ 		pw_log_error("'%s' is not a FIFO.", filename);
+ 		goto error;
+ 	}
++	/*
++	 * Our umask is 077, so the pipe won't be created with the
++	 * requested permissions. Use fchmod on the fd to avoid TOCTOU.
++	 */
++	if (do_unlink_fifo && fchmod(fd, 0666) < 0)
++		pw_log_warn("fchmod('%s'): %s", filename, spa_strerror(-errno));
+ 	impl->socket = pw_loop_add_io(impl->data_loop, fd,
+ 			0, false, on_pipe_io, impl);
+ 	if (impl->socket == NULL) {
+

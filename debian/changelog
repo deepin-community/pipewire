@@ -1,3 +1,26 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * Integrate backport PRs #288, #164-#185, #187, #189-#191, #193-#194,
+    #197-#201, #294 (35 PRs) as quilt patches: spa overflow macros, impl-
+    metadata NULL checks, filter-graph plugin_builtin NULL check, pw-cli
+    param info integer overflow, AVB ringbuffer NULL check/overflow,
+    v4l2 O_CLOEXEC, pulse message read_arbitrary integer overflow, raop
+    atoi validation, spa JSON-to-POD alloca cap, raop RTSP status code
+    strtol, pw-container command injection, netjack2 recv length/bounds
+    validation, AVB MRP/ADP/ACMP/AECP packet length validation, Apple
+    MIDI packet length/name termination, pulse channel count clamp, VBAN
+    MIDI varlen overflow, netjack2 MTU bounds, BIS config metadata
+    length, Bluetooth DBus negative array lengths, bluez5 broadcast code
+    null termination, peer_name alloca integer truncation, VBAN MIDI
+    receive packet length, combine-stream delay integer truncation,
+    native protocol TOCTOU/symlink, filter-graph unchecked allocation
+    returns, Bluetooth codec codesize integer overflow, pipe-tunnel FIFO
+    TOCTOU/symlink, netjack2 OOB read non-null-terminated strings,
+    netjack2 socket buffer integer overflow, pulse protocol socket
+    TOCTOU/symlink, native-protocol O_NOFOLLOW lock file.
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Fri, 06 Nov 2026 14:26:51 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as

@@ -1,0 +1,36 @@
+From 4f9e59b87dc5ad91e3a63b85dd75794f90374069 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 16:13:18 +0200
+Subject: [PATCH] security: fix missing null termination in Bluetooth broadcast
+ code
+
+Memory Safety: Medium
+
+The broadcast_code field is a 16-byte array that can be filled with
+exactly 16 bytes of data via memcpy without null termination when the
+input string length equals BROADCAST_CODE_LEN. The field is then
+logged with %s format, which reads past the buffer boundary into
+adjacent struct fields, potentially disclosing sensitive data.
+
+Fix by changing the boundary check from > to >= to ensure room for
+the null terminator, and copy the terminator along with the data.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/bluez5/bluez5-dbus.c b/spa/plugins/bluez5/bluez5-dbus.c
+index 22d971c37..094dcca8c 100644
+--- a/spa/plugins/bluez5/bluez5-dbus.c
++++ b/spa/plugins/bluez5/bluez5-dbus.c
+@@ -7117,9 +7117,9 @@ static void parse_broadcast_source_config(struct spa_bt_monitor *monitor, const
+ 			if (spa_streq(key, "broadcast_code")) {
+ 				if (spa_json_get_string(&it[0], bcode, sizeof(bcode)) <= 0)
+ 						goto parse_failed;
+-				if (strlen(bcode) > BROADCAST_CODE_LEN)
++				if (strlen(bcode) >= BROADCAST_CODE_LEN)
+ 					goto parse_failed;
+-				memcpy(big_entry->broadcast_code, bcode, strlen(bcode));
++				memcpy(big_entry->broadcast_code, bcode, strlen(bcode) + 1);
+ 				spa_log_debug(monitor->log, "big_entry->broadcast_code %s", big_entry->broadcast_code);
+ 			} else if (spa_streq(key, "adapter")) {
+ 				if (spa_json_get_string(&it[0], big_entry->adapter, sizeof(big_entry->adapter)) <= 0)
+

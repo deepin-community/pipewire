@@ -1,0 +1,100 @@
+From 42d51098ae7ebd65291fbe0b5b4a5961fb0eb8bb Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 12:16:00 +0200
+Subject: [PATCH] security: validate recv length and use overflow-safe bounds
+ in NetJack2 OPUS/INT
+
+Memory Safety: High
+
+The netjack2_recv_opus() and netjack2_recv_int() functions had two
+issues:
+
+1. Missing recv length validation: after recv(), neither function
+   checked that the received data was at least sizeof(header) bytes.
+   A short packet would cause the pointer to advance past received
+   data, reading uninitialized VLA memory into the encoded buffer.
+
+2. Integer overflow in bounds check: the expression
+   (active_ports-1)*max_encoded + sub_cycle*sub_period_bytes + data_size
+   uses sub_cycle from the network packet header. A large sub_cycle
+   value can overflow the uint32_t multiplication, wrapping around to
+   a small value and bypassing the encoded_size bounds check, leading
+   to an out-of-bounds write into encoded_data.
+
+Additionally, validate that the received data is large enough for the
+active_ports * data_size memcpy to prevent reading past the buffer.
+
+Fix by adding recv length checks, using spa_overflow_mul/add for the
+bounds arithmetic, and validating recv'd data covers the copy region.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2/peer.c b/src/modules/module-netjack2/peer.c
+index d1bf8a10c..ffe157300 100644
+--- a/src/modules/module-netjack2/peer.c
++++ b/src/modules/module-netjack2/peer.c
+@@ -896,6 +896,8 @@ static int netjack2_recv_opus(struct netjack2_peer *peer, struct nj2_packet_head
+ 
+ 	if ((len = recv(peer->fd, buffer, packet_size, 0)) < 0)
+ 		return -errno;
++	if ((size_t)len < sizeof(*header))
++		return -EINVAL;
+ 
+ 	active_ports = peer->params.recv_audio_channels;
+ 	if (active_ports == 0)
+@@ -923,12 +925,20 @@ static int netjack2_recv_opus(struct netjack2_peer *peer, struct nj2_packet_head
+ 	encoded_data = peer->encoded_data;
+ 	encoded_size = peer->encoded_size;
+ 
+-	if ((active_ports-1) * max_encoded + sub_cycle * sub_period_bytes + data_size > encoded_size)
++	uint32_t end_offset, cycle_offset;
++	if (spa_overflow_mul(sub_cycle, sub_period_bytes, &cycle_offset) ||
++	    spa_overflow_add(cycle_offset, (active_ports - 1) * max_encoded, &end_offset) ||
++	    spa_overflow_add(end_offset, data_size, &end_offset) ||
++	    end_offset > encoded_size)
+ 		return -ENOSPC;
+ 
++	if (spa_overflow_mul(active_ports, data_size, &end_offset) ||
++	    end_offset > (uint32_t)len)
++		return -EINVAL;
++
+ 	for (i = 0; i < active_ports; i++) {
+ 		memcpy(SPA_PTROFF(encoded_data,
+-				i * max_encoded + sub_cycle * sub_period_bytes, void),
++				i * max_encoded + cycle_offset, void),
+ 				SPA_PTROFF(data, i * data_size, void),
+ 				data_size);
+ 	}
+@@ -969,6 +979,8 @@ static int netjack2_recv_int(struct netjack2_peer *peer, struct nj2_packet_heade
+ 
+ 	if ((len = recv(peer->fd, buffer, packet_size, 0)) < 0)
+ 		return -errno;
++	if ((size_t)len < sizeof(*header))
++		return -EINVAL;
+ 
+ 	active_ports = peer->params.recv_audio_channels;
+ 	if (active_ports == 0)
+@@ -996,12 +1008,20 @@ static int netjack2_recv_int(struct netjack2_peer *peer, struct nj2_packet_heade
+ 	encoded_data = peer->encoded_data;
+ 	encoded_size = peer->encoded_size;
+ 
+-	if ((active_ports-1) * max_encoded + sub_cycle * sub_period_bytes + data_size > encoded_size)
++	uint32_t end_offset, cycle_offset;
++	if (spa_overflow_mul(sub_cycle, sub_period_bytes, &cycle_offset) ||
++	    spa_overflow_add(cycle_offset, (active_ports - 1) * max_encoded, &end_offset) ||
++	    spa_overflow_add(end_offset, data_size, &end_offset) ||
++	    end_offset > encoded_size)
+ 		return -ENOSPC;
+ 
++	if (spa_overflow_mul(active_ports, data_size, &end_offset) ||
++	    end_offset > (uint32_t)len)
++		return -EINVAL;
++
+ 	for (i = 0; i < active_ports; i++) {
+ 		memcpy(SPA_PTROFF(encoded_data,
+-				i * max_encoded + sub_cycle * sub_period_bytes, void),
++				i * max_encoded + cycle_offset, void),
+ 				SPA_PTROFF(data, i * data_size, void),
+ 				data_size);
+ 	}
+
