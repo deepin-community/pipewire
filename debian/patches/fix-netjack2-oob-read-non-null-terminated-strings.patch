@@ -1,0 +1,56 @@
+From 7a969654f6b197a25b29921778c55dfe5f4372c8 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 14:10:48 +0200
+Subject: [PATCH] security: fix out-of-bounds read from non-null-terminated
+ netjack2 strings
+
+Memory Safety: High
+
+The nj2_dump_session_params() function logs char array fields (type,
+name, driver_name, follower_name) from network-received
+nj2_session_params structs using %s format. These fields are fixed-size
+char arrays filled by recvfrom() and are not guaranteed to contain a null
+terminator. A malicious peer can send a packet with no null bytes in
+these fields, causing pw_log_info to read past the struct boundary,
+potentially crashing the process or leaking adjacent heap memory.
+
+Use %.*s format specifier with explicit maximum lengths in the dump
+function to bound the string reads. Also force null-terminate the
+string fields in nj2_session_params_ntoh() so that all downstream
+consumers after byte-order conversion are safe.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2/packets.h b/src/modules/module-netjack2/packets.h
+index 69791cd11..c7e92fc62 100644
+--- a/src/modules/module-netjack2/packets.h
++++ b/src/modules/module-netjack2/packets.h
+@@ -46,12 +46,12 @@ struct nj2_session_params {
+ 
+ static inline void nj2_dump_session_params(struct nj2_session_params *params)
+ {
+-	pw_log_info("Type:          '%s'", params->type);
++	pw_log_info("Type:          '%.*s'", (int)sizeof(params->type), params->type);
+ 	pw_log_info("Version:       %u", ntohl(params->version));
+ 	pw_log_info("packet ID:     %d", ntohl(params->packet_id));
+-	pw_log_info("Name:          '%s'", params->name);
+-	pw_log_info("Driver Name:   '%s'", params->driver_name);
+-	pw_log_info("Follower Name: '%s'", params->follower_name);
++	pw_log_info("Name:          '%.*s'", (int)sizeof(params->name), params->name);
++	pw_log_info("Driver Name:   '%.*s'", (int)sizeof(params->driver_name), params->driver_name);
++	pw_log_info("Follower Name: '%.*s'", (int)sizeof(params->follower_name), params->follower_name);
+ 	pw_log_info("MTU:           %u", ntohl(params->mtu));
+ 	pw_log_info("ID:            %u", ntohl(params->id));
+ 	pw_log_info("TransportSync: %u", ntohl(params->transport_sync));
+@@ -71,6 +71,10 @@ static inline void nj2_session_params_ntoh(struct nj2_session_params *host,
+ 		const struct nj2_session_params *net)
+ {
+ 	memcpy(host, net, sizeof(*host));
++	host->type[sizeof(host->type) - 1] = '\0';
++	host->name[sizeof(host->name) - 1] = '\0';
++	host->driver_name[sizeof(host->driver_name) - 1] = '\0';
++	host->follower_name[sizeof(host->follower_name) - 1] = '\0';
+ 	host->version = ntohl(net->version);
+ 	host->packet_id = ntohl(net->packet_id);
+ 	host->mtu = ntohl(net->mtu);
+

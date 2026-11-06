@@ -1,0 +1,70 @@
+From c525cfcced8df4f15616a62f4eb5633936de7325 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 16:54:26 +0200
+Subject: [PATCH] security: reject negative DBus array lengths in Bluetooth
+ transport
+
+Memory Safety: High
+
+dbus_message_iter_get_fixed_array() returns the array length as a
+signed int. A malformed DBus message could produce a negative length
+value. In the Configuration property handler, the check 'if (!len)'
+does not catch negative values, allowing negative lengths to be passed
+to malloc() and memcpy() where sign extension to size_t creates
+enormous values. The debug logging call spa_debug_log_mem() also
+receives the negative length cast to size_t, causing an out-of-bounds
+read.
+
+In the Capabilities/Metadata handler, 'if (n)' is similarly true for
+negative values, and the negative int assigned to the size_t *size
+output parameter corrupts the stored length.
+
+Fix by using 'len <= 0' and 'n > 0' checks respectively, and move
+debug logging after validation. Explicitly zero the length on the
+negative/zero path to prevent storing corrupted sizes.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/bluez5/bluez5-dbus.c b/spa/plugins/bluez5/bluez5-dbus.c
+index bac5ccf47..063ae2468 100644
+--- a/spa/plugins/bluez5/bluez5-dbus.c
++++ b/spa/plugins/bluez5/bluez5-dbus.c
+@@ -1035,13 +1035,14 @@ static int parse_endpoint_props(struct spa_bt_monitor *monitor, DBusMessageIter
+ 			dbus_message_iter_recurse(&it[1], &it[2]);
+ 			dbus_message_iter_get_fixed_array(&it[2], &data, &n);
+ 
+-			if (n) {
++			if (n > 0) {
+ 				buf = malloc(n);
+ 				if (!buf)
+ 					return -ENOMEM;
+ 				memcpy(buf, data, n);
+ 			} else {
+ 				buf = NULL;
++				n = 0;
+ 			}
+ 
+ 			free(*dest);
+@@ -3834,17 +3835,17 @@ static int transport_update_props(struct spa_bt_transport *transport,
+ 			dbus_message_iter_recurse(&it[1], &iter);
+ 			dbus_message_iter_get_fixed_array(&iter, &value, &len);
+ 
+-			spa_log_debug(monitor->log, "transport %p: %s=%d", transport, key, len);
+-			spa_debug_log_mem(monitor->log, SPA_LOG_LEVEL_DEBUG, 2, value, (size_t)len);
+-
+ 			free(transport->configuration);
+ 			transport->configuration_len = 0;
+ 
+-			if (!len) {
++			if (len <= 0) {
+ 				transport->configuration = NULL;
+ 				goto next;
+ 			}
+ 
++			spa_log_debug(monitor->log, "transport %p: %s=%d", transport, key, len);
++			spa_debug_log_mem(monitor->log, SPA_LOG_LEVEL_DEBUG, 2, value, (size_t)len);
++
+ 			transport->configuration = malloc(len);
+ 			if (transport->configuration) {
+ 				memcpy(transport->configuration, value, len);
+

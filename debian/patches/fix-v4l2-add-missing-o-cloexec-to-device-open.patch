@@ -1,0 +1,30 @@
+From 695f25600b6f6242e959e3c13ce7aa442653a76a Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 28 Apr 2026 12:32:19 +0200
+Subject: [PATCH] security: add missing O_CLOEXEC flag to V4L2 device open
+
+File and Resource Handling: Medium
+
+The V4L2 device file descriptor was opened without the O_CLOEXEC flag.
+If a child process is subsequently spawned (e.g., via fork+exec), the
+video device fd would be inherited, potentially allowing the child
+process unauthorized access to the camera device.
+
+Fixed by adding O_CLOEXEC to the open() flags.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/v4l2/v4l2-utils.c b/spa/plugins/v4l2/v4l2-utils.c
+index ba071d2d5..df5b0e185 100644
+--- a/spa/plugins/v4l2/v4l2-utils.c
++++ b/spa/plugins/v4l2/v4l2-utils.c
+@@ -42,7 +42,7 @@ int spa_v4l2_open(struct spa_v4l2_device *dev, const char *path)
+ 
+ 	spa_log_info(dev->log, "device is '%s'", path);
+ 
+-	dev->fd = open(path, O_RDWR | O_NONBLOCK, 0);
++	dev->fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC, 0);
+ 	if (dev->fd == -1) {
+ 		err = errno;
+ 		spa_log_error(dev->log, "Cannot open '%s': %d, %s",
+

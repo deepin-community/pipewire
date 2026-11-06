@@ -1,0 +1,78 @@
+From 328ab5a611b6933a7a2b2e362360e713f9a77e54 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 11:22:50 +0200
+Subject: [PATCH] security: validate VBAN MIDI variable-length integers to
+ prevent overflow
+
+Memory Safety: High
+
+The VBAN MIDI parse_varlen() function performed unbounded left-shifting
+of a uint32_t value without overflow checking, allowing a crafted VBAN
+network packet to cause integer overflow. This could produce incorrect
+size calculations in get_midi_size(), leading to out-of-bounds memory
+access when processing MIDI packets.
+
+Added overflow guard (value > UINT32_MAX >> 7) matching the existing
+fix in the RTP MIDI implementation, plus an overflow check on the size
+addition in get_midi_size() and an avail bounds check.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-vban/midi.c b/src/modules/module-vban/midi.c
+index 3b677b1ac..6139d2db7 100644
+--- a/src/modules/module-vban/midi.c
++++ b/src/modules/module-vban/midi.c
+@@ -2,6 +2,9 @@
+ /* SPDX-FileCopyrightText: Copyright © 2023 Wim Taymans <wim.taymans@gmail.com> */
+ /* SPDX-License-Identifier: MIT */
+ 
++#include <inttypes.h>
++#include <limits.h>
++
+ static void vban_midi_process_playback(void *data)
+ {
+ 	struct impl *impl = data;
+@@ -97,12 +100,15 @@ static int parse_varlen(uint8_t *p, uint32_t avail, uint32_t *result)
+ 	uint32_t value = 0, offs = 0;
+ 	while (offs < avail) {
+ 		uint8_t b = p[offs++];
++		if (value > (UINT32_MAX >> 7))
++			return -ERANGE;
+ 		value = (value << 7) | (b & 0x7f);
+-		if ((b & 0x80) == 0)
+-			break;
++		if ((b & 0x80) == 0) {
++			*result = value;
++			return offs;
++		}
+ 	}
+-	*result = value;
+-	return offs;
++	return -EINVAL;
+ }
+ 
+ static int get_midi_size(uint8_t *p, uint32_t avail)
+@@ -110,6 +116,8 @@ static int get_midi_size(uint8_t *p, uint32_t avail)
+ 	int size;
+ 	uint32_t offs = 0, value;
+ 
++	if (avail < 1)
++		return -EINVAL;
+ 	switch (p[offs++]) {
+ 	case 0xc0 ... 0xdf:
+ 		size = 2;
+@@ -121,8 +129,11 @@ static int get_midi_size(uint8_t *p, uint32_t avail)
+ 	case 0xff:
+ 	case 0xf0:
+ 	case 0xf7:
+-		size = parse_varlen(&p[offs], avail - offs, &value);
+-		size += value + 1;
++		if ((size = parse_varlen(&p[offs], avail - offs, &value)) < 0)
++			return size;
++		if (value > (unsigned int)(INT_MAX - size - 1))
++			return -EINVAL;
++		size += (int)value + 1;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+
