@@ -1,0 +1,33 @@
+From 6efaf12d00397f41b77efb6ed00d6257827b9181 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 11:24:30 +0200
+Subject: [PATCH] security: clamp channel count in PulseAudio volume control
+ handler
+
+Memory Safety: High
+
+The stream_control_info() callback copied control->n_values floats
+into stream->volume.values without checking bounds. The source allows
+up to MAX_VALUES (256) entries but the destination volume array is
+only CHANNELS_MAX (64) entries, so a stream with more than 64 channel
+volumes would overflow the buffer. Clamp n_values to CHANNELS_MAX
+before the copy.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index f02f74fef..c577b93e1 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -1121,8 +1121,8 @@ static void stream_control_info(void *data, uint32_t id,
+ 	switch (id) {
+ 	case SPA_PROP_channelVolumes:
+ 		if (!stream->volume_set) {
+-			stream->volume.channels = control->n_values;
+-			memcpy(stream->volume.values, control->values, control->n_values * sizeof(float));
++			stream->volume.channels = SPA_MIN(control->n_values, CHANNELS_MAX);
++			memcpy(stream->volume.values, control->values, stream->volume.channels * sizeof(float));
+ 			pw_log_info("stream %p: volume changed %f", stream, stream->volume.values[0]);
+ 		}
+ 		break;
+

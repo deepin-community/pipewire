@@ -1,0 +1,66 @@
+From 918d0f2f8a0e38aab6264e7117343ad97c7273fb Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 12:23:34 +0200
+Subject: [PATCH] security: validate packet bounds in AVB MRP protocol parser
+
+Input Validation: High
+
+The avb_mrp_parse_packet() function, used by both MSRP and MVRP
+protocol handlers, had several missing bounds checks:
+
+1. No minimum length validation: the parser began accessing packet
+   data at sizeof(avb_packet_mrp) without checking len was large
+   enough, causing out-of-bounds reads on truncated packets.
+
+2. Unsafe loop terminator checks: the while loops checked m[0] and
+   m[1] without ensuring at least 2 bytes remained in the buffer.
+
+3. Missing hdr_size bounds check: the header size returned by the
+   check_header callback was used to advance the pointer without
+   verifying it stayed within the packet bounds.
+
+Fix by adding a minimum packet length check, using structure-size-aware
+bounds checks in loop conditions, and validating hdr_size against
+remaining packet data before advancing the pointer.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-avb/mrp.c b/src/modules/module-avb/mrp.c
+index c6505d41b..c9927613f 100644
+--- a/src/modules/module-avb/mrp.c
++++ b/src/modules/module-avb/mrp.c
+@@ -139,10 +139,16 @@ static const struct server_events server_events = {
+ int avb_mrp_parse_packet(struct avb_mrp *mrp, uint64_t now, const void *pkt, int len,
+ 		const struct avb_mrp_parse_info *info, void *data)
+ {
+-	uint8_t *e = SPA_PTROFF(pkt, len, uint8_t);
+-	uint8_t *m = SPA_PTROFF(pkt, sizeof(struct avb_packet_mrp), uint8_t);
++	uint8_t *e, *m;
+ 
+-	while (m < e && (m[0] != 0 || m[1] != 0)) {
++	if (len < 0 || (size_t)len < sizeof(struct avb_packet_mrp))
++		return -EPROTO;
++
++	e = SPA_PTROFF(pkt, len, uint8_t);
++	m = SPA_PTROFF(pkt, sizeof(struct avb_packet_mrp), uint8_t);
++
++	while (m + sizeof(struct avb_packet_mrp_hdr) <= e &&
++	       (m[0] != 0 || m[1] != 0)) {
+ 		const struct avb_packet_mrp_hdr *hdr = (const struct avb_packet_mrp_hdr*)m;
+ 		uint8_t attr_type = hdr->attribute_type;
+ 		uint8_t attr_len = hdr->attribute_length;
+@@ -152,9 +158,12 @@ int avb_mrp_parse_packet(struct avb_mrp *mrp, uint64_t now, const void *pkt, int
+ 		if (!info->check_header(data, hdr, &hdr_size, &has_param))
+ 			return -EINVAL;
+ 
++		if (hdr_size > (size_t)(e - m))
++			return -EPROTO;
+ 		m += hdr_size;
+ 
+-		while (m < e && (m[0] != 0 || m[1] != 0)) {
++		while (m + sizeof(struct avb_packet_mrp_vector) <= e &&
++		       (m[0] != 0 || m[1] != 0)) {
+ 			const struct avb_packet_mrp_vector *v =
+ 				(const struct avb_packet_mrp_vector*)m;
+ 			uint16_t i, num_values = AVB_MRP_VECTOR_GET_NUM_VALUES(v);
+
