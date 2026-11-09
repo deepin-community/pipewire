@@ -1,0 +1,53 @@
+From 634a33fd16c70f11f19b1338a8385ef75e0128b9 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Fri, 6 Nov 2026 00:00:00 +0800
+Subject: [PATCH] protocol-native: only unlink the socket path we bound
+
+bind() is what creates the socket file for a pathname socket.  socket()
+returns an unbound socket and does not touch the path, and listen()
+does not change ownership either.
+
+destroy_server() runs on every add_server() error path and unlinks
+sun_path unless the fd came from systemd socket activation.  It can
+therefore delete a path this server never bound: if add_socket() fails
+before or while binding - for example because the path is a regular
+file, a symlink or a non-writable socket - the existing object is
+removed when startup fails.
+
+Mark the path as ours immediately after bind(), before the remaining
+fallible steps, so errors after a successful bind still clean up our
+own socket, and only unlink it in that case.
+
+With PIPEWIRE_CORE pointing at a regular file this also defeats the
+S_ISSOCK check added in 613b35ee.
+
+--- a/src/modules/module-protocol-native.c
++++ b/src/modules/module-protocol-native.c
+@@ -249,6 +249,7 @@
+ 	struct spa_source *resume;
+ 	struct spa_source *close;
+ 	unsigned int activated:1;
++	unsigned int bound:1;		/* successfully bound sun_path */
+ };
+ 
+ struct client_data {
+@@ -950,6 +951,10 @@
+ 			pw_log_error("server %p: bind() failed with error: %m", s);
+ 			goto error_close;
+ 		}
++		/* From here on sun_path is ours.  Set this before the remaining
++		 * fallible steps so that destroy_server() still unlinks it when
++		 * one of them fails. */
++		s->bound = true;
+ 
+ 		if ((res = set_socket_permissions(s, info)) < 0) {
+ 			errno = -res;
+@@ -1370,7 +1375,7 @@
+ 		pw_loop_destroy_source(s->loop, s->resume);
+ 	if (s->close)
+ 		pw_loop_destroy_source(s->loop, s->close);
+-	if (s->addr.sun_path[0] && !s->activated)
++	if (s->addr.sun_path[0] && !s->activated && s->bound)
+ 		unlink(s->addr.sun_path);
+ 	if (s->lock_addr[0])
+ 		unlink(s->lock_addr);

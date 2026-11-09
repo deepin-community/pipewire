@@ -127,3 +127,4 @@ fix-netjack2-validate-opus-encoded-length.patch
 fix-security-missing-null-checks-pw-split-strv.patch
 fix-netjack2-use-peer-params-name-and-follower-name.patch
 fix-protocol-pulse-add-per-client-operation-count-limit.patch
+fix-protocol-native-only-unlink-bound-socket-path.patch
