@@ -1,0 +1,42 @@
+From cd7280f4ec92f6740147a965dafef55ccfe56375 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=88=98=E4=BD=B3=E5=92=8C?= <liujiahe@uniontech.com>
+Date: Fri, 11 Sep 2026 13:18:20 +0800
+Subject: [PATCH] spa: alsa: pcm: fix recovery when driver start fails
+
+When do_start() of the driver fails in alsa_recover(), the PCM is left
+prepared but not running while the recovery returns success. The poll
+sources are re-armed and the followers get marked as started, while the
+driver never actually runs, so a not-running device reports POLLERR and
+the avail path keeps failing.
+
+Check the return value of do_start() and, on failure, park the poll
+sources, reset the alsa_started/prepared flags so a later restart does
+not skip do_prepare()/do_start(), and return -EIO so the caller treats
+the recovery as failed.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index 2f90030a6..f48fd4513 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -2916,7 +2916,19 @@ recover:
+ 		if (follower != driver && follower->linked)
+ 			do_prepare(follower);
+ 	}
+-	do_start(driver);
++	if (do_start(driver) < 0) {
++		/* The driver is the clock source; if it failed to start the
++		 * entire pipeline is not running. do_start() already emitted
++		 * the node error event. The PCM is prepared but not running,
++		 * so do not re-arm the poll sources (a non-running device may
++		 * report POLLERR and busy-loop), reset the state flags so a
++		 * later restart does not skip do_prepare()/do_start(), and
++		 * fail the recovery instead of pretending it succeeded. */
++		update_sources(state, false);
++		driver->alsa_started = false;
++		driver->prepared = false;
++		return -EIO;
++	}
+ 	spa_list_for_each(follower, &driver->rt.followers, rt.driver_link) {
+ 		if (follower != driver && follower->linked)
+ 			do_start(follower);
+

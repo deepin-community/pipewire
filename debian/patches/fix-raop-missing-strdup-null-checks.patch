@@ -1,0 +1,41 @@
+From 440f24f35f04ea5158542afff3f273e89676e3fe Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 16:43:26 +0200
+Subject: [PATCH] security: fix missing strdup NULL checks in RAOP
+ authentication
+
+Memory Safety: High
+
+In rtsp_do_options_auth(), the return values of strdup() for
+auth_method, realm, and nonce were not checked for NULL. If strdup()
+fails due to memory exhaustion, spa_streq() on auth_method will
+dereference NULL, and the realm/nonce pointers will be used later in
+MD5_hash() causing NULL pointer dereferences.
+
+Add NULL checks after each strdup() call, returning -ENOMEM on failure.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-raop-sink.c b/src/modules/module-raop-sink.c
+index 9c0f90c94..b1becba9d 100644
+--- a/src/modules/module-raop-sink.c
++++ b/src/modules/module-raop-sink.c
+@@ -1332,6 +1332,8 @@ static int rtsp_do_options_auth(struct impl *impl, const struct spa_dict *header
+ 		return -EINVAL;
+ 
+ 	impl->auth_method = strdup(tokens[0]);
++	if (impl->auth_method == NULL)
++		return -ENOMEM;
+ 
+ 	if (spa_streq(impl->auth_method, "Digest")) {
+ 		realm = find_attr(tokens, "realm");
+@@ -1341,6 +1343,8 @@ static int rtsp_do_options_auth(struct impl *impl, const struct spa_dict *header
+ 
+ 		impl->realm = strdup(realm);
+ 		impl->nonce = strdup(nonce);
++		if (impl->realm == NULL || impl->nonce == NULL)
++			return -ENOMEM;
+ 	}
+ 
+ 	return rtsp_send(impl, "OPTIONS", NULL, NULL, rtsp_options_auth_reply);
+

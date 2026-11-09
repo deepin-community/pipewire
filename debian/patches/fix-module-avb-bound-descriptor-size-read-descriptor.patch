@@ -1,0 +1,31 @@
+From 6ca2f509e30077afaf8541257e60d61a01e4e675 Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Wed, 22 Apr 2026 19:19:10 +0200
+Subject: [PATCH] module-avb: bound descriptor size in READ_DESCRIPTOR reply to
+ prevent stack overflow
+
+
+diff --git a/src/modules/module-avb/aecp-aem.c b/src/modules/module-avb/aecp-aem.c
+index 78b3eb818..33b4a2dbf 100644
+--- a/src/modules/module-avb/aecp-aem.c
++++ b/src/modules/module-avb/aecp-aem.c
+@@ -100,11 +100,17 @@ static int handle_read_descriptor_common(struct aecp *aecp, int64_t now, const v
+ 	if (desc == NULL)
+ 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, m, len);
+ 
+-	memcpy(buf, m, len);
++	if (len < 0 || (size_t)len > sizeof(buf))
++		return reply_status(aecp, AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
+ 
+ 	psize = sizeof(*rd);
+ 	size = sizeof(*h) + sizeof(*reply) + psize;
+ 
++	if (desc->size > sizeof(buf) || size > sizeof(buf) - desc->size)
++		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_RESOURCES, m, len);
++
++	memcpy(buf, m, len);
++
+ 	memcpy(buf + size, desc->ptr, desc->size);
+ 	size += desc->size;
+ 	psize += desc->size;
+

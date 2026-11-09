@@ -1,0 +1,63 @@
+From 7bfa93de05f302f4c4f7198c41afa218c50ed8ea Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 27 Apr 2026 17:06:40 +0200
+Subject: [PATCH] security: add missing O_CLOEXEC/SOCK_CLOEXEC flags
+
+File and Resource Handling: Medium
+
+Several file and socket operations were missing the close-on-exec flag,
+which causes file descriptors to leak to child processes created via
+fork+exec. This could allow child processes unintended access to
+privileged resources.
+
+- node-driver.c: SOCK_DGRAM socket for SIOCETHTOOL ioctl leaked to
+  child processes
+- pw-container.c: Unix domain listen socket leaked to spawned
+  container processes
+- compress-offload-api.c: ALSA compress-offload device fd leaked to
+  child processes
+
+Added O_CLOEXEC to open() calls and SOCK_CLOEXEC to socket() calls.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/alsa/compress-offload-api.c b/spa/plugins/alsa/compress-offload-api.c
+index 9ff0f8772..c5f6a4be7 100644
+--- a/spa/plugins/alsa/compress-offload-api.c
++++ b/spa/plugins/alsa/compress-offload-api.c
+@@ -40,7 +40,7 @@ struct compress_offload_api_context* compress_offload_api_open(int card_nr, int
+ 
+ 	snprintf(fn, sizeof(fn), "/dev/snd/comprC%uD%u", card_nr, device_nr);
+ 
+-	context->fd = open(fn, O_WRONLY);
++	context->fd = open(fn, O_WRONLY | O_CLOEXEC);
+ 	if (context->fd < 0) {
+ 		spa_log_error(context->log, "could not open device \"%s\": %s (%d)", fn, strerror(errno), errno);
+ 		goto error;
+diff --git a/spa/plugins/support/node-driver.c b/spa/plugins/support/node-driver.c
+index f0585a711..613f0bf64 100644
+--- a/spa/plugins/support/node-driver.c
++++ b/spa/plugins/support/node-driver.c
+@@ -726,7 +726,7 @@ static int get_phc_index(struct spa_system *s, const char *name) {
+ 	strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+ 	ifr.ifr_data = (char *) &info;
+ 
+-	fd = socket(AF_INET, SOCK_DGRAM, 0);
++	fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+ 	if (fd < 0)
+ 		return -errno;
+ 
+diff --git a/src/tools/pw-container.c b/src/tools/pw-container.c
+index fa39b3450..6cdb77254 100644
+--- a/src/tools/pw-container.c
++++ b/src/tools/pw-container.c
+@@ -243,7 +243,7 @@ int main(int argc, char *argv[])
+ 	close(res);
+ 	unlink(temp);
+ 
+-	listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
++	listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+ 	if (listen_fd < 0) {
+ 		fprintf(stderr, "can't make unix socket: %m\n");
+ 		return -1;
+

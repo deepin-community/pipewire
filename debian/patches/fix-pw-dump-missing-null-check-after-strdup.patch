@@ -1,0 +1,32 @@
+From ec04c4bf9ac636058d16384c56676cdc35f1f056 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 28 Apr 2026 13:20:33 +0200
+Subject: [PATCH] security: add missing NULL check after strdup in pw-dump
+
+Memory Safety: Medium
+
+In the registry event handler, strdup(type) was not checked for
+failure. A NULL o->type would cause NULL pointer dereferences in
+subsequent code that uses the type string for comparison and logging.
+
+Fix by checking the strdup() return value and cleaning up on failure.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/tools/pw-dump.c b/src/tools/pw-dump.c
+index 35f3e75ab..97924aa49 100644
+--- a/src/tools/pw-dump.c
++++ b/src/tools/pw-dump.c
+@@ -1215,6 +1215,11 @@ static void registry_event_global(void *data, uint32_t id,
+ 	o->id = id;
+ 	o->permissions = permissions;
+ 	o->type = strdup(type);
++	if (o->type == NULL) {
++		pw_log_error("can't alloc type for %u %s/%d: %m", id, type, version);
++		free(o);
++		return;
++	}
+ 	o->version = version;
+ 	o->props = props ? pw_properties_new_dict(props) : NULL;
+ 	spa_list_init(&o->param_list);
+

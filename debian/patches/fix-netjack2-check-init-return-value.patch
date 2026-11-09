@@ -1,0 +1,24 @@
+From c21616d1eed6f65c235c3b625d2d0aa4a3206678 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 14:08:06 +0200
+Subject: [PATCH] security: check netjack2_init return value in driver
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2-driver.c b/src/modules/module-netjack2-driver.c
+index 1a2281db2..87eb1da22 100644
+--- a/src/modules/module-netjack2-driver.c
++++ b/src/modules/module-netjack2-driver.c
+@@ -923,7 +923,10 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
+ 	peer->send_volume = &impl->sink.volume;
+ 	peer->recv_volume = &impl->source.volume;
+ 	peer->quantum_limit = impl->quantum_limit;
+-	netjack2_init(peer);
++	if ((res = netjack2_init(peer)) < 0) {
++		pw_log_error("can't init peer: %s", spa_strerror(res));
++		return res;
++	}
+ 
+ 	int bufsize = SPA_MIN((size_t)NETWORK_MAX_LATENCY * (peer->params.mtu +
+ 		(size_t)peer->params.period_size * sizeof(float) *
+
