@@ -1,3 +1,11 @@
+pipewire (1.6.4-1deepin32) unstable; urgency=medium
+
+  * Fix error path resource leaks in netjack2 manager: clean up the follower
+    on all error paths after it has been added to the list, add missing NULL
+    checks for pw_properties_copy and check the netjack2_init return value.
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 09 Nov 2026 16:54:21 +0800
+
 pipewire (1.6.4-1deepin31) unstable; urgency=medium
 
   * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
