@@ -162,3 +162,4 @@ fix-netjack2-oob-read-non-null-terminated-strings.patch
 fix-netjack2-socket-buffer-integer-overflow.patch
 fix-pulse-socket-toctou-race-symlink-following.patch
 fix-native-protocol-add-o-nofollow-to-lock-file-creation.patch
+fix-allocation-failures.patch
