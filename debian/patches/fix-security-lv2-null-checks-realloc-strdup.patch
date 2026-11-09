@@ -1,0 +1,64 @@
+From 4de0f83acacc5b0f4f8ff7d972dfee4d5a1ca56e Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 11:35:08 +0200
+Subject: [PATCH] security: add missing NULL checks after realloc/strdup in LV2
+ plugin
+
+Memory Safety: Medium
+
+Two issues in the LV2 filter-graph plugin:
+
+1. uri_table_map(): realloc() result was assigned directly to
+   table->data, losing the original pointer on failure (memory leak)
+   and causing a NULL pointer dereference on the next access. Also
+   the subsequent strdup() had no NULL check. Fixed by using a
+   temporary pointer for realloc and checking strdup's return.
+
+2. lv2_state_retrieve(): realloc() of sd->tmp was used without a
+   NULL check, so a failed allocation would cause sd->tmp to become
+   NULL and be immediately passed to spa_json_parse_stringn(). Fixed
+   by checking the realloc result before assignment.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/spa/plugins/filter-graph/plugin_lv2.c b/spa/plugins/filter-graph/plugin_lv2.c
+index b2d3fc6cc..747b1b7a1 100644
+--- a/spa/plugins/filter-graph/plugin_lv2.c
++++ b/spa/plugins/filter-graph/plugin_lv2.c
+@@ -74,10 +74,19 @@ static LV2_URID uri_table_map(LV2_URID_Map_Handle handle, const char *uri)
+ 			return i+1;
+ 
+ 	if (table->len == table->alloc) {
++		char **p;
+ 		table->alloc += 64;
+-		table->data = realloc(table->data, table->alloc * sizeof(char *));
++		p = realloc(table->data, table->alloc * sizeof(char *));
++		if (p == NULL) {
++			table->alloc -= 64;
++			return 0;
++		}
++		table->data = p;
+  	}
+-	table->data[table->len++] = strdup(uri);
++	table->data[table->len] = strdup(uri);
++	if (table->data[table->len] == NULL)
++		return 0;
++	table->len++;
+ 	return table->len;
+ }
+ 
+@@ -323,7 +332,12 @@ static const void *state_retrieve_function(LV2_State_Handle handle,
+ 			if ((len = spa_json_container_len(&it[0], val, len)) <= 0)
+ 				return NULL;
+ 
+-		sd->tmp = realloc(sd->tmp, len+1);
++		{
++			char *tmp = realloc(sd->tmp, len+1);
++			if (tmp == NULL)
++				return NULL;
++			sd->tmp = tmp;
++		}
+ 		spa_json_parse_stringn(val, len, sd->tmp, len+1);
+ 
+ 		spa_log_info(p->log, "lv2: restore %d %s %s", key, uri, sd->tmp);
+

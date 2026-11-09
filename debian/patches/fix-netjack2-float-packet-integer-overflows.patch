@@ -1,0 +1,55 @@
+From 2c78c1e1fbc965d970c8d2e934f0175e6e654e92 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 17:16:55 +0200
+Subject: [PATCH] security: fix integer overflows in netjack2 float packet
+ handling
+
+Memory Safety: High
+
+In netjack2_recv_float(), several values from untrusted network packet
+headers are used in arithmetic without overflow protection:
+
+1. active_ports from the network header had no upper bound check. A
+   very large value causes `active_ports * sub_period_bytes` to
+   overflow uint32_t, producing a small value that passes the length
+   check, then the loop iterates out of bounds on the receive buffer.
+
+2. The sub_cycle bounds check `sub_cycle * sub_period_size >
+   quantum_limit` can overflow, allowing a large sub_cycle to pass
+   the check and cause an out-of-bounds write when computing the
+   destination offset.
+
+Fix by capping active_ports to MAX_CHANNELS, casting to size_t for the
+length check to prevent overflow, and rewriting the sub_cycle check as
+a division to avoid overflow.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-netjack2/peer.c b/src/modules/module-netjack2/peer.c
+index 548daa4d0..bec71fe0d 100644
+--- a/src/modules/module-netjack2/peer.c
++++ b/src/modules/module-netjack2/peer.c
+@@ -824,7 +824,7 @@ static int netjack2_recv_float(struct netjack2_peer *peer, struct nj2_packet_hea
+ 		return -errno;
+ 
+ 	active_ports = ntohl(header->active_ports);
+-	if (active_ports == 0)
++	if (active_ports == 0 || active_ports > MAX_CHANNELS)
+ 		return 0;
+ 
+ 	uint32_t max_size = PACKET_AVAILABLE_SIZE(peer->params.mtu);
+@@ -833,11 +833,11 @@ static int netjack2_recv_float(struct netjack2_peer *peer, struct nj2_packet_hea
+ 	sub_period_size = SPA_MIN(period, (uint32_t)peer->sync.frames);
+ 	sub_period_bytes = sub_period_size * sizeof(float) + sizeof(int32_t);
+ 
+-	if ((size_t)len < active_ports * sub_period_bytes + sizeof(*header))
++	if ((size_t)len < (size_t)active_ports * sub_period_bytes + sizeof(*header))
+ 		return 0;
+ 
+ 	sub_cycle = ntohl(header->sub_cycle);
+-	if (sub_cycle * sub_period_size > peer->quantum_limit)
++	if (sub_period_size == 0 || sub_cycle > peer->quantum_limit / sub_period_size)
+ 		return 0;
+ 
+ 	for (i = 0; i < active_ports; i++) {
+

@@ -1,0 +1,38 @@
+From 8d352fe52e5469a9d4e42951f04c5dbd7fda15c1 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 23 Apr 2026 17:15:22 +0200
+Subject: [PATCH] security: fix integer overflow in PulseAudio message buffer
+ allocation
+
+Memory Safety: High
+
+In ensure_size(), the check `m->length + size <= m->allocated` could
+overflow when both m->length and size are large uint32_t values,
+wrapping around to a small number and incorrectly passing the bounds
+check. This could allow writing past the end of the allocated buffer.
+
+Rewrite the check as `size <= m->allocated - m->length` which cannot
+overflow since we already verified m->length <= m->allocated. Also add
+an explicit overflow check for the new allocation size calculation.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index 19b4f82d6..bbeb7e99e 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -383,9 +383,12 @@ static int ensure_size(struct message *m, uint32_t size)
+ 	if (m->length > m->allocated)
+ 		return -ENOMEM;
+ 
+-	if (m->length + size <= m->allocated)
++	if (size <= m->allocated - m->length)
+ 		return size;
+ 
++	if (m->allocated + size < m->allocated)
++		return -ENOMEM;
++
+ 	alloc = SPA_ROUND_UP_N(SPA_MAX(m->allocated + size, 4096u), 4096u);
+ 	diff = alloc - m->allocated;
+ 	if ((data = realloc(m->data, alloc)) == NULL) {
+

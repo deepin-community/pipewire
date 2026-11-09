@@ -1,0 +1,45 @@
+From ae7cb67308a7de1929b488a0adc2451046f70c1a Mon Sep 17 00:00:00 2001
+From: Viorel Cernateanu <vrilutza@gmail.com>
+Date: Mon, 7 Sep 2026 19:22:42 +0300
+Subject: [PATCH] spa: v4l2: keep the media type of the filter when it does not
+ name a format
+
+enum_filter_format() returns -ENOENT when the filter constrains the media type
+but not the pixel format, for instance video/x-raw with no format field. The
+caller then falls back to plain VIDIOC_ENUM_FMT, which walks every pixel format
+of the device, and nothing checks the media type again: the param handed back
+can carry a media subtype the filter excluded.
+
+On a UVC camera that enumerates MJPG before YUYV, a client asking for raw
+640x480 is given image/jpeg 640x480. pipewiresrc intersects that with what it
+asked for, gets empty caps and fails with "error use input buffers: -22"; the
+stream never starts.
+
+Apply the filter's media type and subtype on that path as well. A filter that
+names a pixel format never reaches this code and is unaffected, and without a
+filter nothing changes.
+
+diff --git a/spa/plugins/v4l2/v4l2-utils.c b/spa/plugins/v4l2/v4l2-utils.c
+index c85d6fff1..2a8ee4043 100644
+--- a/spa/plugins/v4l2/v4l2-utils.c
++++ b/spa/plugins/v4l2/v4l2-utils.c
+@@ -759,6 +759,18 @@ do_enum_fmt:
+ 						this->props.device);
+ 				goto exit;
+ 			}
++			/* This enumerates every pixel format of the device, so a
++			 * filter that constrains the media type but not the pixel
++			 * format is only applied here. */
++			if (filter) {
++				const struct format_info *fi =
++					fourcc_to_format_info(port->fmtdesc.pixelformat);
++
++				if (fi == NULL ||
++				    fi->media_type != filter_media_type ||
++				    fi->media_subtype != filter_media_subtype)
++					goto next_fmtdesc;
++			}
+ 		}
+ 		port->next_fmtdesc = false;
+ 		port->frmsize.index = 0;
+

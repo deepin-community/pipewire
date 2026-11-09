@@ -1,0 +1,52 @@
+From a8832c74d0fefd6e1bdf9be8ef6359d289ae8ee6 Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Mon, 20 Apr 2026 18:29:56 +0200
+Subject: [PATCH] module-avb: bound packet copy length in get-set-name handlers
+
+
+diff --git a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-name.c b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-name.c
+index 8381a0cbb..0d39c4d4e 100644
+--- a/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-name.c
++++ b/src/modules/module-avb/aecp-aem-cmds-resps/cmd-get-set-name.c
+@@ -2,6 +2,7 @@
+ /* SPDX-FileCopyrightText: Copyright © 2025 Alexandre Malki <alexandre.malki@kebag-logic.com> */
+ /* SPDX-License-Identifier: MIT */
+ 
++#include <errno.h>
+ #include <limits.h>
+ #include <stdbool.h>
+ #include <inttypes.h>
+@@ -73,6 +74,9 @@ static int send_unsol_name(struct aecp *aecp,
+ 	uint8_t unsol_buf[512];
+ 	struct aecp_aem_base_info info = { 0 };
+ 
++	if (len < 0 || (size_t)len > sizeof(unsol_buf))
++		return -EINVAL;
++
+ 	memcpy(unsol_buf, msg, len);
+ 	info.controller_entity_id = htobe64(p->aecp.controller_guid);
+ 	info.expire_timeout = INT64_MAX;
+@@ -114,6 +118,11 @@ int handle_cmd_get_name_common(struct aecp *aecp, int64_t now,
+ 		return reply_status(aecp,
+ 				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
+ 
++	if (len < 0 || (size_t)len > sizeof(buf) ||
++	    (size_t)len < sizeof(*h) + sizeof(*p) + sizeof(*cmd))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
++
+ 	memcpy(buf, m, len);
+ 	h_reply = (struct avb_ethernet_header *)buf;
+ 	p_reply = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
+@@ -162,6 +171,10 @@ int handle_cmd_set_name_common(struct aecp *aecp, int64_t now,
+ 		return reply_status(aecp,
+ 				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
+ 
++	if (len < 0 || (size_t)len < sizeof(*h) + sizeof(*p) + sizeof(*cmd))
++		return reply_status(aecp,
++				AVB_AECP_AEM_STATUS_BAD_ARGUMENTS, m, len);
++
+ 	/**
+ 	 * IEEE 1722.1-2021: 7.4.17.1: The name does not contain a trailing NULL
+ 	 * but if the name is less than 64 bytes in length then it is zero
+

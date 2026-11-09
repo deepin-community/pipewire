@@ -1,0 +1,29 @@
+From 1dca190590d23480c7e026ddadc7c4780c5ce090 Mon Sep 17 00:00:00 2001
+From: Pauli Virtanen <pav@iki.fi>
+Date: Sat, 29 Aug 2026 16:19:26 +0300
+Subject: [PATCH] bluez5: media-source: don't remove iso-io source_buf too
+ early
+
+this->source must be removed before
+spa_bt_iso_io_set_source_buffer(this->transport->iso_io, NULL),
+otherwise it will crash in media_on_ready_read > add_data > spa_bt_iso_io_recv
+
+Don't try to clean it up in do_remove_source which is too early, but
+leave it for do_remove_transport_source, which runs immediately after.
+
+diff --git a/spa/plugins/bluez5/media-source.c b/spa/plugins/bluez5/media-source.c
+index 2cbc16d62..c18ee357a 100644
+--- a/spa/plugins/bluez5/media-source.c
++++ b/spa/plugins/bluez5/media-source.c
+@@ -1160,10 +1160,6 @@ static int do_remove_source(struct spa_loop *loop,
+ 
+ 	if (this->timer_source.loop)
+ 		spa_loop_remove_source(this->data_loop, &this->timer_source);
+-	if (this->transport && this->transport->iso_io) {
+-		spa_bt_iso_io_set_cb(this->transport->iso_io, NULL, NULL);
+-		spa_bt_iso_io_set_source_buffer(this->transport->iso_io, NULL);
+-	}
+ 	if (this->transport && this->transport->sco_io)
+ 		spa_bt_sco_io_set_source_cb(this->transport->sco_io, NULL, NULL);
+ 	set_timeout(this, 0);
+

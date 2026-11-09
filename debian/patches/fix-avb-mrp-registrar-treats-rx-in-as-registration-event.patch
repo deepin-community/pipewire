@@ -1,0 +1,23 @@
+From 5c9a06c03da712261cd251cced62600c4425d059 Mon Sep 17 00:00:00 2001
+From: hackerman-kl <hackerman-kl@kebag-logic.com>
+Date: Sat, 25 Apr 2026 12:37:44 +0200
+Subject: [PATCH] milan-avb: mrp: registrar treats RX_IN as a registration
+ event
+
+
+diff --git a/src/modules/module-avb/mrp.c b/src/modules/module-avb/mrp.c
+index 528771155..3cc3825fb 100644
+--- a/src/modules/module-avb/mrp.c
++++ b/src/modules/module-avb/mrp.c
+@@ -412,7 +412,10 @@ void avb_mrp_attribute_update_state(struct avb_mrp_attribute *attr, uint64_t now
+ 		}
+ 		state = AVB_MRP_IN;
+ 		break;
++	/* IEEE 802.1Q-2014 Table 10-4: RX_IN transitions registrar to IN
++	 * the same way as RX_JOININ. */
+ 	case AVB_MRP_EVENT_RX_JOININ:
++	case AVB_MRP_EVENT_RX_IN:
+ 	case AVB_MRP_EVENT_RX_JOINMT:
+ 		switch (state) {
+ 		case AVB_MRP_LV:
+
