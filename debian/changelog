@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin32) unstable; urgency=medium
+
+  * Check netjack2_init return value in the netjack2 driver, so a failed peer initialization is logged and propagated instead of continuing with an uninitialized peer struct (security fix, P0)
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 09 Nov 2026 16:56:27 +0800
+
 pipewire (1.6.4-1deepin31) unstable; urgency=medium
 
   * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
