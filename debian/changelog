@@ -1,3 +1,12 @@
+pipewire (1.6.4-1deepin32) unstable; urgency=medium
+
+  * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
+    to "64u", which parse_uint32 rejected, leaving pulse.max-streams at 0 so
+    no audio stream could be created. Use a clean string default
+    DEFAULT_MAX_STREAMS "64" and drop the now-unused MAX_STREAMS macro.
+
+ -- qaqland <anguoli@uniontech.com>  Fri, 13 Nov 2026 14:09:06 +0800
+
 pipewire (1.6.4-1deepin31) unstable; urgency=medium
 
   * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
