@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin30) unstable; urgency=medium
+
+  * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded to "64u" which failed parse_uint32, leaving pulse.max-streams unset (0 streams per client); use clean string default DEFAULT_MAX_STREAMS "64" and drop the now-unused MAX_STREAMS macro
+
+ -- deepin-ci-robot <packages@deepin.org>  Mon, 09 Nov 2026 10:15:01 +0800
+
 pipewire (1.6.4-1deepin29) unstable; urgency=medium
 
   * Integrate backport PRs #132-#163 and #286 (32 PRs, #139 excluded as
