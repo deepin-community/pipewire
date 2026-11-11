@@ -1,0 +1,24 @@
+From 24e1d0282675ab09563f33f40d41651526d2e8a8 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Fri, 6 Nov 2026 16:56:57 +0800
+Subject: [PATCH] alsa-plugin: fix error check in update_active()
+
+pw->error is negative (-EINVAL, -errno, or a negative PipeWire error),
+but update_active() checks pw->error > 0, so the condition never matches.
+A stream or core error calls update_active(&pw->io, false), so the eventfd
+is left inactive and an application blocked in poll() may sleep forever.
+
+1081b8f07 added force_wakeup for SETUP/XRUN/stop, but does not cover a
+plain PipeWire error.  Check for a negative error instead.
+
+--- a/pipewire-alsa/alsa-plugins/pcm_pipewire.c
++++ b/pipewire-alsa/alsa-plugins/pcm_pipewire.c
+@@ -96,7 +96,7 @@
+ 
+ 	avail = snd_pcm_ioplug_avail(io, pw->hw_ptr, io->appl_ptr);
+ 
+-	if (pw->error > 0) {
++	if (pw->error < 0) {
+ 		active = true;
+ 	}
+ 	else if (io->state == SND_PCM_STATE_DRAINING) {

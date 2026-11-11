@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin32) unstable; urgency=medium
+
+  * Fix alsa-plugin update_active() error check: pw->error is negative, use pw->error < 0 so a stream or core error wakes up applications blocked in poll()
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 11 Nov 2026 10:13:31 +0800
+
 pipewire (1.6.4-1deepin31) unstable; urgency=medium
 
   * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
