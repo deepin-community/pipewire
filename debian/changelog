@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin32) unstable; urgency=medium
+
+  * Fix race between pw_data_loop_start() and pw_data_loop_stop(): protect the stop invoke() with a lock so it does not race with enter() from the thread function.
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 12 Nov 2026 10:09:13 +0800
+
 pipewire (1.6.4-1deepin31) unstable; urgency=medium
 
   * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
