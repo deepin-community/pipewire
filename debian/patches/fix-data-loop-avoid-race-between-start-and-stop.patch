@@ -1,0 +1,24 @@
+From dba60f1a6e2471ec88d67881e88f04836bd826ec Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 11 Nov 2026 15:05:42 +0100
+Subject: [PATCH] data-loop: avoid race between start() and stop()
+
+Protect the invoke() with a lock to ensure it doesn't race with enter()
+from the thread function.
+
+diff --git a/src/pipewire/data-loop.c b/src/pipewire/data-loop.c
+index 28772a178..b8a26204f 100644
+--- a/src/pipewire/data-loop.c
++++ b/src/pipewire/data-loop.c
+@@ -306,7 +306,10 @@ int pw_data_loop_stop(struct pw_data_loop *loop)
+ 			pthread_cancel(loop->thread);
+ 		} else {
+ 			pw_log_debug("%p signal", loop);
++			/* lock here to ensure we don't race with enter() */
++			pw_loop_lock(loop->loop);
+ 			pw_loop_invoke(loop->loop, do_stop, 1, NULL, 0, false, loop);
++			pw_loop_unlock(loop->loop);
+ 		}
+ 		if ((utils = loop->thread_utils) == NULL)
+ 			utils = pw_thread_utils_get();
+
