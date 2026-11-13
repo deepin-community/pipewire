@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin32) unstable; urgency=medium
+
+  * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded to "64u" which parse_uint32 rejects, leaving max_streams unset; use a clean string constant for the default so pulse.max-streams is parsed correctly.
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 13 Nov 2026 14:17:43 +0800
+
 pipewire (1.6.4-1deepin31) unstable; urgency=medium
 
   * Fix api.alsa.skip-formats-before-s16 rejecting devices that only support
