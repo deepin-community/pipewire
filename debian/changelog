@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * Avoid updating pipewire.* properties from pulse-server clients: ignore client-supplied 'pipewire.' prefixed properties, these are internal and only managed by pipewire itself.
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 17 Nov 2026 10:29:21 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
