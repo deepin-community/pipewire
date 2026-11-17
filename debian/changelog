@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * pulse-server: init active_port_name: reset dev_info.active_port_name to NULL before collect_port_info() in fill_source_info(), so the active port name sent to clients is NULL instead of a stale pointer when the node has no card or no matching port is found (mirrors upstream 744a6b54)
+
+ -- deepin-ci-robot <packages@deepin.org>  Tue, 17 Nov 2026 10:06:59 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded

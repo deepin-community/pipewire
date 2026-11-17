@@ -1,0 +1,20 @@
+From 744a6b547ddb511e46fb41c1e54d033eca4faec9 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 10 Sep 2026 16:28:20 +0200
+Subject: [PATCH] pulse-server: init active_port_name
+
+If the card is NULL, we would otherwise have the active_port_name point
+to invalid memory and crash.
+
+Index: repo/src/modules/module-protocol-pulse/pulse-server.c
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/pulse-server.c
++++ repo/src/modules/module-protocol-pulse/pulse-server.c
+@@ -4047,6 +4047,7 @@ static int fill_source_info(struct clien
+ 
+ 		if ((port_info = spa_alloca(card_info.n_ports, sizeof(*port_info), MAX_ALLOCA_SIZE)) == NULL)
+ 			return -errno;
++		dev_info.active_port_name = NULL;
+ 		n_ports = collect_port_info(card, &card_info, &dev_info, port_info);
+ 
+ 		message_put(m,
