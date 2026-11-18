@@ -1,0 +1,23 @@
+From ddf13a8c6c15d273d3a8f3deaa9be195d2744a94 Mon Sep 17 00:00:00 2001
+From: metaneutrons <436979+metaneutrons@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 10:51:23 +0200
+Subject: [PATCH] raop: write TCP packet length into the interleaved header
+
+The length was ORed into the first ALAC payload word while the interleaved header retained a zero length. Write the RTP plus encoded-audio length into the TCP header and leave the payload untouched.
+
+Extend the native callback regression to check the TCP prefix and byte-identical RTP/ALAC payload for every frame-aligned ring-buffer split.
+
+Index: repo/src/modules/module-raop-sink.c
+===================================================================
+--- repo.orig/src/modules/module-raop-sink.c
++++ repo/src/modules/module-raop-sink.c
+@@ -495,8 +495,7 @@ static void stream_send_packet(void *dat
+ 		aes_encrypt(impl, dst, len);
+ 
+ 	if (impl->protocol == PROTO_TCP) {
+-		out[0] |= htonl((uint32_t) len + 12);
+-		tcp_pkt[0] = htonl(0x24000000);
++		tcp_pkt[0] = htonl(0x24000000 | (len + 12));
+   		out_vec[msg.msg_iovlen++] = (struct iovec) { tcp_pkt, 4 };
+ 	}
+ 

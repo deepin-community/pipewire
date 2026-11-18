@@ -1,0 +1,26 @@
+From 3f3d02a95346faf39f61571c4cc11d263c47dd1e Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Thu, 13 Aug 2026 13:34:16 +0800
+Subject: [PATCH] bluez5: telephony: fix Properties.Get on call objects
+
+call_properties_get() had the interface check inverted: it rejected
+requests for PW_TELEPHONY_CALL_IFACE, the very interface it is meant
+to serve, returning "org.freedesktop.DBus.Error.InvalidArgs" with
+"No such interface". Every Properties.Get on a Call object failed,
+while Properties.GetAll (which uses !spa_streq) worked correctly.
+
+Negate the check so only unknown interfaces are rejected.
+
+diff --git a/spa/plugins/bluez5/telephony.c b/spa/plugins/bluez5/telephony.c
+index dad45bdc2..058b02993 100644
+--- a/spa/plugins/bluez5/telephony.c
++++ b/spa/plugins/bluez5/telephony.c
+@@ -1658,7 +1658,7 @@ static DBusMessage *call_properties_get(struct callimpl *callimpl, DBusMessage *
+ 				DBUS_TYPE_INVALID))
+ 		return NULL;
+ 
+-	if (spa_streq(iface, PW_TELEPHONY_CALL_IFACE))
++	if (!spa_streq(iface, PW_TELEPHONY_CALL_IFACE))
+ 		return dbus_message_new_error(m, DBUS_ERROR_INVALID_ARGS,
+ 				"No such interface");
+

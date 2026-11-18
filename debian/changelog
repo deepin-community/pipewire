@@ -1,3 +1,13 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * Integrate backport PRs #202-#241, #300-#304, #313 (42 PRs total).
+    Includes security fixes (integer overflow protections, null pointer
+    checks, CLOEXEC flags), pulse-server active_port_name initialization
+    fix, and allocation failure handling.
+  * Remove PR #231 (fix(v4l2): keep the media type of the filter when it
+    does not name a format) per user request.
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Mon, 17 Nov 2026 18:00:00 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
