@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * Fix spa_alsa_start to check the spa_alsa_prepare return value and propagate prepare errors to the caller instead of producing silent audio when device preparation fails
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 18 Nov 2026 17:36:05 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
