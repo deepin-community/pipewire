@@ -1,0 +1,42 @@
+From 6a0c0d45ff69473559bf0f1a6c9dd907224d20d6 Mon Sep 17 00:00:00 2001
+From: George Kiagiadakis <george.kiagiadakis@collabora.com>
+Date: Tue, 23 Dec 2025 19:36:58 +0200
+Subject: [PATCH] alsa: emit a node "error" event when snd_pcm_start() fails
+
+This is meant to workaround a particular SoF firmware crash that requires the
+device to be closed and re-opened to recover. This works in combination
+with a WirePlumber monitor function that will destroy the node after
+it enters this error state and will re-create it.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index b31d0c2ff..3b4feaf5e 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -2784,6 +2784,18 @@ static inline int do_drop(struct state *state)
+ 	return 0;
+ }
+ 
++static inline int emit_node_error (struct spa_loop *loop,
++	bool async, uint32_t seq, const void *data, size_t size, void *user_data)
++{
++	struct state *state = user_data;
++	struct spa_event event = SPA_EVENT_INIT(SPA_TYPE_EVENT_Node, SPA_NODE_EVENT_Error);
++
++	spa_log_info(state->log, "%s: emit SPA_NODE_EVENT_Error", state->name);
++
++	spa_node_emit_event(&state->hooks, &event);
++	return 0;
++}
++
+ static inline int do_start(struct state *state)
+ {
+ 	int res;
+@@ -2792,6 +2804,7 @@ static inline int do_start(struct state *state)
+ 		if (!state->linked && (res = snd_pcm_start(state->hndl)) < 0) {
+ 			spa_log_error(state->log, "%s: snd_pcm_start: %s",
+ 					state->name, snd_strerror(res));
++			spa_loop_invoke(state->main_loop, emit_node_error, 0, NULL, 0, false, state);
+ 			return res;
+ 		}
+ 		state->alsa_started = true;
+
