@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * security: fix stack overflow via strndupa on long device names in protocol-pulse: cap the strndupa length at MAX_NAME (1024) in find_device and do_set_default, so a malicious client sending a very long .monitor device name cannot overflow the stack and crash the daemon
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 18 Nov 2026 17:41:12 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
