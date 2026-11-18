@@ -1,0 +1,28 @@
+From 920785731c15dc5cbd1c29997dfcf31e37680db7 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 17 Nov 2026 11:03:30 +0100
+Subject: [PATCH] spa: v4l2: bound the chunk size by the v4l2 buffer length
+
+The chunk size is clamped to the SPA buffer size but not to the length of
+the V4L2 buffer.  When the SPA buffer is larger than the driver buffer,
+the subsequent memcpy() reads past the end of the mmap()ed region.
+
+Clamp to b->v4l2_buffer.length when it is known; the DMABUF path leaves
+it zero.
+
+See #5587
+
+diff --git a/spa/plugins/v4l2/v4l2-utils.c b/spa/plugins/v4l2/v4l2-utils.c
+index 2a5da7b5e..8d3ceda9e 100644
+--- a/spa/plugins/v4l2/v4l2-utils.c
++++ b/spa/plugins/v4l2/v4l2-utils.c
+@@ -1514,6 +1514,8 @@ static int mmap_read(struct impl *this)
+ 	d = b->outbuf->datas;
+ 	d[0].chunk->offset = 0;
+ 	d[0].chunk->size = SPA_MIN(buf.bytesused, d[0].maxsize);
++	if (b->v4l2_buffer.length > 0)
++		d[0].chunk->size = SPA_MIN(d[0].chunk->size, b->v4l2_buffer.length);
+ 	d[0].chunk->stride = port->fmt.fmt.pix.bytesperline;
+ 	d[0].chunk->flags = 0;
+ 	if (buf.flags & V4L2_BUF_FLAG_ERROR)
+
