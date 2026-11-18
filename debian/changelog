@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * Fix create_tag check rejecting upload stream memblocks: exempt STREAM_TYPE_UPLOAD from the guard added in a2de6c886, since upload streams allocate their buffer immediately and never clear create_tag, so the NULL deref risk does not apply to them.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 18 Nov 2026 18:07:06 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
