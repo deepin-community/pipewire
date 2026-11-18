@@ -1,0 +1,40 @@
+From 4c9ec363a325a508befd05c0c256885572be4165 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 14:11:20 +0200
+Subject: [PATCH] security: fix inverted overflow check in RTP MIDI message
+ size parsing
+
+Memory Safety: High
+
+In get_midi_size(), the overflow check for SysEx and meta-event message
+sizes has the comparison operator inverted. The check
+  (unsigned int)(INT_MAX - size - 1) > value
+rejects small (safe) payload sizes and accepts large sizes that cause
+signed integer overflow in the subsequent size += (int)value + 1.
+
+This means all SysEx messages (0xF0, 0xF7) and system reset/meta events
+(0xFF) with valid payloads are incorrectly rejected, while crafted
+packets with very large variable-length values bypass the check. Although
+the caller has a secondary bounds check that mitigates most exploitation,
+the inverted check is both a functional bug (breaks SysEx over RTP) and
+a defense-in-depth failure.
+
+Fix by swapping the operands so that the check correctly rejects values
+that would overflow: value > (unsigned int)(INT_MAX - size - 1).
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-rtp/midi.c b/src/modules/module-rtp/midi.c
+index 1237f66c6..5e13750f1 100644
+--- a/src/modules/module-rtp/midi.c
++++ b/src/modules/module-rtp/midi.c
+@@ -134,7 +134,7 @@ static int get_midi_size(uint8_t *p, uint32_t avail)
+ 	case 0xf7:
+ 		if ((size = parse_varlen(&p[offs], avail - offs, &value)) < 0)
+ 			return size;
+-		if ((unsigned int)(INT_MAX - size - 1) > value)
++		if (value > (unsigned int)(INT_MAX - size - 1))
+ 			return -EINVAL;
+ 		size += (int)value + 1;
+ 		break;
+

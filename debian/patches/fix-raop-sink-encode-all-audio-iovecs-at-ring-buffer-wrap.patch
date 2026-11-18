@@ -1,0 +1,83 @@
+From bc7d1cba6dee390beba0785e50935275d3f1d484 Mon Sep 17 00:00:00 2001
+From: metaneutrons <436979+metaneutrons@users.noreply.github.com>
+Date: Sun, 6 Sep 2026 15:37:53 +0200
+Subject: [PATCH] module-raop-sink: encode all audio iovecs at ring-buffer wrap
+
+The RTP producer supplies two frame-aligned audio segments when a packet
+crosses the ring-buffer boundary. The RAOP callback encoded only the first
+segment while the producer advanced by the full packet size, losing
+samples from the second segment.
+
+Encode all segments into one uncompressed ALAC frame without allocation
+or a staging copy.
+
+Index: repo/src/modules/module-raop-sink.c
+===================================================================
+--- repo.orig/src/modules/module-raop-sink.c
++++ repo/src/modules/module-raop-sink.c
+@@ -405,11 +405,12 @@ static int send_udp_timing_packet(struct
+ 	return res;
+ }
+ 
+-static int write_codec_pcm(void *dst, void *frames, uint32_t n_frames)
++static int write_codec_pcm(void *dst, const struct iovec *iov, size_t iovlen, uint32_t n_frames)
+ {
+-	uint8_t *bp, *b, *d = frames;
++	uint8_t *bp, *b;
+ 	int bpos = 0;
+ 	uint32_t i;
++	size_t j;
+ 
+ 	b = bp = dst;
+ 
+@@ -425,12 +426,15 @@ static int write_codec_pcm(void *dst, vo
+ 	bit_writer(&bp, &bpos, (n_frames >> 8)  & 0xff, 8);
+ 	bit_writer(&bp, &bpos, (n_frames)       & 0xff, 8);
+ 
+-	for (i = 0; i < n_frames; i++) {
+-		bit_writer(&bp, &bpos, *(d + 1), 8);
+-		bit_writer(&bp, &bpos, *(d + 0), 8);
+-		bit_writer(&bp, &bpos, *(d + 3), 8);
+-		bit_writer(&bp, &bpos, *(d + 2), 8);
+-		d += 4;
++	for (j = 0; j < iovlen; j++) {
++		const uint8_t *d = iov[j].iov_base;
++		for (i = 0; i < iov[j].iov_len / 4; i++) {
++			bit_writer(&bp, &bpos, *(d + 1), 8);
++			bit_writer(&bp, &bpos, *(d + 0), 8);
++			bit_writer(&bp, &bpos, *(d + 3), 8);
++			bit_writer(&bp, &bpos, *(d + 2), 8);
++			d += 4;
++		}
+ 	}
+ 	bit_writer(&bp, &bpos, 7, 3); /* end tag */
+ 	return bp - b + 1;
+@@ -454,6 +458,7 @@ static void stream_send_packet(void *dat
+ 	struct rtp_header *header;
+ 	struct msghdr msg;
+ 	uint8_t *dst;
++	size_t i;
+ 
+ 	if (!impl->recording)
+ 		return;
+@@ -469,7 +474,10 @@ static void stream_send_packet(void *dat
+ 		impl->sync = 0;
+ 	}
+ 
+-	n_frames = iov[1].iov_len / impl->stride;
++	/* The RTP ring buffer can wrap between two frame-aligned segments. */
++	n_frames = 0;
++	for (i = 1; i < iovlen; i++)
++		n_frames += iov[i].iov_len / impl->stride;
+ 
+ 	msg.msg_name = NULL;
+ 	msg.msg_namelen = 0;
+@@ -484,7 +492,7 @@ static void stream_send_packet(void *dat
+ 	switch (impl->codec) {
+ 	case CODEC_PCM:
+ 	case CODEC_ALAC:
+-		len = write_codec_pcm(dst, (void *)iov[1].iov_base, n_frames);
++		len = write_codec_pcm(dst, &iov[1], iovlen - 1, n_frames);
+ 		break;
+ 	default:
+ 		len = 8 + impl->mtu;
