@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * Security fix: add missing create_tag check in update_stream_sample_rate. Reject UPDATE_PLAYBACK/RECORD_STREAM_SAMPLE_RATE sent before format negotiation completes (create_tag != SPA_ID_INVALID), preventing a floating-point division by zero via stream->ss.rate == 0 that crashed the PulseAudio server (SIGFPE).
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 18 Nov 2026 18:11:00 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
