@@ -1,3 +1,9 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * security: clamp negative max-clients config to zero in pulse server. A negative max-clients value in the config is parsed as int then assigned to uint32_t, wrapping to UINT32_MAX and effectively disabling the client limit. Use SPA_MAX(max_clients, 0) to clamp it to a non-negative value.
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 18 Nov 2026 17:46:25 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded

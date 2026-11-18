@@ -1,0 +1,25 @@
+From dac6b4f2c5dd3401b4d054b2bd91eeb85f195382 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 17:28:02 +0200
+Subject: [PATCH] security: clamp negative max-clients config to zero in pulse
+ server
+
+A negative max-clients value in the config is parsed as int then
+assigned to uint32_t, wrapping to UINT32_MAX and effectively
+disabling the client limit.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/server.c b/src/modules/module-protocol-pulse/server.c
+index 7038c95fc..3cd49993e 100644
+--- a/src/modules/module-protocol-pulse/server.c
++++ b/src/modules/module-protocol-pulse/server.c
+@@ -1065,7 +1065,7 @@ int servers_create_and_start(struct impl *impl, const char *addresses, struct pw
+ 				continue;
+ 			}
+ 
+-			server->max_clients = max_clients;
++			server->max_clients = SPA_MAX(max_clients, 0);
+ 			server->listen_backlog = listen_backlog;
+ 			memcpy(server->client_access, client_access, sizeof(client_access));
+
