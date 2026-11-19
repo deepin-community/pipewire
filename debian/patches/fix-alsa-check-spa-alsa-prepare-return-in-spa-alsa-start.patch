@@ -1,0 +1,30 @@
+From 4ea658c69d0a52eb8b747f28b5736f7766bfa0b4 Mon Sep 17 00:00:00 2001
+From: Chengyi Zhao <zhaochengyi@uniontech.com>
+Date: Tue, 28 Jul 2026 20:18:39 +0800
+Subject: [PATCH] spa: alsa: pcm: check spa_alsa_prepare return in
+ spa_alsa_start
+
+spa_alsa_start() called spa_alsa_prepare() to configure the device
+but ignored its return value. If preparation fails, starting the
+device produces silent audio.
+
+Propagate the error to the caller.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index 6e9501332..f38fa6214 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -3930,7 +3930,11 @@ int spa_alsa_start(struct state *state)
+ 	else if (!state->opened)
+ 		return -EIO;
+ 
+-	spa_alsa_prepare(state);
++	if ((err = spa_alsa_prepare(state)) < 0) {
++		spa_log_error(state->log, "%s: prepare failed: %s",
++				state->name, spa_strerror(err));
++		return err;
++	}
+ 
+ 	if (!state->disable_tsched) {
+ 		/* Timer-based scheduling */
+

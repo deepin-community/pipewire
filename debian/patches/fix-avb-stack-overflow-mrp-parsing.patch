@@ -1,0 +1,28 @@
+From 08d4e319cf59b6b2aa2218442f572c0417707c55 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 8 May 2026 18:13:12 +0200
+Subject: [PATCH] avb: fix stack overflow in MRP parsing
+
+AVB_MRP_VECTOR_GET_NUM_VALUES can be 13 bits and is stored in a
+unit16_t. event_len and param_len are however calculated from this and
+then truncated to 8 bits (uint8_t) which causes the bounds check to
+silently pass and cause an OOB read.
+
+Change the type to uint16_t to avoid overflows.
+
+diff --git a/src/modules/module-avb/mrp.c b/src/modules/module-avb/mrp.c
+index 2879fbb2a..8580bed13 100644
+--- a/src/modules/module-avb/mrp.c
++++ b/src/modules/module-avb/mrp.c
+@@ -173,8 +173,8 @@ int avb_mrp_parse_packet(struct avb_mrp *mrp, uint64_t now, const void *pkt, int
+ 			const struct avb_packet_mrp_vector *v =
+ 				(const struct avb_packet_mrp_vector*)m;
+ 			uint16_t i, num_values = AVB_MRP_VECTOR_GET_NUM_VALUES(v);
+-			uint8_t event_len = (num_values+2)/3;
+-			uint8_t param_len = has_param ? (num_values+3)/4 : 0;
++			uint16_t event_len = (num_values+2)/3;
++			uint16_t param_len = has_param ? (num_values+3)/4 : 0;
+ 			int plen = sizeof(*v) + attr_len + event_len + param_len;
+ 			const uint8_t *first = v->first_value;
+ 			uint8_t event[3], param[4] = { 0, };
+

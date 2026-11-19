@@ -1,0 +1,193 @@
+From da799b31bdbcf00a1051f5184e4ad5e6b769e470 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 10 Sep 2026 11:19:13 +0200
+Subject: [PATCH] protocol-pulse: get active_port_name with port_info
+
+Don't store the active_port_name in the device info because this is
+cached and memcmp checked, which can cause all kinds of trouble for a
+pointer. In particular, we don't track very well when the name changes
+to ensure no dev_info is holding on to it anymore.
+
+Instead, don't try to look up the active port name when getting the
+device info. Do this as part of getting the port info, where it belongs.
+
+The only trouble is that when the port name changes, we might not get a
+device update. Currently the port names don't change so this is fine.
+
+We might also want to cache the active_port_name for a device
+differently and do a proper strcpy on it if the port name can change in
+the future. Alternatively, we can also increment a counter for dev_info
+whenever the EnumRoutes change, this would then invalidate the cached
+dev_infos.
+
+Fixes #5435
+
+diff --git a/src/modules/module-protocol-pulse/collect.c b/src/modules/module-protocol-pulse/collect.c
+index a1d8cc25b..355d6b502 100644
+--- a/src/modules/module-protocol-pulse/collect.c
++++ b/src/modules/module-protocol-pulse/collect.c
+@@ -233,7 +233,6 @@ static void collect_device_info(struct pw_manager_object *device, struct pw_mana
+ 			 struct device_info *dev_info, bool monitor, struct defs *defs)
+ {
+ 	struct pw_manager_param *p;
+-	dev_info->active_port_name = NULL;
+ 
+ 	if (card) {
+ 		spa_list_for_each(p, &card->param_list, link) {
+@@ -257,30 +256,6 @@ static void collect_device_info(struct pw_manager_object *device, struct pw_mana
+ 				dev_info->have_volume = true;
+ 			}
+ 		}
+-
+-		/* Look up the port name for the active port */
+-		if (dev_info->active_port != SPA_ID_INVALID) {
+-			spa_list_for_each(p, &card->param_list, link) {
+-				uint32_t index, direction;
+-				const char *name = NULL;
+-
+-				if (p->id != SPA_PARAM_EnumRoute)
+-					continue;
+-
+-				if (spa_pod_parse_object(p->param,
+-						SPA_TYPE_OBJECT_ParamRoute, NULL,
+-						SPA_PARAM_ROUTE_index, SPA_POD_Int(&index),
+-						SPA_PARAM_ROUTE_direction, SPA_POD_Id(&direction),
+-						SPA_PARAM_ROUTE_name, SPA_POD_String(&name)) < 0)
+-					continue;
+-
+-				if (index == dev_info->active_port &&
+-				    direction == dev_info->direction) {
+-					dev_info->active_port_name = name;
+-					break;
+-				}
+-			}
+-		}
+ 	}
+ 
+ 	spa_list_for_each(p, &device->param_list, link) {
+@@ -390,10 +365,12 @@ static bool array_contains(uint32_t *vals, uint32_t n_vals, uint32_t val)
+ }
+ 
+ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *card_info,
+-			   struct device_info *dev_info, struct port_info *port_info)
++			   struct device_info *dev_info, struct port_info *port_info,
++			   const char **active_port_name)
+ {
+ 	struct pw_manager_param *p;
+ 	uint32_t n;
++	const char *aport_name = NULL;
+ 
+ 	if (card == NULL)
+ 		return 0;
+@@ -447,7 +424,7 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
+ 			if (!array_contains(pi->devices, pi->n_devices, dev_info->device))
+ 				continue;
+ 			if (pi->index == dev_info->active_port)
+-				dev_info->active_port_name = pi->name;
++				aport_name = pi->name;
+ 		}
+ 
+ 		while (pi->info != NULL) {
+@@ -477,8 +454,11 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
+ 		}
+ 		n++;
+ 	}
+-	if (dev_info != NULL && dev_info->active_port_name == NULL && n > 0)
+-		dev_info->active_port_name = port_info[0].name;
++	if (aport_name == NULL && n > 0)
++		aport_name = port_info[0].name;
++
++	if (active_port_name)
++		*active_port_name = aport_name;
+ 	return n;
+ }
+ 
+diff --git a/src/modules/module-protocol-pulse/collect.h b/src/modules/module-protocol-pulse/collect.h
+index 0c42cc4ec..3a099092f 100644
+--- a/src/modules/module-protocol-pulse/collect.h
++++ b/src/modules/module-protocol-pulse/collect.h
+@@ -53,7 +53,6 @@ struct device_info {
+ 	uint32_t card_id;
+ 	uint32_t device;
+ 	uint32_t active_port;
+-	const char *active_port_name;
+ 
+ };
+ 
+@@ -127,7 +126,8 @@ struct port_info {
+ };
+ 
+ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *card_info,
+-			   struct device_info *dev_info, struct port_info *port_info);
++			   struct device_info *dev_info, struct port_info *port_info,
++			   const char **active_port_name);
+ 
+ /* ========================================================================== */
+ 
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index cf57395ae..e449272ea 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -3234,7 +3234,7 @@ static int do_set_port_latency_offset(struct client *client, uint32_t command, u
+ 	if ((port_info = spa_alloca(card_info.n_ports, sizeof(*port_info), MAX_ALLOCA_SIZE)) == NULL)
+ 		return -errno;
+ 	card_info.active_profile = SPA_ID_INVALID;
+-	n_ports = collect_port_info(card, &card_info, NULL, port_info);
++	n_ports = collect_port_info(card, &card_info, NULL, port_info, NULL);
+ 
+ 	/* Set offset on all devices of the port */
+ 	res = -ENOENT;
+@@ -3691,7 +3691,7 @@ static int fill_card_info(struct client *client, struct message *m,
+ 		if ((port_info = spa_alloca(card_info.n_ports, sizeof(*port_info), MAX_ALLOCA_SIZE)) == NULL)
+ 			return -errno;
+ 		card_info.active_profile = SPA_ID_INVALID;
+-		n_ports = collect_port_info(o, &card_info, NULL, port_info);
++		n_ports = collect_port_info(o, &card_info, NULL, port_info, NULL);
+ 
+ 		message_put(m,
+ 			TAG_U32, n_ports,				/* n_ports */
+@@ -3890,10 +3890,11 @@ static int fill_sink_info(struct client *client, struct message *m,
+ 	if (client->version >= 16) {
+ 		uint32_t n_ports, n;
+ 		struct port_info *port_info, *pi;
++		const char *active_port_name = NULL;
+ 
+ 		if ((port_info = spa_alloca(card_info.n_ports, sizeof(*port_info), MAX_ALLOCA_SIZE)) == NULL)
+ 			return -errno;
+-		n_ports = collect_port_info(card, &card_info, &dev_info, port_info);
++		n_ports = collect_port_info(card, &card_info, &dev_info, port_info, &active_port_name);
+ 
+ 		message_put(m,
+ 			TAG_U32, n_ports,			/* n_ports */
+@@ -3918,7 +3919,7 @@ static int fill_sink_info(struct client *client, struct message *m,
+ 			}
+ 		}
+ 		message_put(m,
+-			TAG_STRING, dev_info.active_port_name,		/* active port name */
++			TAG_STRING, active_port_name,		/* active port name */
+ 			TAG_INVALID);
+ 	}
+ 	if (client->version >= 21) {
+@@ -4087,10 +4088,11 @@ static int fill_source_info(struct client *client, struct message *m,
+ 	if (client->version >= 16) {
+ 		uint32_t n_ports, n;
+ 		struct port_info *port_info, *pi;
++		const char *active_port_name;
+ 
+ 		if ((port_info = spa_alloca(card_info.n_ports, sizeof(*port_info), MAX_ALLOCA_SIZE)) == NULL)
+ 			return -errno;
+-		n_ports = collect_port_info(card, &card_info, &dev_info, port_info);
++		n_ports = collect_port_info(card, &card_info, &dev_info, port_info, &active_port_name);
+ 
+ 		message_put(m,
+ 			TAG_U32, n_ports,			/* n_ports */
+@@ -4115,7 +4117,7 @@ static int fill_source_info(struct client *client, struct message *m,
+ 			}
+ 		}
+ 		message_put(m,
+-			TAG_STRING, dev_info.active_port_name,		/* active port name */
++			TAG_STRING, active_port_name,		/* active port name */
+ 			TAG_INVALID);
+ 	}
+ 	if (client->version >= 21) {
+

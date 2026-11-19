@@ -1,0 +1,50 @@
+From c73df14f03e30c41f6430acd82c6250dcdb168d8 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 7 Sep 2026 20:15:01 +0200
+Subject: [PATCH] jack: free port and clear buffers before disconnect
+
+Make sure we remove all buffer memory references from the ports before we
+do a disconnect because that will forcer-free all memories and leave us with
+potential already freed references.
+
+Fixes #5455
+
+diff --git a/pipewire-jack/src/pipewire-jack.c b/pipewire-jack/src/pipewire-jack.c
+index f7af82938..454b0d134 100644
+--- a/pipewire-jack/src/pipewire-jack.c
++++ b/pipewire-jack/src/pipewire-jack.c
+@@ -4654,6 +4654,16 @@ int jack_client_close (jack_client_t *client)
+ 		pw_thread_loop_stop(c->context.notify);
+ 	}
+ 
++	pw_array_for_each(item, &c->ports[SPA_DIRECTION_OUTPUT].items) {
++                if (pw_map_item_is_free(item))
++			continue;
++		free_port(c, item->data, false);
++	}
++	pw_array_for_each(item, &c->ports[SPA_DIRECTION_INPUT].items) {
++                if (pw_map_item_is_free(item))
++			continue;
++		free_port(c, item->data, false);
++	}
+ 	if (c->registry) {
+ 		spa_hook_remove(&c->registry_listener);
+ 		pw_proxy_destroy((struct pw_proxy*)c->registry);
+@@ -4686,16 +4696,6 @@ int jack_client_close (jack_client_t *client)
+ 
+ 	pw_log_debug("%p: free", client);
+ 
+-	pw_array_for_each(item, &c->ports[SPA_DIRECTION_OUTPUT].items) {
+-                if (pw_map_item_is_free(item))
+-			continue;
+-		free_port(c, item->data, false);
+-	}
+-	pw_array_for_each(item, &c->ports[SPA_DIRECTION_INPUT].items) {
+-                if (pw_map_item_is_free(item))
+-			continue;
+-		free_port(c, item->data, false);
+-	}
+ 	pthread_mutex_lock(&globals.lock);
+ 	spa_list_consume(o, &c->context.objects, link) {
+ 		bool to_free = o->to_free;
+

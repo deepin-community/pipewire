@@ -1,0 +1,27 @@
+From d9df3602dd9dbc540068a73eb7422001bcd34c1a Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 18:20:04 +0200
+Subject: [PATCH] security: add missing create_tag check in
+ update_stream_sample_rate
+
+If a client sends UPDATE_PLAYBACK_STREAM_SAMPLE_RATE before format
+negotiation completes, stream->ss.rate could be 0, causing a
+floating-point division by zero. Add the same create_tag guard used
+in do_set_stream_buffer_attr.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/pulse-server.c b/src/modules/module-protocol-pulse/pulse-server.c
+index c493b6d7a..a16519278 100644
+--- a/src/modules/module-protocol-pulse/pulse-server.c
++++ b/src/modules/module-protocol-pulse/pulse-server.c
+@@ -4608,6 +4608,8 @@ static int do_update_stream_sample_rate(struct client *client, uint32_t command,
+ 	stream = pw_map_lookup(&client->streams, channel);
+ 	if (stream == NULL || stream->type == STREAM_TYPE_UPLOAD)
+ 		return -ENOENT;
++	if (stream->create_tag != SPA_ID_INVALID)
++		return -ENOENT;
+ 
+ 	if (rate == 0 || rate > RATE_MAX)
+ 		return -EINVAL;
+

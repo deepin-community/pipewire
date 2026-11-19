@@ -1,0 +1,26 @@
+From 825098f94622d4d685bbd0395e32cb64129be79e Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 27 Oct 2026 18:38:59 +0100
+Subject: [PATCH] impl-port: move the mix output buffer to input io
+
+Move the buffer that we have on the mixer output to the input so that
+it can be recycled upstream.
+
+diff --git a/src/pipewire/impl-port.c b/src/pipewire/impl-port.c
+index b23856431..edd1ca89e 100644
+--- a/src/pipewire/impl-port.c
++++ b/src/pipewire/impl-port.c
+@@ -362,10 +362,12 @@ static int mix_process(void *object)
+ 		return SPA_STATUS_HAVE_DATA | SPA_STATUS_NEED_DATA;
+ 
+ 	spa_list_for_each(mix, &impl->rt.mix_list, rt.link) {
++		uint32_t buffer_id = io->buffer_id;
+ 		pw_log_trace_fp("%p: mix input %d %p->%p status:%d id:%d cycle:%d", this,
+ 				mix->port.port_id, mix->io[cycle], io,
+ 				mix->io[cycle]->status, mix->io[cycle]->buffer_id, cycle);
+ 		*io = *mix->io[cycle];
++		mix->io[cycle]->buffer_id = buffer_id;
+ 		mix->io[cycle]->status = SPA_STATUS_NEED_DATA;
+ 		break;
+ 	}
+

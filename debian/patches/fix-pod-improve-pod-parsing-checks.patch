@@ -1,0 +1,48 @@
+From 6fcf8f87a67748691010a57a9fb8b76ebb077c69 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 9 Sep 2026 13:11:40 +0200
+Subject: [PATCH] pod: improve pod parsing checks
+
+We cast the props to an object so make sure we parse them as
+objects.
+
+diff --git a/pipewire-alsa/alsa-plugins/ctl_pipewire.c b/pipewire-alsa/alsa-plugins/ctl_pipewire.c
+index 8e8cb5a2e..f6dcf9ecf 100644
+--- a/pipewire-alsa/alsa-plugins/ctl_pipewire.c
++++ b/pipewire-alsa/alsa-plugins/ctl_pipewire.c
+@@ -907,7 +907,7 @@ static void device_event_param(void *data, int seq,
+ 				SPA_PARAM_ROUTE_index, SPA_POD_Int(&idx),
+ 				SPA_PARAM_ROUTE_direction, SPA_POD_Id(&direction),
+ 				SPA_PARAM_ROUTE_device, SPA_POD_Int(&device),
+-				SPA_PARAM_ROUTE_props, SPA_POD_OPT_Pod(&props)) < 0) {
++				SPA_PARAM_ROUTE_props, SPA_POD_OPT_PodObject(&props)) < 0) {
+ 			pw_log_warn("device %d: can't parse route", g->id);
+ 			return;
+ 		}
+diff --git a/spa/plugins/alsa/alsa-acp-device.c b/spa/plugins/alsa/alsa-acp-device.c
+index 1633478ee..a38cfa040 100644
+--- a/spa/plugins/alsa/alsa-acp-device.c
++++ b/spa/plugins/alsa/alsa-acp-device.c
+@@ -883,7 +883,7 @@ static int impl_set_param(void *object,
+ 				SPA_PARAM_ROUTE_index, SPA_POD_OPT_Int(&idx),
+ 				SPA_PARAM_ROUTE_name, SPA_POD_OPT_String(&name),
+ 				SPA_PARAM_ROUTE_device, SPA_POD_Int(&device),
+-				SPA_PARAM_ROUTE_props, SPA_POD_OPT_Pod(&props),
++				SPA_PARAM_ROUTE_props, SPA_POD_OPT_PodObject(&props),
+ 				SPA_PARAM_ROUTE_save, SPA_POD_OPT_Bool(&save))) < 0) {
+ 			spa_log_warn(this->log, "can't parse route");
+ 			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
+diff --git a/spa/plugins/bluez5/bluez5-device.c b/spa/plugins/bluez5/bluez5-device.c
+index 40db73b89..a2251db3e 100644
+--- a/spa/plugins/bluez5/bluez5-device.c
++++ b/spa/plugins/bluez5/bluez5-device.c
+@@ -3362,7 +3362,7 @@ static int impl_set_param(void *object,
+ 				SPA_TYPE_OBJECT_ParamRoute, NULL,
+ 				SPA_PARAM_ROUTE_index, SPA_POD_Int(&idx),
+ 				SPA_PARAM_ROUTE_device, SPA_POD_Int(&device),
+-				SPA_PARAM_ROUTE_props, SPA_POD_OPT_Pod(&props),
++				SPA_PARAM_ROUTE_props, SPA_POD_OPT_PodObject(&props),
+ 				SPA_PARAM_ROUTE_save, SPA_POD_OPT_Bool(&save))) < 0) {
+ 			spa_log_warn(this->log, "can't parse route");
+ 			spa_debug_log_pod(this->log, SPA_LOG_LEVEL_DEBUG, 0, NULL, param);
+

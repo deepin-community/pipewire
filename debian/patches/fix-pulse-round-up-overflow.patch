@@ -1,0 +1,32 @@
+From 79b4aba6cc63c5b8f4e37e16e9920e3e7de512f6 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 14 May 2026 16:27:20 +0200
+Subject: [PATCH] pulse: also handle potential overflow in ROUND_UP
+
+
+Index: pipewire/src/modules/module-protocol-pulse/message.c
+===================================================================
+--- pipewire.orig/src/modules/module-protocol-pulse/message.c
++++ pipewire/src/modules/module-protocol-pulse/message.c
+@@ -381,6 +381,7 @@ done:
+ 
+ static int ensure_size(struct message *m, uint32_t size)
+ {
++	uint64_t needed;
+ 	uint32_t alloc, diff;
+ 	void *data;
+ 
+@@ -390,10 +391,10 @@ static int ensure_size(struct message *m
+ 	if (size <= m->allocated - m->length)
+ 		return size;
+ 
+-	if (m->allocated + size < m->allocated)
++	needed = SPA_ROUND_UP_N(SPA_MAX((uint64_t)m->allocated + size, 4096u), 4096u);
++	if (needed > UINT32_MAX)
+ 		return -ENOMEM;
+-
+-	alloc = SPA_ROUND_UP_N(SPA_MAX(m->allocated + size, 4096u), 4096u);
++	alloc = (uint32_t)needed;
+ 	diff = alloc - m->allocated;
+ 	if ((data = realloc(m->data, alloc)) == NULL) {
+ 		free(m->data);
