@@ -1,0 +1,52 @@
+From a03d441b5f230a47ef20708aac0ee96d1f864bd2 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Tue, 27 Oct 2026 18:35:23 +0100
+Subject: [PATCH] impl-link: use extra buffer when using reliable transport
+
+Reliable transport has 1 extra recycle delay. Make a buffer allocation
+flag to make it allocate 1 extra buffer to compensate for the delay
+and set it when the port is using reliable transport.
+
+diff --git a/src/pipewire/buffers.c b/src/pipewire/buffers.c
+index 5e837a521..5b11c802c 100644
+--- a/src/pipewire/buffers.c
++++ b/src/pipewire/buffers.c
+@@ -344,6 +344,8 @@ int pw_buffers_negotiate(struct pw_context *context, uint32_t flags,
+ 
+ 	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_ASYNC))
+ 		min_buffers += 1;
++	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_DELAYED))
++		min_buffers += 1;
+ 
+ 	max_buffers = SPA_MAX(min_buffers, max_buffers);
+ 
+diff --git a/src/pipewire/buffers.h b/src/pipewire/buffers.h
+index ff39b8be4..894154d1f 100644
+--- a/src/pipewire/buffers.h
++++ b/src/pipewire/buffers.h
+@@ -30,7 +30,9 @@ extern "C" {
+ 						  *  any MemPtr, only fd based memory. */
+ #define PW_BUFFERS_FLAG_DYNAMIC		(1<<2)	/**< buffers have dynamic data */
+ #define PW_BUFFERS_FLAG_IN_PRIORITY	(1<<4)	/**< input parameters have priority */
+-#define PW_BUFFERS_FLAG_ASYNC		(1<<5)	/**< one of the nodes is async */
++#define PW_BUFFERS_FLAG_ASYNC		(1<<5)  /**< one of the ports is async */
++#define PW_BUFFERS_FLAG_DELAYED		(1<<6)  /**< one of the ports has delayed recycle */
++
+ 
+ struct pw_buffers {
+ 	struct pw_memblock *mem;	/**< allocated buffer memory */
+diff --git a/src/pipewire/impl-link.c b/src/pipewire/impl-link.c
+index 264690a4b..dbe552127 100644
+--- a/src/pipewire/impl-link.c
++++ b/src/pipewire/impl-link.c
+@@ -715,6 +715,9 @@ static int do_allocation(struct pw_impl_link *this)
+ 		/* always enable async mode */
+ 		alloc_flags = PW_BUFFERS_FLAG_ASYNC;
+ 
++		if (output->reliable)
++			alloc_flags |= PW_BUFFERS_FLAG_DELAYED;
++
+ 		/* shared mem can only be used if both nodes are in the same process
+ 		 * and we are sure that the buffers are never going to be shared
+ 		 * because of the exclusive flag */
+

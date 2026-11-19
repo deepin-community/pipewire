@@ -1,0 +1,20 @@
+From ec9db12997337fe028054d84edbc228562aab1c5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jens=20M=C3=B6lzer?= <moelzerjens@gmail.com>
+Date: Tue, 13 Oct 2026 21:31:57 +0000
+Subject: [PATCH] module-rtp: fix psamples not set if ptime matches framecount
+
+
+diff --git a/src/modules/module-rtp/stream.c b/src/modules/module-rtp/stream.c
+index 9a24aa395..b7e6cb706 100644
+--- a/src/modules/module-rtp/stream.c
++++ b/src/modules/module-rtp/stream.c
+@@ -841,6 +841,8 @@ struct rtp_stream *rtp_stream_new(struct pw_core *core,
+ 		} else if (fabsf((samples_to_msec(impl, framecount)) - ptime) > 0.1f) {
+ 			impl->psamples = msec_to_samples(impl, ptime);
+ 			pw_log_warn("rtp.ptime doesn't match rtp.framecount. Choosing rtp.ptime");
++		} else {
++			impl->psamples = framecount;
+ 		}
+ 	} else {
+ 		impl->psamples = impl->payload_size / impl->stride;
+

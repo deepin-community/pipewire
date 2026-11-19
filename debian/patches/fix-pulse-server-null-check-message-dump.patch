@@ -1,0 +1,28 @@
+From 5f02641859c59709e4ee86954b7618dc1689f611 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 29 Apr 2026 16:44:01 +0200
+Subject: [PATCH] security: add missing NULL check in PulseAudio message_dump
+
+pw_properties_new can return NULL on OOM. Passing NULL to read_props
+causes a NULL pointer dereference through pw_properties_set. Only
+reachable when debug logging is enabled.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/message.c b/src/modules/module-protocol-pulse/message.c
+index 5dcbcb48a..2244918a0 100644
+--- a/src/modules/module-protocol-pulse/message.c
++++ b/src/modules/module-protocol-pulse/message.c
+@@ -788,8 +788,10 @@ int message_dump(enum spa_log_level level, const char *prefix, struct message *m
+ 		}
+ 		case TAG_PROPLIST:
+ 		{
+-			struct pw_properties *props = pw_properties_new(NULL, NULL);
+ 			const struct spa_dict_item *it;
++			struct pw_properties *props = pw_properties_new(NULL, NULL);
++			if (props == NULL)
++				return -errno;
+ 			res = read_props(m, props, false);
+ 			if (res >= 0) {
+ 				pw_log(level, "%s %u: props: n_items:%u", prefix, o, props->dict.n_items);
+

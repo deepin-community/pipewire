@@ -1,0 +1,22 @@
+From b5e8a213c82dff05dd2b8e7ea011070d429822a8 Mon Sep 17 00:00:00 2001
+From: Viorel Cernateanu <vrilutza@gmail.com>
+Date: Sat, 24 Oct 2026 09:46:36 +0300
+Subject: [PATCH] volume: change props.volume type from double to float
+
+Change the volume field in struct props from double to float to match
+the SPA_POD_Float parser type and prevent incorrect volume scaling
+where 0.25 set resulted in 1.0.
+
+diff --git a/spa/plugins/volume/volume.c b/spa/plugins/volume/volume.c
+index d0d39b057..1bfc4169c 100644
+--- a/spa/plugins/volume/volume.c
++++ b/spa/plugins/volume/volume.c
+@@ -28,7 +28,7 @@ SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.volume");
+ #define DEFAULT_MUTE false
+ 
+ struct props {
+-	double volume;
++	float volume;
+ 	bool mute;
+ };
+
