@@ -1,0 +1,29 @@
+From 1302cbd08d739e8319e0e8f9cf562a6deab2e08e Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Fri, 24 Apr 2026 14:12:50 +0200
+Subject: [PATCH] security: fix unchecked alloca in pulse-server property list
+ handling
+
+Memory Safety: Medium
+
+fill_card_info() uses pi->n_props from port info for an alloca()
+without bounds checking. A card object with many port properties can
+similarly exhaust the stack.
+
+Add MAX_ALLOCA_SIZE checks consistent with the existing pattern to
+prevent stack overflow from large property counts.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+Index: repo/src/modules/module-protocol-pulse/pulse-server.c
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/pulse-server.c
++++ repo/src/modules/module-protocol-pulse/pulse-server.c
+@@ -3660,6 +3660,7 @@ static int fill_card_info(struct client
+ 			pi = &port_info[n];
+ 
+ 			if (pi->info && pi->n_props > 0 &&
++			    pi->n_props <= MAX_ALLOCA_SIZE / sizeof(*items) &&
+ 			    (items = spa_alloca(pi->n_props, sizeof(*items), MAX_ALLOCA_SIZE)) != NULL) {
+ 				dict.items = items;
+ 				pdict = collect_props(pi->info, &dict);
