@@ -1,0 +1,26 @@
+From 92a174ff1eb97775c2946ac300e388eaf4e8fbb1 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 17:40:25 +0200
+Subject: [PATCH] security: limit blocklist regex length in switch-on-connect
+ module
+
+A PulseAudio client can load this module with an arbitrarily complex
+blocklist regex, causing catastrophic backtracking in regexec on
+every new device. Cap the regex string at 1024 characters.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-protocol-pulse/modules/module-switch-on-connect.c b/src/modules/module-protocol-pulse/modules/module-switch-on-connect.c
+index e4dc2deac..f72ab2d5e 100644
+--- a/src/modules/module-protocol-pulse/modules/module-switch-on-connect.c
++++ b/src/modules/module-protocol-pulse/modules/module-switch-on-connect.c
+@@ -257,6 +257,9 @@ static int module_switch_on_connect_prepare(struct module * const module)
+ 	if ((str = pw_properties_get(props, "blocklist")) == NULL)
+ 		str = DEFAULT_BLOCKLIST;
+ 
++	if (strlen(str) > 1024)
++		return -EINVAL;
++
+ 	if (regcomp(&d->blocklist, str, REG_NOSUB | REG_EXTENDED) != 0)
+ 		return -EINVAL;
+
