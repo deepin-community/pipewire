@@ -1,3 +1,12 @@
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * client-node: avoid overflows in buffer size checks (upstream #5462).
+    Replace the overflow-prone check (uint32_t)offs + d->maxsize > mm->size
+    with an overflow-safe form so a large offset cannot wrap around and
+    bypass the buffer bounds validation.
+
+ -- deepin-ci-robot <packages@deepin.org>  Fri, 20 Nov 2026 18:13:39 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded
