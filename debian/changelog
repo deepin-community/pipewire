@@ -1,3 +1,69 @@
+pipewire (1.6.4-1deepin36) unstable; urgency=medium
+
+  * Remove PR #261 patch (feat-impl-link-parambegin-paramend-around-
+    negotiation) from series per user request — patch originated from
+    base PR #312 (aggregation #242-#281). No other patches depend on the
+    ParamBegin/ParamEnd changes in link_find_format(). Series reduced
+    from 258 to 257 patches.
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Tue, 24 Nov 2026 10:28:39 +0800
+
+pipewire (1.6.4-1deepin35) unstable; urgency=medium
+
+  * Append PR #337 (client-node: avoid overflows in buffer size checks)
+    as quilt patch (258 total). Excluded PR #338 as duplicate — the
+    alloca overflow check in pulse-server fill_card_info() is already
+    covered by fix-spa-add-spa-alloca-overflow-checks.patch (series line
+    15) which converts alloca to spa_alloca with bounds checking.
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Mon, 23 Nov 2026 11:42:39 +0800
+
+pipewire (1.6.4-1deepin34) unstable; urgency=medium
+
+  * Integrate backport PRs #295, #306, #317-#334 (20 PRs total) as quilt
+    patches: ALSA plugin error check, ALSA PCM recovery, ALSA prepare
+    return check, ALSA node error emit, DTS/AC3 hw dev index, bluez5
+    RegisterApplication cancel, pulse null checks, pulse strndupa
+    overflow, pulse message dump null check, AVB MRP parsing overflow,
+    bluez5 BAP broadcast code, pulse max-clients clamp, pulse ROUND_UP
+    overflow, netjack2 MTU sanity, security create_tag upload memblocks,
+    security create_tag stream command handlers, pulse server fd leak,
+    filter-graph pipe filter removal, pulse create_tag sample rate.
+    Conflict resolutions: #306 refreshed (error check adapted to existing
+    multi-condition), #328 refreshed (overflow check adapted to existing
+    size check), #329 refreshed (MTU check adapted to spa_overflow_mul).
+  * Base: includes PR #315 and #312 (unmerged) quilt patches integrated
+    as prior batch (#202-#241, #300-#304, #313, #242-#281).
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Wed, 19 Nov 2026 15:30:00 +0800
+
+pipewire (1.6.4-1deepin33) unstable; urgency=medium
+
+  * Integrate backport PRs #202-#241, #300-#304, #313 (42 PRs total).
+    Includes security fixes (integer overflow protections, null pointer
+    checks, CLOEXEC flags), pulse-server active_port_name initialization
+    fix, and allocation failure handling.
+  * Remove PR #231 (fix(v4l2): keep the media type of the filter when it
+    does not name a format) per user request.
+  * Integrate backport PRs #242-#281 (30 PRs) as quilt patches: pffft
+    malloc NULL checks, impl-port buffer lifecycle, audioadapter buffer
+    IO removal, v4l2 string termination/format enumeration, audioconvert
+    latency passthrough monitor ports, bluez5 transport error
+    reset/async device removal/unique serial transport properties, impl-
+    node driver pending state/inactive node peer cleanup, module-rtp
+    socket source removal/psamples-ptime/psamples-zero fail, jack ports
+    array/mixer list locking, gstpipewiresrc locking order, impl-link
+    param begin/end negotiation, wavfile f64-le bits, libcamera impl-dll
+    removal, pw-cat libsndfile byte order, spa debug buffer size checks,
+    properties init error location, module-raop-sink RTSP client error,
+    volume props type double-to-float, AVB/alsa long argument type,
+    plugins valid buffer recycle, module-adapter property list check,
+    impl-port mix output buffer move, impl-link extra buffer reliable
+    transport. Build fix: add have_ptime declaration in module-rtp fail-
+    rtp-stream-new patch.
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Mon, 17 Nov 2026 18:00:00 +0800
+
 pipewire (1.6.4-1deepin32) unstable; urgency=medium
 
   * Fix pulse-server loading of defaults: SPA_STRINGIFY(MAX_STREAMS) expanded

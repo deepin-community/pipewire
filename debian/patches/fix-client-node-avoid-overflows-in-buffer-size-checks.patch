@@ -1,0 +1,21 @@
+From c5e53b9821397d514222e1703e31ba572176221f Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Wed, 9 Sep 2026 22:51:14 +0200
+Subject: [PATCH] client-node: avoid overflows in buffer size checks
+
+Closes #5462
+
+Index: pipewire/src/modules/module-client-node/remote-node.c
+===================================================================
+--- pipewire.orig/src/modules/module-client-node/remote-node.c
++++ pipewire/src/modules/module-client-node/remote-node.c
+@@ -710,7 +710,8 @@ client_node_port_use_buffers(void *_data
+ 						j, bm->id, bm->fd, d->maxsize, d->flags);
+ 			} else if (d->type == SPA_DATA_MemPtr) {
+ 				int offs = SPA_PTR_TO_INT(d->data);
+-				if (offs < 0 || (uint32_t)offs + d->maxsize > mm->size) {
++				if (offs < 0 || (uint32_t)offs > mm->size ||
++				    d->maxsize > mm->size - (uint32_t)offs) {
+ 					res = -EINVAL;
+ 					goto error_exit_cleanup;
+ 				}

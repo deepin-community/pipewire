@@ -1,0 +1,138 @@
+From 4b64b81d21597602f57533375df8f967a01690e8 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 18:38:19 +0200
+Subject: [PATCH] security: fix crash and overflow bugs in network-facing
+ modules
+
+module-filter-chain: fix NULL pointer dereference when
+pw_stream_dequeue_buffer returns NULL and out->requested is
+accessed outside the NULL check.
+
+module-zeroconf-discover: add NULL checks for name, type,
+host_name, address, and port from mDNS lookups that could be
+missing in malformed announcements.
+
+module-raop-sink: cap net.mtu to 9000 to prevent stack overflow
+via VLA uint32_t out[8 + mtu].
+
+module-rtp-sap: fix buffer over-read in SDP "i=" line parsing
+that read past a self-inserted null terminator. Also fix fd leak
+when fd is 0 (fd > 0 should be fd >= 0).
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/src/modules/module-filter-chain.c b/src/modules/module-filter-chain.c
+index 253516947..f19c2da4e 100644
+--- a/src/modules/module-filter-chain.c
++++ b/src/modules/module-filter-chain.c
+@@ -1310,8 +1310,10 @@ static void do_process(struct impl *impl)
+ 				bd->chunk->stride = sizeof(float);
+ 			}
+ 		}
+-		pw_log_trace_fp("%p: size:%d requested:%"PRIu64, impl,
+-				data_size, out->requested);
++		if (out != NULL) {
++			pw_log_trace_fp("%p: size:%d requested:%"PRIu64, impl,
++					data_size, out->requested);
++		}
+ 	}
+ 
+ 	for (; n_in < impl->n_inputs; i++)
+@@ -2042,7 +2044,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	} else if (impl->capture_info.rate && !impl->playback_info.rate)
+ 		impl->playback_info.rate = impl->capture_info.rate;
+ 	else if (impl->playback_info.rate && !impl->capture_info.rate)
+-		impl->capture_info.rate = !impl->playback_info.rate;
++		impl->capture_info.rate = impl->playback_info.rate;
+ 	else if (impl->capture_info.rate != impl->playback_info.rate) {
+ 		pw_log_warn("Both capture and playback rate are set, but"
+ 			" they are different. Using the highest of two. This behaviour"
+diff --git a/src/modules/module-raop-sink.c b/src/modules/module-raop-sink.c
+index 005d9f979..5444d218e 100644
+--- a/src/modules/module-raop-sink.c
++++ b/src/modules/module-raop-sink.c
+@@ -1911,7 +1911,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
+ 	copy_props(impl, props, "sess.ts-refclk");
+ 	copy_props(impl, props, "sess.ts-direct");
+ 
+-	impl->mtu = pw_properties_get_uint32(impl->props, "net.mtu", 1448);
++	impl->mtu = SPA_MIN(pw_properties_get_uint32(impl->props, "net.mtu", 1448), 9000u);
+ 	impl->sync_period = impl->rate / (impl->mtu / impl->stride);
+ 	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
+ 	if (impl->core == NULL) {
+diff --git a/src/modules/module-rtp-sap.c b/src/modules/module-rtp-sap.c
+index c734758c3..2f7d4d650 100644
+--- a/src/modules/module-rtp-sap.c
++++ b/src/modules/module-rtp-sap.c
+@@ -1541,21 +1541,19 @@ static int parse_sdp_m(struct impl *impl, char *c, struct sdp_info *info)
+  * This is Audinate format. TODO: parse RAVENNA `i=CH1,CH2,CH3` format */
+ static int parse_sdp_i(struct impl *impl, char *c, struct sdp_info *info)
+ {
+-	if (!strstr(c, " channels: ")) {
++	char *chstr;
++	uint32_t channels;
++
++	chstr = strstr(c, " channels: ");
++	if (chstr == NULL)
+ 		return 0;
+-	}
+ 
+ 	c += strlen("i=");
+-	c[strcspn(c, " ")] = '\0';
+-
+-	uint32_t channels;
+ 	if (sscanf(c, "%u", &channels) != 1 || channels <= 0 || channels > MAX_CHANNELS)
+ 		return 0;
+ 
+-	c += strcspn(c, "\0");
+-	c += strlen(" channels: ");
+-
+-	strncpy(info->channelmap, c, sizeof(info->channelmap) - 1);
++	chstr += strlen(" channels: ");
++	strncpy(info->channelmap, chstr, sizeof(info->channelmap) - 1);
+ 
+ 	return 0;
+ }
+@@ -1870,7 +1868,7 @@ finish:
+ 	return res;
+ 
+ error:
+-	if (fd > 0)
++	if (fd >= 0)
+ 		close(fd);
+ 	goto finish;
+ }
+diff --git a/src/modules/module-zeroconf-discover.c b/src/modules/module-zeroconf-discover.c
+index 177556637..36384c326 100644
+--- a/src/modules/module-zeroconf-discover.c
++++ b/src/modules/module-zeroconf-discover.c
+@@ -266,6 +266,9 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
+ 		goto done;
+ 	}
+ 
++	if (name == NULL || type == NULL)
++		goto done;
++
+ 	mode = strstr(type, "sink") ? "sink" : "source";
+ 
+ 	tinfo = TUNNEL_INFO(.name = name, .mode = mode);
+@@ -299,6 +302,9 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
+ 		avahi_free(value);
+ 	}
+ 
++	if (host_name == NULL)
++		host_name = "unknown";
++
+ 	if ((device = pw_properties_get(props, PW_KEY_TARGET_OBJECT)) != NULL)
+ 		pw_properties_setf(props, PW_KEY_NODE_NAME,
+ 				"tunnel.%s.%s", host_name, device);
+@@ -308,6 +314,9 @@ static void resolver_cb(AvahiServiceResolver *r, AvahiIfIndex interface, AvahiPr
+ 
+ 	pw_properties_set(props, "tunnel.mode", mode);
+ 
++	if (a == NULL)
++		goto done;
++
+ 	if (a->proto == AVAHI_PROTO_INET6 &&
+ 	    a->data.ipv6.address[0] == 0xfe &&
+ 	    (a->data.ipv6.address[1] & 0xc0) == 0x80)
