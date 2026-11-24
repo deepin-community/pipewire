@@ -1,0 +1,47 @@
+From 99a89f8bd46fb465616f244e2afdb79d89f31cfb Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Thu, 30 Apr 2026 17:18:06 +0200
+Subject: [PATCH] security: fix stack overflow via strndupa on long device
+ names
+
+A client-supplied device name ending in ".monitor" was stack-allocated
+via strndupa without any size limit. Since protocol messages can be up
+to 16MB, a malicious client could send a very long device name and
+overflow the stack, crashing the daemon.
+
+Cap the strndupa length at MAX_NAME (1024) in both find_device and
+do_set_default.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+Index: repo/src/modules/module-protocol-pulse/pulse-server.c
+===================================================================
+--- repo.orig/src/modules/module-protocol-pulse/pulse-server.c
++++ repo/src/modules/module-protocol-pulse/pulse-server.c
+@@ -2566,7 +2566,10 @@ static struct pw_manager_object *find_de
+ 	if (name != NULL) {
+ 		if (spa_strendswith(name, ".monitor")) {
+ 			if (!sink) {
+-				name = strndupa(name, strlen(name)-8);
++				size_t len = strlen(name) - 8;
++				if (len > MAX_NAME)
++					return NULL;
++				name = strndupa(name, len);
+ 				allow_monitor = true;
+ 			}
+ 		}
+@@ -4753,8 +4756,12 @@ static int do_set_default(struct client
+ 	if (name != NULL) {
+ 		if (o->props && (str = pw_properties_get(o->props, PW_KEY_NODE_NAME)) != NULL)
+ 			name = str;
+-		else if (spa_strendswith(name, ".monitor"))
+-			name = strndupa(name, strlen(name)-8);
++		else if (spa_strendswith(name, ".monitor")) {
++			size_t len = strlen(name) - 8;
++			if (len > MAX_NAME)
++				return -ENAMETOOLONG;
++			name = strndupa(name, len);
++		}
+ 
+ 		char val[1024];
+ 		spa_json_encode_string(val, sizeof(val), name);

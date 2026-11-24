@@ -1,0 +1,41 @@
+From 547e364b247636a4ea091afe07773ec035b7ecfc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=88=98=E4=BD=B3=E5=92=8C?= <liujiahe@uniontech.com>
+Date: Tue, 8 Sep 2026 14:52:28 +0800
+Subject: [PATCH] spa: alsa: pcm: fix recovery when driver prepare fails
+
+When do_prepare() of the driver fails in alsa_recover(), the PCM is left
+dropped and unprepared while the poll sources were re-armed
+(update_sources(state, true)). In IRQ mode a device reporting POLLERR
+would then busy-loop at 100% CPU, and the stale alsa_started/prepared
+flags would make a later restart skip do_start()/do_prepare(), leaving
+the device permanently stopped.
+
+Instead of re-arming the sources, park them, reset the state flags and
+signal the graph with a node error event so the node is suspended and
+restarted cleanly.
+
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index 884f71222..2f90030a6 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -2899,8 +2899,17 @@ recover:
+ 		/* Driver is the clock source; starting it unprepared
+ 		 * breaks the entire pipeline. do_drop errors are
+ 		 * ignored (prepare can reset the hardware). Follower
+-		 * errors are non-fatal by design. */
+-		update_sources(state, true);
++		 * errors are non-fatal by design.
++		 *
++		 * The PCM is now dropped and unprepared, so do not
++		 * re-arm the poll sources (that would busy-loop on
++		 * POLLERR), reset the state flags so a later restart
++		 * does not skip do_prepare()/do_start(), and signal
++		 * the graph to suspend and restart the node. */
++		update_sources(state, false);
++		driver->alsa_started = false;
++		driver->prepared = false;
++		spa_loop_invoke(driver->main_loop, emit_node_error, 0, NULL, 0, false, driver);
+ 		return -EIO;
+ 	}
+ 	spa_list_for_each(follower, &driver->rt.followers, rt.driver_link) {
+

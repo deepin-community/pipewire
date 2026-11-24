@@ -1,0 +1,27 @@
+From 0a38fedeec5526f5575dc6a3672826ca14e83364 Mon Sep 17 00:00:00 2001
+From: zuozhiwei <zuozhiwei@kylinos.cn>
+Date: Mon, 20 Apr 2026 11:17:40 +0800
+Subject: [PATCH] conf: clamp pw_strv_insert_at invalid pos to [0, len]
+
+Invalid pos was clamped to len+1, which could insert past the terminating NULL.
+Clamp negative indices to 0 and values above len to len.
+
+diff --git a/src/pipewire/conf.c b/src/pipewire/conf.c
+index c29d45648..ef0f88717 100644
+--- a/src/pipewire/conf.c
++++ b/src/pipewire/conf.c
+@@ -918,8 +918,11 @@ static char **pw_strv_insert_at(char **strv, int len, int pos, const char *str)
+ 		while (strv != NULL && strv[len] != NULL)
+ 			len++;
+ 	}
+-	if (pos < 0 || pos > len)
+-		pos = len+1;
++
++	if (pos < 0)
++		pos = 0;
++	else if (pos > len)
++		pos = len;
+ 
+ 	n = realloc(strv, sizeof(char*) * (len + 2));
+ 	if (n == NULL) {
+

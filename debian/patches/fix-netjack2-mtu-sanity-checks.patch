@@ -1,0 +1,40 @@
+From 67b70c8d23bb831b36c172eed258c82e490b8904 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 4 May 2026 10:13:44 +0200
+Subject: [PATCH] netjack2: do some sanity checks on the MTU
+
+It needs to be large enough foer the header, udp overhead and a uint32_t
+for each audio channel to be able to send the sync packet.
+
+Avoid string oob read when debugging the packet.
+
+Index: pipewire/src/modules/module-netjack2/packets.h
+===================================================================
+--- pipewire.orig/src/modules/module-netjack2/packets.h
++++ pipewire/src/modules/module-netjack2/packets.h
+@@ -133,7 +133,7 @@ struct nj2_packet_header {
+ 
+ static inline void nj2_dump_packet_header(struct nj2_packet_header *header)
+ {
+-	pw_log_info("Type:         %s", header->type);
++	pw_log_info("Type:         %.*s", (int)sizeof(header->type), header->type);
+ 	pw_log_info("Data Type:    %c", ntohl(header->data_type));
+ 	pw_log_info("Data Stream:  %c", ntohl(header->data_stream));
+ 	pw_log_info("ID:           %u", ntohl(header->id));
+Index: pipewire/src/modules/module-netjack2/peer.c
+===================================================================
+--- pipewire.orig/src/modules/module-netjack2/peer.c
++++ pipewire/src/modules/module-netjack2/peer.c
+@@ -149,6 +149,12 @@ static int netjack2_init(struct netjack2
+ 		errno = EINVAL;
+ 		goto error_errno;
+ 	}
++	if (peer->params.mtu < UDP_HEADER_SIZE + sizeof(struct nj2_packet_header) ||
++	    sizeof(struct nj2_packet_header) +
++		    peer->params.recv_audio_channels * sizeof(int32_t) > peer->params.mtu) {
++		errno = EINVAL;
++		goto error_errno;
++	}
+ 	if ((peer->midi_data = calloc(1, peer->midi_size)) == NULL && peer->midi_size > 0)
+ 		goto error_errno;
+ 

@@ -1,0 +1,28 @@
+From d80b80602b389fe9badeda830122d357e9e2e3ea Mon Sep 17 00:00:00 2001
+From: Caleb White <cdwhite3@pm.me>
+Date: Fri, 11 Sep 2026 17:40:32 -0500
+Subject: [PATCH] bluez5: reset the transport error count on a successful
+ acquire
+
+error_count is only cleared by the TRANSPORT_ERROR_TIMEOUT check in
+spa_bt_transport_acquire(), which compares against last_error_time. A
+successful acquire in between does not clear it, so errors separated by
+successful use accumulate to TRANSPORT_ERROR_MAX_RETRY and the next
+acquire fails with -EIO.
+
+Assisted-by: Claude:claude-opus-5[1m]
+
+diff --git a/spa/plugins/bluez5/bluez5-dbus.c b/spa/plugins/bluez5/bluez5-dbus.c
+index ce03cd35f..b72f7fb97 100644
+--- a/spa/plugins/bluez5/bluez5-dbus.c
++++ b/spa/plugins/bluez5/bluez5-dbus.c
+@@ -3584,6 +3584,8 @@ int spa_bt_transport_acquire(struct spa_bt_transport *transport, bool optional)
+ 	if (res >= 0) {
+ 		transport->acquire_refcount = 1;
+ 		transport->acquired = true;
++		/* a transport that acquires is working */
++		transport->error_count = 0;
+ 	}
+ 
+ 	return res;
+
