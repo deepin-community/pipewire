@@ -1,3 +1,10 @@
+pipewire (1.6.4-1deepin37) unstable; urgency=medium
+
+  * Update the pipewire-bin recommendation to use the renamed
+    noise-suppression-for-voice-plugin-ladspa binary package.
+
+ -- Chengyi Zhao <zhaochengyi@uniontech.com>  Thu, 26 Nov 2026 20:45:05 +0800
+
 pipewire (1.6.4-1deepin36) unstable; urgency=medium
 
   * Remove PR #261 patch (feat-impl-link-parambegin-paramend-around-
